@@ -1,1 +1,2 @@
-/home/y/myworkspace/fileuni/fileuni-workspace/.gitignore
+# Inherit from root .gitignore
+!../../.gitignore
