@@ -16,7 +16,10 @@ pub struct VfsCache {
 }
 impl VfsCache {
     pub fn new(user_id: &str, enabled: bool) -> Self {
-        Self { prefix: format!("vfs:{}", user_id), enabled }
+        Self {
+            prefix: format!("vfs:{}", user_id),
+            enabled,
+        }
     }
     // Generate cache key
     fn make_key(&self, operation: &str, path: &str) -> String {
@@ -58,7 +61,10 @@ impl VfsCache {
             return;
         }
         let key = self.make_key(operation, path);
-        let item = CacheItem { data, timestamp: Self::now_timestamp() };
+        let item = CacheItem {
+            data,
+            timestamp: Self::now_timestamp(),
+        };
         let _ = set_json(&key, &item, ttl).await;
     }
     // Invalidate specific cache
@@ -84,7 +90,11 @@ impl VfsCache {
             return;
         };
         // Normalize parent directory path to start with /
-        let parent_key = if parent.is_empty() { "/".to_string() } else { format!("/{}", parent) };
+        let parent_key = if parent.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", parent)
+        };
         self.invalidate("ls", &parent_key).await;
     }
 }

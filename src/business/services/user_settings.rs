@@ -5,7 +5,13 @@ use sea_orm::*;
 pub struct UserSettingsService;
 impl UserSettingsService {
     ///()
-    pub async fn upsert_user_settings(db: &DatabaseConnection, user_id: &str, pool_name: &str, base_dir: &str, storage_quota: i64) -> VfsCommonResult<user_settings::Model> {
+    pub async fn upsert_user_settings(
+        db: &DatabaseConnection,
+        user_id: &str,
+        pool_name: &str,
+        base_dir: &str,
+        storage_quota: i64,
+    ) -> VfsCommonResult<user_settings::Model> {
         let now = Utc::now();
         let model = user_settings::ActiveModel {
             user_id: Set(user_id.to_string()),
@@ -41,11 +47,18 @@ impl UserSettingsService {
             .await?;
         Ok(res)
     }
-    pub async fn get_user_settings(db: &DatabaseConnection, user_id: &str) -> VfsCommonResult<Option<user_settings::Model>> {
+    pub async fn get_user_settings(
+        db: &DatabaseConnection,
+        user_id: &str,
+    ) -> VfsCommonResult<Option<user_settings::Model>> {
         let settings = user_settings::Entity::find_by_id(user_id).one(db).await?;
         Ok(settings)
     }
-    pub async fn update_storage_quota(db: &DatabaseConnection, user_id: &str, new_quota: i64) -> VfsCommonResult<()> {
+    pub async fn update_storage_quota(
+        db: &DatabaseConnection,
+        user_id: &str,
+        new_quota: i64,
+    ) -> VfsCommonResult<()> {
         let settings = user_settings::ActiveModel {
             user_id: Set(user_id.to_string()),
             storage_quota: Set(new_quota),
@@ -56,18 +69,29 @@ impl UserSettingsService {
         Ok(())
     }
     /// Update used storage (Atomic SQL operation)
-    pub async fn update_storage_used(db: &DatabaseConnection, user_id: &str, delta: i64) -> VfsCommonResult<()> {
+    pub async fn update_storage_used(
+        db: &DatabaseConnection,
+        user_id: &str,
+        delta: i64,
+    ) -> VfsCommonResult<()> {
         use sea_orm::sea_query::Expr;
         // Use atomic update to prevent race conditions
         user_settings::Entity::update_many()
-            .col_expr(user_settings::Column::StorageUsed, Expr::col(user_settings::Column::StorageUsed).add(delta))
+            .col_expr(
+                user_settings::Column::StorageUsed,
+                Expr::col(user_settings::Column::StorageUsed).add(delta),
+            )
             .col_expr(user_settings::Column::UpdatedAt, Expr::value(Utc::now()))
             .filter(user_settings::Column::UserId.eq(user_id))
             .exec(db)
             .await?;
         Ok(())
     }
-    pub async fn check_quota_exceeded(db: &DatabaseConnection, user_id: &str, additional_size: i64) -> VfsCommonResult<bool> {
+    pub async fn check_quota_exceeded(
+        db: &DatabaseConnection,
+        user_id: &str,
+        additional_size: i64,
+    ) -> VfsCommonResult<bool> {
         if let Some(settings) = user_settings::Entity::find_by_id(user_id).one(db).await? {
             //0
             if settings.storage_quota == 0 {
@@ -78,24 +102,54 @@ impl UserSettingsService {
         }
         Ok(false)
     }
-    pub async fn list_all_settings(db: &DatabaseConnection) -> VfsCommonResult<Vec<user_settings::Model>> {
+    pub async fn list_all_settings(
+        db: &DatabaseConnection,
+    ) -> VfsCommonResult<Vec<user_settings::Model>> {
         let settings = user_settings::Entity::find().all(db).await?;
         Ok(settings)
     }
-    pub async fn delete_user_settings(db: &DatabaseConnection, user_id: &str) -> VfsCommonResult<()> {
-        user_settings::Entity::delete_by_id(user_id).exec(db).await?;
+    pub async fn delete_user_settings(
+        db: &DatabaseConnection,
+        user_id: &str,
+    ) -> VfsCommonResult<()> {
+        user_settings::Entity::delete_by_id(user_id)
+            .exec(db)
+            .await?;
         Ok(())
     }
     /// Regenerate S3 keys
-    pub async fn regenerate_s3_keys(db: &DatabaseConnection, user_id: &str) -> VfsCommonResult<(String, String)> {
+    pub async fn regenerate_s3_keys(
+        db: &DatabaseConnection,
+        user_id: &str,
+    ) -> VfsCommonResult<(String, String)> {
         use rand::{Rng, distributions::Alphanumeric};
-        let access_key: String = rand::thread_rng().sample_iter(&Alphanumeric).take(16).map(char::from).collect();
-        let secret_key: String = rand::thread_rng().sample_iter(&Alphanumeric).take(32).map(char::from).collect();
-        let settings = user_settings::Entity::find_by_id(user_id).one(db).await?.ok_or_else(|| sea_orm::DbErr::RecordNotFound("User settings not found".to_string()))?;
+        let access_key: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(16)
+            .map(char::from)
+            .collect();
+        let secret_key: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(32)
+            .map(char::from)
+            .collect();
+        let settings = user_settings::Entity::find_by_id(user_id)
+            .one(db)
+            .await?
+            .ok_or_else(|| sea_orm::DbErr::RecordNotFound("User settings not found".to_string()))?;
         user_settings::Entity::update_many()
-            .col_expr(user_settings::Column::S3AccessKey, sea_orm::sea_query::Expr::value(Some(access_key.as_str())))
-            .col_expr(user_settings::Column::S3SecretKey, sea_orm::sea_query::Expr::value(Some(secret_key.as_str())))
-            .col_expr(user_settings::Column::UpdatedAt, sea_orm::sea_query::Expr::value(Utc::now()))
+            .col_expr(
+                user_settings::Column::S3AccessKey,
+                sea_orm::sea_query::Expr::value(Some(access_key.as_str())),
+            )
+            .col_expr(
+                user_settings::Column::S3SecretKey,
+                sea_orm::sea_query::Expr::value(Some(secret_key.as_str())),
+            )
+            .col_expr(
+                user_settings::Column::UpdatedAt,
+                sea_orm::sea_query::Expr::value(Utc::now()),
+            )
             .filter(user_settings::Column::UserId.eq(settings.user_id.as_str()))
             .exec(db)
             .await?;

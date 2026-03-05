@@ -24,7 +24,16 @@ impl ScopedVfsStorageEngine {
         let wal_id = if let Some(wm) = &self.wal_manager
             && !self.should_skip_wal(&normalized, data.len() as u64).await
         {
-            Some(wm.log_operation(&self.user_id, WalOperation::Write { path: normalized.to_string(), size: data.len() as u64 }).await?)
+            Some(
+                wm.log_operation(
+                    &self.user_id,
+                    WalOperation::Write {
+                        path: normalized.to_string(),
+                        size: data.len() as u64,
+                    },
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -32,12 +41,20 @@ impl ScopedVfsStorageEngine {
             let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
             let local_path = self.temp_manager.get_user_temp_dir(&self.user_id).join(rel);
             if let Some(parent) = local_path.parent() {
-                tokio::fs::create_dir_all(parent).await.map_err(VfsError::Io)?;
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(VfsError::Io)?;
             }
-            tokio::fs::write(&local_path, data).await.map_err(VfsError::Io)?;
+            tokio::fs::write(&local_path, data)
+                .await
+                .map_err(VfsError::Io)?;
             self.stat_impl(path).await
         } else {
-            match self.pool.write(&self.get_physical_path(&normalized).await?, data).await {
+            match self
+                .pool
+                .write(&self.get_physical_path(&normalized).await?, data)
+                .await
+            {
                 Ok(info) => {
                     let translated = self.translate_file_info(info, false);
                     self.upsert_index_helper(&normalized, &translated).await?;
@@ -57,9 +74,13 @@ impl ScopedVfsStorageEngine {
                 if !skip_quota && diff != 0 {
                     let _ = self.update_quota(diff).await;
                 }
-                self.journal_log("WRITE", &normalized, None, true, None).await
+                self.journal_log("WRITE", &normalized, None, true, None)
+                    .await
             }
-            Err(e) => self.journal_log("WRITE", &normalized, None, false, Some(e.to_string())).await,
+            Err(e) => {
+                self.journal_log("WRITE", &normalized, None, false, Some(e.to_string()))
+                    .await
+            }
         }
         result
     }
@@ -71,35 +92,56 @@ impl ScopedVfsStorageEngine {
         let size = info.size as i64;
         let skip_quota = self.is_thumbnail_cache_path(&normalized);
         if self.is_temp_path(&normalized) {
-            let local_path = self.temp_manager.get_user_temp_dir(&self.user_id).join(self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX));
+            let local_path = self
+                .temp_manager
+                .get_user_temp_dir(&self.user_id)
+                .join(self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX));
             if local_path.is_dir() {
-                tokio::fs::remove_dir_all(local_path).await.map_err(VfsError::Io)?;
+                tokio::fs::remove_dir_all(local_path)
+                    .await
+                    .map_err(VfsError::Io)?;
             } else {
-                tokio::fs::remove_file(local_path).await.map_err(VfsError::Io)?;
+                tokio::fs::remove_file(local_path)
+                    .await
+                    .map_err(VfsError::Io)?;
             }
             return Ok(info);
         }
-        match self.pool.delete(&self.get_physical_path(&normalized).await?).await {
+        match self
+            .pool
+            .delete(&self.get_physical_path(&normalized).await?)
+            .await
+        {
             Ok(_) => {
-                let _ = self.index_service.delete_file(&self.user_id, &normalized).await;
+                let _ = self
+                    .index_service
+                    .delete_file(&self.user_id, &normalized)
+                    .await;
                 self.cache.invalidate_parent_ls(&normalized).await;
                 // Update quota (decrease)
                 if !skip_quota {
                     let _ = self.update_quota(-size).await;
                 }
-                self.journal_log("DELETE", &normalized, None, true, None).await;
+                self.journal_log("DELETE", &normalized, None, true, None)
+                    .await;
                 Ok(info)
             }
             Err(e) => {
-                self.journal_log("DELETE", &normalized, None, false, Some(e.to_string())).await;
+                self.journal_log("DELETE", &normalized, None, false, Some(e.to_string()))
+                    .await;
                 Err(e)
             }
         }
     }
-    pub(super) async fn write_stream_impl(&self, path: &str, stream: BoxStream<'static, VfsResult<Bytes>>) -> VfsResult<VfsFileInfo> {
+    pub(super) async fn write_stream_impl(
+        &self,
+        path: &str,
+        stream: BoxStream<'static, VfsResult<Bytes>>,
+    ) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
-        self.journal_log("WRITE_STREAM", &normalized, None, true, None).await;
+        self.journal_log("WRITE_STREAM", &normalized, None, true, None)
+            .await;
         if self.is_refresh_trigger(&normalized).await {
             let parent = if let Some(parent_path) = std::path::Path::new(&normalized).parent() {
                 parent_path.to_string_lossy().to_string()
@@ -111,12 +153,29 @@ impl ScopedVfsStorageEngine {
         }
         let result = self.write_stream_internal(&normalized, stream).await;
         match &result {
-            Ok(_) => self.journal_log("WRITE_STREAM_FINISH", &normalized, None, true, None).await,
-            Err(e) => self.journal_log("WRITE_STREAM_FINISH", &normalized, None, false, Some(e.to_string())).await,
+            Ok(_) => {
+                self.journal_log("WRITE_STREAM_FINISH", &normalized, None, true, None)
+                    .await
+            }
+            Err(e) => {
+                self.journal_log(
+                    "WRITE_STREAM_FINISH",
+                    &normalized,
+                    None,
+                    false,
+                    Some(e.to_string()),
+                )
+                .await
+            }
         }
         result
     }
-    pub(super) async fn write_at_impl(&self, path: &str, offset: u64, data: Bytes) -> VfsResult<VfsFileInfo> {
+    pub(super) async fn write_at_impl(
+        &self,
+        path: &str,
+        offset: u64,
+        data: Bytes,
+    ) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
         if self.is_refresh_trigger(&normalized).await {
@@ -132,7 +191,11 @@ impl ScopedVfsStorageEngine {
         if !skip_quota {
             let current_size = self.get_file_size(&normalized).await;
             let new_end = offset + data.len() as u64;
-            diff = if new_end > current_size as u64 { (new_end - current_size as u64) as i64 } else { 0 };
+            diff = if new_end > current_size as u64 {
+                (new_end - current_size as u64) as i64
+            } else {
+                0
+            };
             if diff > 0 {
                 self.check_quota(diff).await?;
             }
@@ -140,7 +203,16 @@ impl ScopedVfsStorageEngine {
         let wal_id = if let Some(wm) = &self.wal_manager
             && !self.should_skip_wal(&normalized, data.len() as u64).await
         {
-            Some(wm.log_operation(&self.user_id, WalOperation::Write { path: normalized.to_string(), size: data.len() as u64 }).await?)
+            Some(
+                wm.log_operation(
+                    &self.user_id,
+                    WalOperation::Write {
+                        path: normalized.to_string(),
+                        size: data.len() as u64,
+                    },
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -156,7 +228,9 @@ impl ScopedVfsStorageEngine {
             target_slice.copy_from_slice(&data);
         } else {
             // This should not happen due to resize above, but for absolute safety:
-            return Err(VfsError::Internal("Buffer overflow in write_at".to_string()));
+            return Err(VfsError::Internal(
+                "Buffer overflow in write_at".to_string(),
+            ));
         }
         let result = self.pool.write(&physical_path, Bytes::from(content)).await;
         if let Some(id) = wal_id
@@ -170,13 +244,15 @@ impl ScopedVfsStorageEngine {
                 if !skip_quota && diff > 0 {
                     let _ = self.update_quota(diff).await;
                 }
-                self.journal_log("WRITE_AT", &normalized, None, true, None).await;
+                self.journal_log("WRITE_AT", &normalized, None, true, None)
+                    .await;
                 let translated = self.translate_file_info(info, false);
                 self.upsert_index_helper(&normalized, &translated).await?;
                 Ok(translated)
             }
             Err(e) => {
-                self.journal_log("WRITE_AT", &normalized, None, false, Some(e.to_string())).await;
+                self.journal_log("WRITE_AT", &normalized, None, false, Some(e.to_string()))
+                    .await;
                 Err(e)
             }
         }
@@ -187,12 +263,26 @@ impl ScopedVfsStorageEngine {
         let wal_id = if let Some(wm) = &self.wal_manager
             && !self.should_skip_wal(&normalized, 0).await
         {
-            Some(wm.log_operation(&self.user_id, WalOperation::CreateDir { path: normalized.to_string() }).await?)
+            Some(
+                wm.log_operation(
+                    &self.user_id,
+                    WalOperation::CreateDir {
+                        path: normalized.to_string(),
+                    },
+                )
+                .await?,
+            )
         } else {
             None
         };
         if self.is_temp_path(&normalized) {
-            tokio::fs::create_dir_all(self.temp_manager.get_user_temp_dir(&self.user_id).join(self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX))).await.map_err(VfsError::Io)?;
+            tokio::fs::create_dir_all(
+                self.temp_manager
+                    .get_user_temp_dir(&self.user_id)
+                    .join(self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX)),
+            )
+            .await
+            .map_err(VfsError::Io)?;
             if let Some(id) = wal_id
                 && let Some(wm) = &self.wal_manager
             {
@@ -209,7 +299,8 @@ impl ScopedVfsStorageEngine {
         }
         match result {
             Ok(_) => {
-                self.journal_log("MKDIR", &normalized, None, true, None).await;
+                self.journal_log("MKDIR", &normalized, None, true, None)
+                    .await;
                 self.cache.invalidate_parent_ls(&normalized).await;
                 let info = self.pool.stat(&physical_path).await?;
                 let translated = self.translate_file_info(info, false);
@@ -217,7 +308,8 @@ impl ScopedVfsStorageEngine {
                 Ok(translated)
             }
             Err(e) => {
-                self.journal_log("MKDIR", &normalized, None, false, Some(e.to_string())).await;
+                self.journal_log("MKDIR", &normalized, None, false, Some(e.to_string()))
+                    .await;
                 Err(e)
             }
         }
@@ -229,27 +321,50 @@ impl ScopedVfsStorageEngine {
         let wal_id = if let Some(wm) = &self.wal_manager
             && !self.should_skip_wal(&norm_src, 0).await
         {
-            Some(wm.log_operation(&self.user_id, WalOperation::Move {
-                src: norm_src.to_string(),
-                dst: norm_dst.to_string(),
-            })
-            .await?)
+            Some(
+                wm.log_operation(
+                    &self.user_id,
+                    WalOperation::Move {
+                        src: norm_src.to_string(),
+                        dst: norm_dst.to_string(),
+                    },
+                )
+                .await?,
+            )
         } else {
             None
         };
         let result = if self.is_temp_path(&norm_src) == self.is_temp_path(&norm_dst) {
             if self.is_temp_path(&norm_src) {
-                let s = self.temp_manager.get_user_temp_dir(&self.user_id).join(self.get_relative_path(&norm_src, LOGICAL_TEMP_PREFIX));
-                let d = self.temp_manager.get_user_temp_dir(&self.user_id).join(self.get_relative_path(&norm_dst, LOGICAL_TEMP_PREFIX));
+                let s = self
+                    .temp_manager
+                    .get_user_temp_dir(&self.user_id)
+                    .join(self.get_relative_path(&norm_src, LOGICAL_TEMP_PREFIX));
+                let d = self
+                    .temp_manager
+                    .get_user_temp_dir(&self.user_id)
+                    .join(self.get_relative_path(&norm_dst, LOGICAL_TEMP_PREFIX));
                 tokio::fs::rename(s, d).await.map_err(VfsError::Io)?;
                 self.stat_impl(dst).await
             } else {
-                match self.pool.move_file(&self.get_physical_path(&norm_src).await?, &self.get_physical_path(&norm_dst).await?).await {
+                match self
+                    .pool
+                    .move_file(
+                        &self.get_physical_path(&norm_src).await?,
+                        &self.get_physical_path(&norm_dst).await?,
+                    )
+                    .await
+                {
                     Ok(_) => {
                         self.cache.invalidate_parent_ls(&norm_src).await;
                         self.cache.invalidate_parent_ls(&norm_dst).await;
-                        if !self.is_thumbnail_cache_path(&norm_src) && !self.is_thumbnail_cache_path(&norm_dst) {
-                            let _ = self.index_service.move_file(&self.user_id, &norm_src, &norm_dst).await;
+                        if !self.is_thumbnail_cache_path(&norm_src)
+                            && !self.is_thumbnail_cache_path(&norm_dst)
+                        {
+                            let _ = self
+                                .index_service
+                                .move_file(&self.user_id, &norm_src, &norm_dst)
+                                .await;
                         }
                         self.stat_impl(dst).await
                     }
@@ -268,8 +383,20 @@ impl ScopedVfsStorageEngine {
             let _ = wm.complete_operation(id).await;
         }
         match &result {
-            Ok(_) => self.journal_log("MOVE", &norm_src, Some(&norm_dst), true, None).await,
-            Err(e) => self.journal_log("MOVE", &norm_src, Some(&norm_dst), false, Some(e.to_string())).await,
+            Ok(_) => {
+                self.journal_log("MOVE", &norm_src, Some(&norm_dst), true, None)
+                    .await
+            }
+            Err(e) => {
+                self.journal_log(
+                    "MOVE",
+                    &norm_src,
+                    Some(&norm_dst),
+                    false,
+                    Some(e.to_string()),
+                )
+                .await
+            }
         }
         result
     }
@@ -287,14 +414,30 @@ impl ScopedVfsStorageEngine {
         }
         let result = if self.is_temp_path(&norm_src) == self.is_temp_path(&norm_dst) {
             if self.is_temp_path(&norm_src) {
-                let s = self.temp_manager.get_user_temp_dir(&self.user_id).join(self.get_relative_path(&norm_src, LOGICAL_TEMP_PREFIX));
-                let d = self.temp_manager.get_user_temp_dir(&self.user_id).join(self.get_relative_path(&norm_dst, LOGICAL_TEMP_PREFIX));
+                let s = self
+                    .temp_manager
+                    .get_user_temp_dir(&self.user_id)
+                    .join(self.get_relative_path(&norm_src, LOGICAL_TEMP_PREFIX));
+                let d = self
+                    .temp_manager
+                    .get_user_temp_dir(&self.user_id)
+                    .join(self.get_relative_path(&norm_dst, LOGICAL_TEMP_PREFIX));
                 tokio::fs::copy(s, d).await.map_err(VfsError::Io)?;
                 self.stat_impl(dst).await
             } else {
-                match self.pool.copy_file(&self.get_physical_path(&norm_src).await?, &self.get_physical_path(&norm_dst).await?).await {
+                match self
+                    .pool
+                    .copy_file(
+                        &self.get_physical_path(&norm_src).await?,
+                        &self.get_physical_path(&norm_dst).await?,
+                    )
+                    .await
+                {
                     Ok(_) => {
-                        let info = self.pool.stat(&self.get_physical_path(&norm_dst).await?).await?;
+                        let info = self
+                            .pool
+                            .stat(&self.get_physical_path(&norm_dst).await?)
+                            .await?;
                         let translated = self.translate_file_info(info, false);
                         self.upsert_index_helper(&norm_dst, &translated).await?;
                         Ok(translated)
@@ -312,9 +455,19 @@ impl ScopedVfsStorageEngine {
                 if !skip_quota {
                     let _ = self.update_quota(size).await;
                 }
-                self.journal_log("COPY", &norm_src, Some(&norm_dst), true, None).await
+                self.journal_log("COPY", &norm_src, Some(&norm_dst), true, None)
+                    .await
             }
-            Err(e) => self.journal_log("COPY", &norm_src, Some(&norm_dst), false, Some(e.to_string())).await,
+            Err(e) => {
+                self.journal_log(
+                    "COPY",
+                    &norm_src,
+                    Some(&norm_dst),
+                    false,
+                    Some(e.to_string()),
+                )
+                .await
+            }
         }
         result
     }

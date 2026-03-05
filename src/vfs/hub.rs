@@ -33,28 +33,40 @@ impl VfsStorageHub {
         let pools_cfg = config.get_pools();
         let mut pools = HashMap::with_capacity(pools_cfg.len());
         for pool_cfg in pools_cfg {
-            let primary_connector_name = yh_config_infra::config_require_str!(pool_cfg.primary_connector, "vfs_storage_hub", "pool.primary_connector");
+            let primary_connector_name = yh_config_infra::config_require_str!(
+                pool_cfg.primary_connector,
+                "vfs_storage_hub",
+                "pool.primary_connector"
+            );
             let primary = operators
                 .get(primary_connector_name)
                 .cloned()
-                .ok_or_else(|| crate::vfs::error::VfsError::Internal(format!("Primary connector {} not found", primary_connector_name)))?;
+                .ok_or_else(|| {
+                    crate::vfs::error::VfsError::Internal(format!(
+                        "Primary connector {} not found",
+                        primary_connector_name
+                    ))
+                })?;
             let backup = if let Some(backup_name) = &pool_cfg.backup_connector {
                 let backup_name_str: &str = backup_name.as_ref();
                 if backup_name_str.trim().is_empty() {
                     None
                 } else {
-                    Some(
-                        operators
-                            .get(backup_name_str)
-                            .cloned()
-                            .ok_or_else(|| crate::vfs::error::VfsError::Internal(format!("Backup connector {} not found", backup_name_str)))?,
-                    )
+                    Some(operators.get(backup_name_str).cloned().ok_or_else(|| {
+                        crate::vfs::error::VfsError::Internal(format!(
+                            "Backup connector {} not found",
+                            backup_name_str
+                        ))
+                    })?)
                 }
             } else {
                 None
             };
             let pool_name = pool_cfg.get_name();
-            pools.insert(pool_name.to_string(), Arc::new(VfsPool::new(primary, backup, pool_cfg.to_owned())));
+            pools.insert(
+                pool_name.to_string(),
+                Arc::new(VfsPool::new(primary, backup, pool_cfg.to_owned())),
+            );
         }
         Ok(Self {
             config,
@@ -67,8 +79,12 @@ impl VfsStorageHub {
         })
     }
     /// Get index service
-    pub async fn get_index_service(&self) -> VfsResult<Arc<crate::business::services::FileIndexService>> {
-        Ok(Arc::new(crate::business::services::FileIndexService::new(Arc::clone(&self.db))))
+    pub async fn get_index_service(
+        &self,
+    ) -> VfsResult<Arc<crate::business::services::FileIndexService>> {
+        Ok(Arc::new(crate::business::services::FileIndexService::new(
+            Arc::clone(&self.db),
+        )))
     }
     pub fn set_task_handler(&mut self, handler: Arc<dyn crate::vfs::task::VfsTaskHandler>) {
         self.task_handler = Some(handler);
@@ -95,15 +111,28 @@ impl VfsStorageHub {
                 return Ok(Arc::clone(pool));
             }
         }
-        let default_pool_name = self.config.default_pool.as_ref().and_then(|s| if s.trim().is_empty() { None } else { Some(s.as_ref()) });
+        let default_pool_name = self.config.default_pool.as_ref().and_then(|s| {
+            if s.trim().is_empty() {
+                None
+            } else {
+                Some(s.as_ref())
+            }
+        });
         if let Some(pool_name) = default_pool_name
             && let Some(pool) = self.pools.get(pool_name)
         {
             return Ok(Arc::clone(pool));
         }
-        self.pools.values().next().map(Arc::clone).ok_or_else(|| crate::vfs::error::VfsError::Internal("No pools configured or initialized".to_string()))
+        self.pools.values().next().map(Arc::clone).ok_or_else(|| {
+            crate::vfs::error::VfsError::Internal("No pools configured or initialized".to_string())
+        })
     }
-    pub async fn route_for_user(&self, db: &sea_orm::DatabaseConnection, user_id: &str, role_id: &str) -> VfsResult<Arc<VfsPool>> {
+    pub async fn route_for_user(
+        &self,
+        db: &sea_orm::DatabaseConnection,
+        user_id: &str,
+        role_id: &str,
+    ) -> VfsResult<Arc<VfsPool>> {
         use crate::business::entities::user_settings;
         if let Ok(Some(settings)) = user_settings::Entity::find_by_id(user_id).one(db).await
             && let Some(pool) = self.pools.get(&settings.pool_name)
@@ -112,7 +141,12 @@ impl VfsStorageHub {
         }
         self.route_by_role(role_id)
     }
-    pub async fn ensure_user_settings(self: &Arc<Self>, db: &sea_orm::DatabaseConnection, user_id: &str, role_id: &str) -> VfsResult<Arc<crate::business::entities::user_settings::Model>> {
+    pub async fn ensure_user_settings(
+        self: &Arc<Self>,
+        db: &sea_orm::DatabaseConnection,
+        user_id: &str,
+        role_id: &str,
+    ) -> VfsResult<Arc<crate::business::entities::user_settings::Model>> {
         // Try to get from cache
         if let Some(s) = self.settings_cache.get(user_id) {
             return Ok(Arc::clone(s.value()));
@@ -132,7 +166,10 @@ impl VfsStorageHub {
                 select
                     .column((Alias::new("yh_roles"), Alias::new("default_storage_quota")))
                     .from(Alias::new("yh_roles"))
-                    .and_where(Expr::col((Alias::new("yh_roles"), Alias::new("role_id"))).eq(parsed_role_id));
+                    .and_where(
+                        Expr::col((Alias::new("yh_roles"), Alias::new("role_id")))
+                            .eq(parsed_role_id),
+                    );
                 if let Some(row) = db.query_one(backend.build(&select)).await?
                     && let Ok(quota) = row.try_get::<i64>("", "default_storage_quota")
                 {
@@ -143,7 +180,11 @@ impl VfsStorageHub {
             if !has_role_quota {
                 for policy in self.config.get_policies() {
                     if policy.role_id.as_deref() == Some(role_id) {
-                        default_quota = yh_config_infra::config_require_clone!(policy.default_quota, "vfs_storage_hub", "policies.default_quota");
+                        default_quota = yh_config_infra::config_require_clone!(
+                            policy.default_quota,
+                            "vfs_storage_hub",
+                            "policies.default_quota"
+                        );
                         break;
                     }
                 }
@@ -151,25 +192,70 @@ impl VfsStorageHub {
             let pool = self.route_by_role(role_id)?;
             let pool_name = pool.config.get_name();
             let base_dir = format!("/users/{}", user_id);
-            UserSettingsService::upsert_user_settings(db, user_id, pool_name, &base_dir, default_quota)
-                .await
-                .map_err(|e| crate::vfs::error::VfsError::Internal(format!("Failed to create default user settings: {}", e)))?
+            UserSettingsService::upsert_user_settings(
+                db,
+                user_id,
+                pool_name,
+                &base_dir,
+                default_quota,
+            )
+            .await
+            .map_err(|e| {
+                crate::vfs::error::VfsError::Internal(format!(
+                    "Failed to create default user settings: {}",
+                    e
+                ))
+            })?
         };
         // Write back to cache
         let settings = Arc::new(settings);
-        self.settings_cache.insert(user_id.to_string(), Arc::clone(&settings));
+        self.settings_cache
+            .insert(user_id.to_string(), Arc::clone(&settings));
         Ok(settings)
     }
-    pub async fn create_scoped_engine(self: &Arc<Self>, db: Arc<sea_orm::DatabaseConnection>, user_id: &str, role_id: &str, journal_recorder: Option<Arc<dyn crate::vfs::VfsJournalRecorder>>) -> VfsResult<Arc<crate::vfs::scoped::ScopedVfsStorageEngine>> {
-        let settings = self.ensure_user_settings(db.as_ref(), user_id, role_id).await?;
-        self.create_scoped_engine_with_pool(db, user_id, role_id, &settings.pool_name, journal_recorder).await
+    pub async fn create_scoped_engine(
+        self: &Arc<Self>,
+        db: Arc<sea_orm::DatabaseConnection>,
+        user_id: &str,
+        role_id: &str,
+        journal_recorder: Option<Arc<dyn crate::vfs::VfsJournalRecorder>>,
+    ) -> VfsResult<Arc<crate::vfs::scoped::ScopedVfsStorageEngine>> {
+        let settings = self
+            .ensure_user_settings(db.as_ref(), user_id, role_id)
+            .await?;
+        self.create_scoped_engine_with_pool(
+            db,
+            user_id,
+            role_id,
+            &settings.pool_name,
+            journal_recorder,
+        )
+        .await
     }
     /// Create engine directly with a specific pool name (zero DB hits)
-    pub async fn create_scoped_engine_with_pool(self: &Arc<Self>, db: Arc<sea_orm::DatabaseConnection>, user_id: &str, role_id: &str, pool_name: &str, journal_recorder: Option<Arc<dyn crate::vfs::VfsJournalRecorder>>) -> VfsResult<Arc<crate::vfs::scoped::ScopedVfsStorageEngine>> {
-        let pool = if let Some(pool) = self.pools.get(pool_name) { Arc::clone(pool) } else { self.route_by_role(role_id)? };
+    pub async fn create_scoped_engine_with_pool(
+        self: &Arc<Self>,
+        db: Arc<sea_orm::DatabaseConnection>,
+        user_id: &str,
+        role_id: &str,
+        pool_name: &str,
+        journal_recorder: Option<Arc<dyn crate::vfs::VfsJournalRecorder>>,
+    ) -> VfsResult<Arc<crate::vfs::scoped::ScopedVfsStorageEngine>> {
+        let pool = if let Some(pool) = self.pools.get(pool_name) {
+            Arc::clone(pool)
+        } else {
+            self.route_by_role(role_id)?
+        };
         let task_handler = self.task_handler.as_ref().map(Arc::clone);
         let wal_manager = self.wal_manager.as_ref().map(Arc::clone);
-        let engine = crate::vfs::scoped::ScopedVfsStorageEngine::new(db, user_id.to_string(), pool, journal_recorder, task_handler, wal_manager)?;
+        let engine = crate::vfs::scoped::ScopedVfsStorageEngine::new(
+            db,
+            user_id.to_string(),
+            pool,
+            journal_recorder,
+            task_handler,
+            wal_manager,
+        )?;
         Ok(Arc::new(engine))
     }
     pub async fn cleanup_all_s3_multiparts(&self, max_age_secs: u64) -> usize {
@@ -177,11 +263,14 @@ impl VfsStorageHub {
         // Cleanup based on KV state
         if let Ok(keys) = yh_fast_kv_storage_hub::api::helpers::scan_keys("s3:multipart:").await {
             for key in keys {
-                if let Ok(Some(state_val)) = yh_fast_kv_storage_hub::api::helpers::get_json::<serde_json::Value>(&key).await {
+                if let Ok(Some(state_val)) =
+                    yh_fast_kv_storage_hub::api::helpers::get_json::<serde_json::Value>(&key).await
+                {
                     let created_at_str = state_val.get("created_at").and_then(|v| v.as_str());
                     let is_expired = if let Some(s) = created_at_str {
                         if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-                            (chrono::Utc::now() - dt.with_timezone(&chrono::Utc)).num_seconds() > max_age_secs as i64
+                            (chrono::Utc::now() - dt.with_timezone(&chrono::Utc)).num_seconds()
+                                > max_age_secs as i64
                         } else {
                             false
                         }

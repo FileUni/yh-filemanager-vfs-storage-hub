@@ -8,7 +8,10 @@ pub struct VfsManager {
     pub db: Arc<DatabaseConnection>,
 }
 impl VfsManager {
-    pub async fn new(config: VfsHubConfigGuard, db: Arc<DatabaseConnection>) -> anyhow::Result<Self> {
+    pub async fn new(
+        config: VfsHubConfigGuard,
+        db: Arc<DatabaseConnection>,
+    ) -> anyhow::Result<Self> {
         let hub = Arc::new(VfsStorageHub::new(config, Arc::clone(&db)).await?);
         Ok(Self { hub, db })
     }

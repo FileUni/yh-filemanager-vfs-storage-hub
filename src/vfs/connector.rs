@@ -59,11 +59,18 @@ pub async fn build_operator(config: &VfsConnectorConfig) -> VfsResult<Operator> 
             let builder = opendal::services::Memory::default();
             Operator::new(builder)?.finish()
         }
-        _ => return Err(VfsError::Internal(format!("Unsupported driver: {}", driver))),
+        _ => {
+            return Err(VfsError::Internal(format!(
+                "Unsupported driver: {}",
+                driver
+            )));
+        }
     };
     // Add basic layers
     //business::services::file_index_service OpenDAL
     // Database-based metadata indexing has been implemented, so OpenDAL's local metadata cache is not needed here
-    let op = op.layer(LoggingLayer::default()).layer(RetryLayer::default());
+    let op = op
+        .layer(LoggingLayer::default())
+        .layer(RetryLayer::default());
     Ok(op)
 }

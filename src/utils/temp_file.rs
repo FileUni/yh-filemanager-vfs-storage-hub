@@ -23,9 +23,12 @@ impl VfsTempFileManager {
     }
     /// Create manager from configuration
     pub fn from_config(config: &VfsTempFileConfig) -> Self {
-        let temp_dir_str = yh_config_infra::config_require_str!(config.dir, "vfs_storage_hub", "temp_file.dir");
+        let temp_dir_str =
+            yh_config_infra::config_require_str!(config.dir, "vfs_storage_hub", "temp_file.dir");
         if temp_dir_str.trim().is_empty() {
-            eprintln!("[vfs_storage_hub] temp_file.dir cannot be empty. Please configure it in .toml");
+            eprintln!(
+                "[vfs_storage_hub] temp_file.dir cannot be empty. Please configure it in .toml"
+            );
             std::process::exit(78);
         }
         let temp_dir = PathBuf::from(temp_dir_str);
@@ -56,17 +59,33 @@ impl VfsTempFileManager {
         self.temp_dir.join(user_id)
     }
     /// Create temporary file for user
-    pub async fn create_user_temp_file(&self, user_id: &str, prefix: &str) -> Result<(PathBuf, VfsTempFileGuard), VfsTempError> {
+    pub async fn create_user_temp_file(
+        &self,
+        user_id: &str,
+        prefix: &str,
+    ) -> Result<(PathBuf, VfsTempFileGuard), VfsTempError> {
         let user_temp_dir = self.get_user_temp_dir(user_id);
-        fs::create_dir_all(&user_temp_dir).await.map_err(VfsTempError::Io)?;
+        fs::create_dir_all(&user_temp_dir)
+            .await
+            .map_err(VfsTempError::Io)?;
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%f").to_string();
-        let random_suffix: String = (0..8).map(|_| char::from(b'a' + (std::process::id() as u8 % 26))).collect();
+        let random_suffix: String = (0..8)
+            .map(|_| char::from(b'a' + (std::process::id() as u8 % 26)))
+            .collect();
         let temp_filename = format!("{}_{}_{}", prefix, timestamp, random_suffix);
         let temp_path = user_temp_dir.join(temp_filename);
-        fs::File::create(&temp_path).await.map_err(VfsTempError::Io)?;
+        fs::File::create(&temp_path)
+            .await
+            .map_err(VfsTempError::Io)?;
         // Mark as active file to prevent accidental deletion by cleanup task
-        self.active_files.write().await.insert(temp_path.to_path_buf());
-        yhlog("debug", &format!("Created user temp file: {}", temp_path.display()));
+        self.active_files
+            .write()
+            .await
+            .insert(temp_path.to_path_buf());
+        yhlog(
+            "debug",
+            &format!("Created user temp file: {}", temp_path.display()),
+        );
         // Return file path and guard
         let guard = VfsTempFileGuard {
             path: temp_path.to_path_buf(),
@@ -77,17 +96,33 @@ impl VfsTempFileManager {
         Ok((temp_path, guard))
     }
     /// Create temporary directory for user
-    pub async fn create_user_temp_dir(&self, user_id: &str, prefix: &str) -> Result<(PathBuf, VfsTempDirGuard), VfsTempError> {
+    pub async fn create_user_temp_dir(
+        &self,
+        user_id: &str,
+        prefix: &str,
+    ) -> Result<(PathBuf, VfsTempDirGuard), VfsTempError> {
         let user_temp_dir = self.get_user_temp_dir(user_id);
-        fs::create_dir_all(&user_temp_dir).await.map_err(VfsTempError::Io)?;
+        fs::create_dir_all(&user_temp_dir)
+            .await
+            .map_err(VfsTempError::Io)?;
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%f").to_string();
-        let random_suffix: String = (0..8).map(|_| char::from(b'a' + (std::process::id() as u8 % 26))).collect();
+        let random_suffix: String = (0..8)
+            .map(|_| char::from(b'a' + (std::process::id() as u8 % 26)))
+            .collect();
         let temp_dir_name = format!("{}_{}_{}", prefix, timestamp, random_suffix);
         let temp_dir_path = user_temp_dir.join(temp_dir_name);
-        fs::create_dir_all(&temp_dir_path).await.map_err(VfsTempError::Io)?;
+        fs::create_dir_all(&temp_dir_path)
+            .await
+            .map_err(VfsTempError::Io)?;
         // Mark as active directory to prevent accidental deletion by cleanup task
-        self.active_files.write().await.insert(temp_dir_path.to_path_buf());
-        yhlog("debug", &format!("Created user temp directory: {}", temp_dir_path.display()));
+        self.active_files
+            .write()
+            .await
+            .insert(temp_dir_path.to_path_buf());
+        yhlog(
+            "debug",
+            &format!("Created user temp directory: {}", temp_dir_path.display()),
+        );
         // Return directory path and guard
         let guard = VfsTempDirGuard {
             path: temp_dir_path.to_path_buf(),
@@ -103,11 +138,18 @@ impl VfsTempFileManager {
         self.active_files.write().await.remove(path);
         if path.exists() {
             if path.is_dir() {
-                tokio::fs::remove_dir_all(path).await.map_err(VfsTempError::Io)?;
+                tokio::fs::remove_dir_all(path)
+                    .await
+                    .map_err(VfsTempError::Io)?;
             } else {
-                tokio::fs::remove_file(path).await.map_err(VfsTempError::Io)?;
+                tokio::fs::remove_file(path)
+                    .await
+                    .map_err(VfsTempError::Io)?;
             }
-            yhlog("debug", &format!("Immediately cleaned up: {}", path.display()));
+            yhlog(
+                "debug",
+                &format!("Immediately cleaned up: {}", path.display()),
+            );
         }
         Ok(())
     }
@@ -116,13 +158,23 @@ impl VfsTempFileManager {
         if !self.temp_dir.exists() {
             return Ok(0);
         }
-        let cutoff_time = std::time::SystemTime::now() - std::time::Duration::from_secs(self.max_age_seconds);
+        let cutoff_time =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(self.max_age_seconds);
         let active_files = self.active_files.read().await;
         let mut cleaned_count = 0;
         // Use unified cleanup function
-        cleanup_temp_files_at_path_with_tracking(&self.temp_dir, &cutoff_time, &active_files, &mut cleaned_count).await?;
+        cleanup_temp_files_at_path_with_tracking(
+            &self.temp_dir,
+            &cutoff_time,
+            &active_files,
+            &mut cleaned_count,
+        )
+        .await?;
         if cleaned_count > 0 {
-            yhlog("info", &format!("Cleaned {} expired temporary files", cleaned_count));
+            yhlog(
+                "info",
+                &format!("Cleaned {} expired temporary files", cleaned_count),
+            );
         }
         Ok(cleaned_count)
     }
@@ -172,7 +224,13 @@ impl Drop for VfsTempFileGuard {
                 // VFS takes over cleanup
                 tokio::spawn(async move {
                     if let Err(e) = op.delete(&logical_path).await {
-                        yhlog("warn", &format!("VFS Cleanup: Failed to delete virtual temp file {}: {}", logical_path, e));
+                        yhlog(
+                            "warn",
+                            &format!(
+                                "VFS Cleanup: Failed to delete virtual temp file {}: {}",
+                                logical_path, e
+                            ),
+                        );
                     }
                 });
             } else {
@@ -182,7 +240,10 @@ impl Drop for VfsTempFileGuard {
                     if let Err(e) = std::fs::remove_file(&path) {
                         // Only warn if file exists
                         if e.kind() != std::io::ErrorKind::NotFound {
-                            yhlog("warn", &format!("Failed to cleanup temp file {:?}: {}", path, e));
+                            yhlog(
+                                "warn",
+                                &format!("Failed to cleanup temp file {:?}: {}", path, e),
+                            );
                         }
                     }
                 });
@@ -221,7 +282,13 @@ impl Drop for VfsTempDirGuard {
                 // VFS takes over cleanup
                 tokio::spawn(async move {
                     if let Err(e) = op.remove_all(&logical_path).await {
-                        yhlog("warn", &format!("VFS Cleanup: Failed to remove virtual temp directory {}: {}", logical_path, e));
+                        yhlog(
+                            "warn",
+                            &format!(
+                                "VFS Cleanup: Failed to remove virtual temp directory {}: {}",
+                                logical_path, e
+                            ),
+                        );
                     }
                 });
             } else {
@@ -231,7 +298,10 @@ impl Drop for VfsTempDirGuard {
                     if let Err(e) = std::fs::remove_dir_all(&path)
                         && e.kind() != std::io::ErrorKind::NotFound
                     {
-                        yhlog("warn", &format!("Failed to cleanup temp directory {:?}: {}", path, e));
+                        yhlog(
+                            "warn",
+                            &format!("Failed to cleanup temp directory {:?}: {}", path, e),
+                        );
                     }
                 });
             }
@@ -247,7 +317,12 @@ pub enum VfsTempError {
     Other(String),
 }
 /// Internal function to clean up temporary files at specified path (with active file tracking)
-async fn cleanup_temp_files_at_path_with_tracking(temp_dir: &Path, cutoff_time: &std::time::SystemTime, active_files: &HashSet<PathBuf>, cleaned_count: &mut usize) -> Result<(), VfsTempError> {
+async fn cleanup_temp_files_at_path_with_tracking(
+    temp_dir: &Path,
+    cutoff_time: &std::time::SystemTime,
+    active_files: &HashSet<PathBuf>,
+    cleaned_count: &mut usize,
+) -> Result<(), VfsTempError> {
     if !temp_dir.exists() {
         return Ok(());
     }
@@ -256,17 +331,33 @@ async fn cleanup_temp_files_at_path_with_tracking(temp_dir: &Path, cutoff_time: 
         let path = entry.path();
         if path.is_dir() {
             // Recursively process subdirectories
-            Box::pin(cleanup_temp_files_at_path_with_tracking(&path, cutoff_time, active_files, cleaned_count)).await?;
+            Box::pin(cleanup_temp_files_at_path_with_tracking(
+                &path,
+                cutoff_time,
+                active_files,
+                cleaned_count,
+            ))
+            .await?;
             // If directory is empty, try to delete it
             if let Ok(mut sub_entries) = tokio::fs::read_dir(&path).await
                 && sub_entries.next_entry().await.is_ok_and(|e| e.is_none())
             {
                 match tokio::fs::remove_dir(&path).await {
                     Ok(_) => {
-                        yhlog("debug", &format!("Removed empty temporary directory: {}", path.display()));
+                        yhlog(
+                            "debug",
+                            &format!("Removed empty temporary directory: {}", path.display()),
+                        );
                     }
                     Err(e) => {
-                        yhlog("warn", &format!("Failed to remove empty temporary directory {}: {}", path.display(), e));
+                        yhlog(
+                            "warn",
+                            &format!(
+                                "Failed to remove empty temporary directory {}: {}",
+                                path.display(),
+                                e
+                            ),
+                        );
                     }
                 }
             }
@@ -283,10 +374,16 @@ async fn cleanup_temp_files_at_path_with_tracking(temp_dir: &Path, cutoff_time: 
                 match tokio::fs::remove_file(&path).await {
                     Ok(_) => {
                         *cleaned_count += 1;
-                        yhlog("debug", &format!("Removed expired temporary file: {}", path.display()));
+                        yhlog(
+                            "debug",
+                            &format!("Removed expired temporary file: {}", path.display()),
+                        );
                     }
                     Err(e) => {
-                        yhlog("warn", &format!("Failed to remove temporary file {}: {}", path.display(), e));
+                        yhlog(
+                            "warn",
+                            &format!("Failed to remove temporary file {}: {}", path.display(), e),
+                        );
                     }
                 }
             }
@@ -295,8 +392,9 @@ async fn cleanup_temp_files_at_path_with_tracking(temp_dir: &Path, cutoff_time: 
     Ok(())
 }
 /// Global temporary file manager instance
-static GLOBAL_TEMP_MANAGER: once_cell::sync::Lazy<tokio::sync::RwLock<Option<Arc<VfsTempFileManager>>>> =
-    once_cell::sync::Lazy::new(|| tokio::sync::RwLock::new(None));
+static GLOBAL_TEMP_MANAGER: once_cell::sync::Lazy<
+    tokio::sync::RwLock<Option<Arc<VfsTempFileManager>>>,
+> = once_cell::sync::Lazy::new(|| tokio::sync::RwLock::new(None));
 /// Initialize global temporary file manager
 pub async fn init_global_temp_manager(manager: VfsTempFileManager) {
     let mut guard = GLOBAL_TEMP_MANAGER.write().await;

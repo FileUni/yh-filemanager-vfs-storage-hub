@@ -22,7 +22,13 @@ pub struct Model {
 }
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(belongs_to = "super::file_index::Entity", from = "(Column::FileIndexId, Column::UserId)", to = "(super::file_index::Column::Id, super::file_index::Column::UserId)", on_update = "NoAction", on_delete = "Cascade")]
+    #[sea_orm(
+        belongs_to = "super::file_index::Entity",
+        from = "(Column::FileIndexId, Column::UserId)",
+        to = "(super::file_index::Column::Id, super::file_index::Column::UserId)",
+        on_update = "NoAction",
+        on_delete = "Cascade"
+    )]
     FileIndex,
 }
 impl Related<super::file_index::Entity> for Entity {

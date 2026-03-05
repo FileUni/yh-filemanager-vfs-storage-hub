@@ -60,15 +60,32 @@ impl ShareService {
         let mut rng = rand::thread_rng();
         let salt = SaltString::generate(&mut rng);
         let argon2 = Argon2::default();
-        Ok(argon2.hash_password(password.as_bytes(), &salt).map_err(|e| DbErr::Custom(format!("Password hashing failed: {}", e)))?.to_string())
+        Ok(argon2
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| DbErr::Custom(format!("Password hashing failed: {}", e)))?
+            .to_string())
     }
     ///()
-    pub async fn create_share(db: &DatabaseConnection, params: CreateShareParams<'_>) -> VfsCommonResult<file_share::Model> {
+    pub async fn create_share(
+        db: &DatabaseConnection,
+        params: CreateShareParams<'_>,
+    ) -> VfsCommonResult<file_share::Model> {
         //8 ID
-        let id: String = rand::thread_rng().sample_iter(&Alphanumeric).take(8).map(char::from).collect();
-        let expire_at = params.expire_days.map(|days| Utc::now() + chrono::Duration::days(days as i64)).map(|dt| dt.into());
+        let id: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(8)
+            .map(char::from)
+            .collect();
+        let expire_at = params
+            .expire_days
+            .map(|days| Utc::now() + chrono::Duration::days(days as i64))
+            .map(|dt| dt.into());
         let is_public = params.password.is_none();
-        let password_hash = if let Some(pwd) = params.password { Some(Self::hash_password(&pwd)?) } else { None };
+        let password_hash = if let Some(pwd) = params.password {
+            Some(Self::hash_password(&pwd)?)
+        } else {
+            None
+        };
         let model = file_share::ActiveModel {
             id: Set(id),
             file_index_id: Set(params.file_index_id.to_string()),
@@ -88,7 +105,10 @@ impl ShareService {
         Ok(model.insert(db).await?)
     }
     /// Update share
-    pub async fn update_share(db: &DatabaseConnection, params: UpdateShareParams<'_>) -> VfsCommonResult<file_share::Model> {
+    pub async fn update_share(
+        db: &DatabaseConnection,
+        params: UpdateShareParams<'_>,
+    ) -> VfsCommonResult<file_share::Model> {
         let mut share: file_share::ActiveModel = file_share::Entity::find_by_id(params.id)
             .filter(file_share::Column::UserId.eq(params.user_id))
             .filter(file_share::Column::IsDeleted.eq(false))
@@ -138,17 +158,30 @@ impl ShareService {
         let Ok(parsed_hash) = PasswordHash::new(stored_hash) else {
             return false;
         };
-        Argon2::default().verify_password(provided_password.as_bytes(), &parsed_hash).is_ok()
+        Argon2::default()
+            .verify_password(provided_password.as_bytes(), &parsed_hash)
+            .is_ok()
     }
     #[allow(clippy::manual_unwrap_or)]
-    pub async fn list_user_shares_paginated(db: &DatabaseConnection, user_id: &str, options: ShareQueryOptions) -> VfsCommonResult<(Vec<(file_share::Model, Option<file_index::Model>)>, u64)> {
-        let mut query = file_share::Entity::find().find_also_related(file_index::Entity).filter(file_share::Column::UserId.eq(user_id)).filter(file_share::Column::IsDeleted.eq(false));
+    pub async fn list_user_shares_paginated(
+        db: &DatabaseConnection,
+        user_id: &str,
+        options: ShareQueryOptions,
+    ) -> VfsCommonResult<(Vec<(file_share::Model, Option<file_index::Model>)>, u64)> {
+        let mut query = file_share::Entity::find()
+            .find_also_related(file_index::Entity)
+            .filter(file_share::Column::UserId.eq(user_id))
+            .filter(file_share::Column::IsDeleted.eq(false));
         // Search filter
         if let Some(kw) = &options.keyword
             && !kw.is_empty()
         {
             // Search on related file name or path
-            query = query.filter(file_index::Column::Name.contains(kw).or(file_index::Column::Path.contains(kw)));
+            query = query.filter(
+                file_index::Column::Name
+                    .contains(kw)
+                    .or(file_index::Column::Path.contains(kw)),
+            );
         }
         // Filter: has password
         if let Some(true) = options.has_password {
@@ -217,12 +250,22 @@ impl ShareService {
         let items = paginator.fetch_page(options.page.saturating_sub(1)).await?;
         Ok((items, total))
     }
-    pub async fn get_share(db: &DatabaseConnection, id: &str) -> VfsCommonResult<Option<(file_share::Model, Option<file_index::Model>)>> {
-        Ok(file_share::Entity::find_by_id(id).find_also_related(file_index::Entity).filter(file_share::Column::IsDeleted.eq(false)).one(db).await?)
+    pub async fn get_share(
+        db: &DatabaseConnection,
+        id: &str,
+    ) -> VfsCommonResult<Option<(file_share::Model, Option<file_index::Model>)>> {
+        Ok(file_share::Entity::find_by_id(id)
+            .find_also_related(file_index::Entity)
+            .filter(file_share::Column::IsDeleted.eq(false))
+            .one(db)
+            .await?)
     }
     pub async fn increment_view_count(db: &DatabaseConnection, id: &str) -> VfsCommonResult<()> {
         file_share::Entity::update_many()
-            .col_expr(file_share::Column::ViewCount, Expr::col(file_share::Column::ViewCount).add(1))
+            .col_expr(
+                file_share::Column::ViewCount,
+                Expr::col(file_share::Column::ViewCount).add(1),
+            )
             .filter(file_share::Column::Id.eq(id))
             .filter(file_share::Column::IsDeleted.eq(false))
             .exec(db)
@@ -230,7 +273,11 @@ impl ShareService {
         Ok(())
     }
     /// Delete share
-    pub async fn delete_share(db: &DatabaseConnection, user_id: &str, id: &str) -> VfsCommonResult<()> {
+    pub async fn delete_share(
+        db: &DatabaseConnection,
+        user_id: &str,
+        id: &str,
+    ) -> VfsCommonResult<()> {
         file_share::Entity::update_many()
             .col_expr(file_share::Column::IsDeleted, Expr::value(true))
             .filter(file_share::Column::Id.eq(id))
@@ -240,7 +287,10 @@ impl ShareService {
         Ok(())
     }
     /// Delete all shares for a user
-    pub async fn delete_all_user_shares(db: &DatabaseConnection, user_id: &str) -> VfsCommonResult<()> {
+    pub async fn delete_all_user_shares(
+        db: &DatabaseConnection,
+        user_id: &str,
+    ) -> VfsCommonResult<()> {
         file_share::Entity::update_many()
             .col_expr(file_share::Column::IsDeleted, Expr::value(true))
             .filter(file_share::Column::UserId.eq(user_id))

@@ -2,7 +2,9 @@ use super::super::entities::ssh_keys;
 use super::{VfsCommonError, VfsCommonResult};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, ModelTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, ModelTrait, QueryFilter, Set,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -24,7 +26,13 @@ pub struct SshKeyService;
 
 impl SshKeyService {
     /// SSH
-    pub async fn add_key(db: &DatabaseConnection, user_id: &str, key_name: &str, public_key: &str, comment: Option<String>) -> VfsCommonResult<SshKeyInfo> {
+    pub async fn add_key(
+        db: &DatabaseConnection,
+        user_id: &str,
+        key_name: &str,
+        public_key: &str,
+        comment: Option<String>,
+    ) -> VfsCommonResult<SshKeyInfo> {
         let (fingerprint, key_type) = Self::parse_public_key(public_key)?;
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
@@ -54,15 +62,29 @@ impl SshKeyService {
     }
 
     /// SSH
-    pub async fn delete_key(db: &DatabaseConnection, user_id: &str, key_id: &str) -> VfsCommonResult<()> {
-        let key = ssh_keys::Entity::find_by_id(key_id.to_string()).filter(ssh_keys::Column::UserId.eq(user_id)).one(db).await?.ok_or(VfsCommonError::Internal("SSH key not found".to_string()))?;
+    pub async fn delete_key(
+        db: &DatabaseConnection,
+        user_id: &str,
+        key_id: &str,
+    ) -> VfsCommonResult<()> {
+        let key = ssh_keys::Entity::find_by_id(key_id.to_string())
+            .filter(ssh_keys::Column::UserId.eq(user_id))
+            .one(db)
+            .await?
+            .ok_or(VfsCommonError::Internal("SSH key not found".to_string()))?;
         key.delete(db).await?;
         Ok(())
     }
 
     /// SSH
-    pub async fn list_keys(db: &DatabaseConnection, user_id: &str) -> VfsCommonResult<Vec<SshKeyInfo>> {
-        let keys = ssh_keys::Entity::find().filter(ssh_keys::Column::UserId.eq(user_id)).all(db).await?;
+    pub async fn list_keys(
+        db: &DatabaseConnection,
+        user_id: &str,
+    ) -> VfsCommonResult<Vec<SshKeyInfo>> {
+        let keys = ssh_keys::Entity::find()
+            .filter(ssh_keys::Column::UserId.eq(user_id))
+            .all(db)
+            .await?;
         Ok(keys
             .into_iter()
             .map(|k| SshKeyInfo {
@@ -80,7 +102,10 @@ impl SshKeyService {
     }
 
     pub async fn update_last_used(db: &DatabaseConnection, key_id: &str) -> VfsCommonResult<()> {
-        let key = ssh_keys::Entity::find_by_id(key_id.to_string()).one(db).await?.ok_or(VfsCommonError::Internal("SSH key not found".to_string()))?;
+        let key = ssh_keys::Entity::find_by_id(key_id.to_string())
+            .one(db)
+            .await?
+            .ok_or(VfsCommonError::Internal("SSH key not found".to_string()))?;
         let active_key: ssh_keys::ActiveModel = key.into();
         let mut active_key = active_key;
         active_key.last_used_at = Set(Some(Utc::now()));
@@ -92,31 +117,61 @@ impl SshKeyService {
     fn parse_public_key(public_key: &str) -> VfsCommonResult<(String, String)> {
         let parts: Vec<&str> = public_key.split_whitespace().collect();
         if parts.len() < 2 {
-            return Err(VfsCommonError::Internal("Invalid SSH public key format".to_string()));
+            return Err(VfsCommonError::Internal(
+                "Invalid SSH public key format".to_string(),
+            ));
         }
-        let key_type = parts.first().ok_or_else(|| VfsCommonError::Internal("Missing key type".to_string()))?.to_string();
-        let key_data = parts.get(1).ok_or_else(|| VfsCommonError::Internal("Missing key data".to_string()))?;
-        
+        let key_type = parts
+            .first()
+            .ok_or_else(|| VfsCommonError::Internal("Missing key type".to_string()))?
+            .to_string();
+        let key_data = parts
+            .get(1)
+            .ok_or_else(|| VfsCommonError::Internal("Missing key data".to_string()))?;
+
         use sha2::{Digest, Sha256};
-        let decoded = general_purpose::STANDARD.decode(key_data).map_err(|_| VfsCommonError::Internal("Invalid base64 encoding".to_string()))?;
+        let decoded = general_purpose::STANDARD
+            .decode(key_data)
+            .map_err(|_| VfsCommonError::Internal("Invalid base64 encoding".to_string()))?;
         let hash = Sha256::digest(&decoded);
-        let fingerprint = hash.iter().map(|b| format!("{:02x}", b)).collect::<Vec<String>>().join(":");
+        let fingerprint = hash
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<String>>()
+            .join(":");
         Ok((fingerprint, key_type))
     }
 
     pub fn validate_public_key(public_key: &str) -> VfsCommonResult<()> {
         let parts: Vec<&str> = public_key.split_whitespace().collect();
         if parts.len() < 2 {
-            return Err(VfsCommonError::Internal("Invalid SSH public key format".to_string()));
+            return Err(VfsCommonError::Internal(
+                "Invalid SSH public key format".to_string(),
+            ));
         }
-        let key_type = parts.first().ok_or_else(|| VfsCommonError::Internal("Missing key type".to_string()))?;
-        let valid_types = ["ssh-rsa", "ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"];
+        let key_type = parts
+            .first()
+            .ok_or_else(|| VfsCommonError::Internal("Missing key type".to_string()))?;
+        let valid_types = [
+            "ssh-rsa",
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+        ];
         if !valid_types.contains(key_type) {
-            return Err(VfsCommonError::Internal(format!("Unsupported SSH key type: {}", key_type)));
+            return Err(VfsCommonError::Internal(format!(
+                "Unsupported SSH key type: {}",
+                key_type
+            )));
         }
-        
-        let key_data = parts.get(1).ok_or_else(|| VfsCommonError::Internal("Missing key data".to_string()))?;
-        general_purpose::STANDARD.decode(key_data).map_err(|_| VfsCommonError::Internal("Invalid base64 encoding".to_string()))?;
+
+        let key_data = parts
+            .get(1)
+            .ok_or_else(|| VfsCommonError::Internal("Missing key data".to_string()))?;
+        general_purpose::STANDARD
+            .decode(key_data)
+            .map_err(|_| VfsCommonError::Internal("Invalid base64 encoding".to_string()))?;
         Ok(())
     }
 }

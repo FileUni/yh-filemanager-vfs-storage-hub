@@ -7,11 +7,21 @@ use std::sync::Arc;
 impl ScopedVfsStorageEngine {
     pub(super) async fn set_favorite_impl(&self, path: &str, color: i32) -> VfsResult<VfsFileInfo> {
         let info = self.stat_impl(path).await?;
-        let _ = self.index_service.set_favorite_color(&self.user_id, &info.path, color).await;
+        let _ = self
+            .index_service
+            .set_favorite_color(&self.user_id, &info.path, color)
+            .await;
         self.stat_impl(path).await
     }
-    pub(super) async fn list_favorites_impl(&self, color_filter: Option<i32>) -> VfsResult<Vec<VfsFileInfo>> {
-        let list = self.index_service.list_favorites(&self.user_id, color_filter).await.map_err(|e| VfsError::Internal(e.to_string()))?;
+    pub(super) async fn list_favorites_impl(
+        &self,
+        color_filter: Option<i32>,
+    ) -> VfsResult<Vec<VfsFileInfo>> {
+        let list = self
+            .index_service
+            .list_favorites(&self.user_id, color_filter)
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
         Ok(list
             .into_iter()
             .map(|e| VfsFileInfo {
@@ -29,8 +39,16 @@ impl ScopedVfsStorageEngine {
             .collect())
     }
     /// Favorites list pagination implementation
-    pub(super) async fn list_favorites_paginated_impl(&self, params: crate::vfs::VfsPaginationParams<'_>, color_filter: Option<i32>) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
-        let (list, total) = self.index_service.list_favorites_paginated(&self.user_id, params, color_filter).await.map_err(|e| VfsError::Internal(e.to_string()))?;
+    pub(super) async fn list_favorites_paginated_impl(
+        &self,
+        params: crate::vfs::VfsPaginationParams<'_>,
+        color_filter: Option<i32>,
+    ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
+        let (list, total) = self
+            .index_service
+            .list_favorites_paginated(&self.user_id, params, color_filter)
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
         let files = list
             .into_iter()
             .map(|e| VfsFileInfo {
@@ -53,21 +71,36 @@ impl ScopedVfsStorageEngine {
         let info = self.stat_impl(path).await?;
         let timestamp = chrono::Utc::now().timestamp();
         let trash_path = format!("/.recycle_bin/{}_{}", timestamp, info.name);
-        let _ = self.index_service.trash_file(&self.user_id, &info.path, &trash_path).await;
+        let _ = self
+            .index_service
+            .trash_file(&self.user_id, &info.path, &trash_path)
+            .await;
         self.move_file_impl(path, &trash_path).await
     }
     pub(super) async fn restore_from_trash_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
-        if let Ok(Some(meta)) = self.index_service.get_file_metadata(&self.user_id, path).await
+        if let Ok(Some(meta)) = self
+            .index_service
+            .get_file_metadata(&self.user_id, path)
+            .await
             && let Some(orig) = meta.original_path
         {
-            let _ = self.index_service.restore_file(&self.user_id, path, &orig).await;
+            let _ = self
+                .index_service
+                .restore_file(&self.user_id, path, &orig)
+                .await;
             return self.move_file_impl(path, &orig).await;
         }
-        Err(VfsError::Internal("Not in trash or original path lost".to_string()))
+        Err(VfsError::Internal(
+            "Not in trash or original path lost".to_string(),
+        ))
     }
     pub(super) async fn list_trash_impl(&self) -> VfsResult<Vec<VfsFileInfo>> {
-        let list = self.index_service.list_trash(&self.user_id).await.map_err(|e| VfsError::Internal(e.to_string()))?;
+        let list = self
+            .index_service
+            .list_trash(&self.user_id)
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
         Ok(list
             .into_iter()
             .map(|e| VfsFileInfo {
@@ -95,7 +128,11 @@ impl ScopedVfsStorageEngine {
         //3. Prepare batch Upsert data
         let mut active_models = Vec::with_capacity(p_entries.len());
         let now = chrono::Utc::now();
-        let norm_path = if normalized == "/" { "/" } else { normalized.trim_end_matches('/') };
+        let norm_path = if normalized == "/" {
+            "/"
+        } else {
+            normalized.trim_end_matches('/')
+        };
         let norm_path_slash = format!("{}/", norm_path);
         for e in p_entries {
             let translated = self.translate_file_info(e, false);
@@ -130,11 +167,18 @@ impl ScopedVfsStorageEngine {
             });
         }
         //4. Invoke optimized batch sync service
-        self.index_service.sync_directory_optimized(&self.user_id, &normalized, active_models).await.map_err(|e| VfsError::Internal(e.to_string()))?;
+        self.index_service
+            .sync_directory_optimized(&self.user_id, &normalized, active_models)
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
         //5. Invalidate parent cache
         self.cache.invalidate("ls", &normalized).await;
         //6. Re-fetch merged list from DB to include favorite_color, etc.
-        let merged_entries = self.index_service.list_files(&self.user_id, &normalized).await.map_err(|e| VfsError::Internal(e.to_string()))?;
+        let merged_entries = self
+            .index_service
+            .list_files(&self.user_id, &normalized)
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
         Ok(merged_entries
             .into_iter()
             .map(|e| VfsFileInfo {
@@ -155,26 +199,41 @@ impl ScopedVfsStorageEngine {
         let service = Arc::clone(&self.index_service);
         let uid = Arc::clone(&self.user_id);
         let p = path.to_string();
-        Box::pin(async move { service.get_total_size(uid.as_ref(), &p).await.map_err(|e| VfsError::Internal(e.to_string())) })
+        Box::pin(async move {
+            service
+                .get_total_size(uid.as_ref(), &p)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))
+        })
     }
     pub(super) async fn batch_remove_impl(&self, paths: &[String]) -> VfsResult<VfsBatchResult> {
         let mut result = VfsBatchResult::default();
         for p in paths {
             match self.delete_impl(p).await {
                 Ok(_) => result.success.push(p.as_str().into()),
-                Err(e) => result.failed.push(VfsBatchError { path: p.as_str().into(), error: e.to_string().into() }),
+                Err(e) => result.failed.push(VfsBatchError {
+                    path: p.as_str().into(),
+                    error: e.to_string().into(),
+                }),
             }
         }
         Ok(result)
     }
-    pub(super) async fn batch_move_impl(&self, src_paths: &[String], dst_dir: &str) -> VfsResult<VfsBatchResult> {
+    pub(super) async fn batch_move_impl(
+        &self,
+        src_paths: &[String],
+        dst_dir: &str,
+    ) -> VfsResult<VfsBatchResult> {
         let mut result = VfsBatchResult::default();
         for s in src_paths {
             let filename = s.split('/').next_back().map_or("", |value| value);
             let d = format!("{}/{}", dst_dir.trim_end_matches('/'), filename);
             match self.move_file_impl(s, &d).await {
                 Ok(_) => result.success.push(s.as_str().into()),
-                Err(e) => result.failed.push(VfsBatchError { path: s.as_str().into(), error: e.to_string().into() }),
+                Err(e) => result.failed.push(VfsBatchError {
+                    path: s.as_str().into(),
+                    error: e.to_string().into(),
+                }),
             }
         }
         Ok(result)

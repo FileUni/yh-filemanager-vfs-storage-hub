@@ -10,12 +10,28 @@ pub mod entity;
 /// Write-Ahead Log Operation Types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WalOperation {
-    Write { path: String, size: u64 },
-    Delete { path: String },
-    Move { src: String, dst: String },
-    Rename { old_path: String, new_path: String },
-    CreateDir { path: String },
-    RestoreTrash { trash_path: String, original_path: String },
+    Write {
+        path: String,
+        size: u64,
+    },
+    Delete {
+        path: String,
+    },
+    Move {
+        src: String,
+        dst: String,
+    },
+    Rename {
+        old_path: String,
+        new_path: String,
+    },
+    CreateDir {
+        path: String,
+    },
+    RestoreTrash {
+        trash_path: String,
+        original_path: String,
+    },
 }
 impl WalOperation {
     pub fn as_str(&self) -> &str {
@@ -48,18 +64,36 @@ impl VfsWalManager {
     pub async fn init_tables(&self) -> Result<(), DbErr> {
         let backend = self.db.get_database_backend();
         let schema = Schema::new(backend);
-        let stmt = schema.create_table_from_entity(entity::Entity).if_not_exists().to_owned();
+        let stmt = schema
+            .create_table_from_entity(entity::Entity)
+            .if_not_exists()
+            .to_owned();
         self.db.execute(backend.build(&stmt)).await?;
 
-        let idx_user = Index::create().name("idx_vfs_wal_user").table(entity::Entity).col(entity::Column::UserId).if_not_exists().to_owned();
-        let idx_type = Index::create().name("idx_vfs_wal_type").table(entity::Entity).col(entity::Column::OperationType).if_not_exists().to_owned();
+        let idx_user = Index::create()
+            .name("idx_vfs_wal_user")
+            .table(entity::Entity)
+            .col(entity::Column::UserId)
+            .if_not_exists()
+            .to_owned();
+        let idx_type = Index::create()
+            .name("idx_vfs_wal_type")
+            .table(entity::Entity)
+            .col(entity::Column::OperationType)
+            .if_not_exists()
+            .to_owned();
 
         self.db.execute(backend.build(&idx_user)).await?;
         self.db.execute(backend.build(&idx_type)).await?;
         Ok(())
     }
-    pub async fn log_operation(&self, user_id: &str, operation: WalOperation) -> Result<i64, DbErr> {
-        let op_json = serde_json::to_string(&operation).map_err(|e| DbErr::Custom(e.to_string()))?;
+    pub async fn log_operation(
+        &self,
+        user_id: &str,
+        operation: WalOperation,
+    ) -> Result<i64, DbErr> {
+        let op_json =
+            serde_json::to_string(&operation).map_err(|e| DbErr::Custom(e.to_string()))?;
         let active_model = entity::ActiveModel {
             user_id: Set(user_id.to_string()),
             operation_type: Set(operation.as_str().to_string()),
@@ -80,9 +114,16 @@ impl VfsWalManager {
         Ok(res.rows_affected)
     }
     pub async fn recover_all(&self, hub: Arc<VfsStorageHub>) -> Result<WalRecoveryResult, DbErr> {
-        let rows = entity::Entity::find().order_by_asc(entity::Column::Id).all(&*self.db).await?;
+        let rows = entity::Entity::find()
+            .order_by_asc(entity::Column::Id)
+            .all(&*self.db)
+            .await?;
         if rows.is_empty() {
-            return Ok(WalRecoveryResult { recovered: 0, failed: 0, errors: vec![] });
+            return Ok(WalRecoveryResult {
+                recovered: 0,
+                failed: 0,
+                errors: vec![],
+            });
         }
         // Identify and lock affected users
         let mut affected_users: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -94,9 +135,16 @@ impl VfsWalManager {
             _guards.push(crate::vfs::enter_user_maintenance(uid));
         }
         // Sequential recovery
-        let mut result = WalRecoveryResult { recovered: 0, failed: 0, errors: vec![] };
+        let mut result = WalRecoveryResult {
+            recovered: 0,
+            failed: 0,
+            errors: vec![],
+        };
         for row in rows {
-            match self.recover_one(row.id, &row.user_id, &row.operation_data, &hub).await {
+            match self
+                .recover_one(row.id, &row.user_id, &row.operation_data, &hub)
+                .await
+            {
                 Ok(_) => result.recovered += 1,
                 Err(e) => {
                     result.failed += 1;
@@ -106,15 +154,27 @@ impl VfsWalManager {
         }
         Ok(result)
     }
-    async fn recover_one(&self, log_id: i64, user_id: &str, op_data: &str, hub: &Arc<VfsStorageHub>) -> Result<(), String> {
+    async fn recover_one(
+        &self,
+        log_id: i64,
+        user_id: &str,
+        op_data: &str,
+        hub: &Arc<VfsStorageHub>,
+    ) -> Result<(), String> {
         let op: WalOperation = serde_json::from_str(op_data).map_err(|e| e.to_string())?;
-        let engine = hub.create_scoped_engine(Arc::clone(&self.db), user_id, "100", None).await.map_err(|e| e.to_string())?;
+        let engine = hub
+            .create_scoped_engine(Arc::clone(&self.db), user_id, "100", None)
+            .await
+            .map_err(|e| e.to_string())?;
         macro_rules! exists_or_log {
             ($path:expr) => {
                 match engine.exists($path).await {
                     Ok(exists) => exists,
                     Err(err) => {
-                        yh_console_log::yhlog("warn", &format!("WAL: failed to check path existence [{}]: {}", $path, err));
+                        yh_console_log::yhlog(
+                            "warn",
+                            &format!("WAL: failed to check path existence [{}]: {}", $path, err),
+                        );
                         false
                     }
                 }
@@ -127,13 +187,23 @@ impl VfsWalManager {
                 // Only delete .tmp files
                 if exists_or_log!(&tmp) {
                     let _ = engine.delete(&tmp).await;
-                    yh_console_log::yhlog("info", &format!("WAL: Cleaned orphaned temp file {}", tmp));
+                    yh_console_log::yhlog(
+                        "info",
+                        &format!("WAL: Cleaned orphaned temp file {}", tmp),
+                    );
                 }
                 // For target files, don't blindly delete
                 if exists_or_log!(&path) {
-                    let corrupted_path = format!("{}.corrupted_{}", path, chrono::Utc::now().timestamp());
+                    let corrupted_path =
+                        format!("{}.corrupted_{}", path, chrono::Utc::now().timestamp());
                     let _ = engine.move_file(&path, &corrupted_path).await;
-                    yh_console_log::yhlog("warn", &format!("WAL: Preserved potentially incomplete file by renaming to {}", corrupted_path));
+                    yh_console_log::yhlog(
+                        "warn",
+                        &format!(
+                            "WAL: Preserved potentially incomplete file by renaming to {}",
+                            corrupted_path
+                        ),
+                    );
                 }
             }
             WalOperation::Delete { path } => {
@@ -141,7 +211,11 @@ impl VfsWalManager {
                     let _ = engine.delete(&path).await;
                 }
             }
-            WalOperation::Move { src, dst } | WalOperation::Rename { old_path: src, new_path: dst } => {
+            WalOperation::Move { src, dst }
+            | WalOperation::Rename {
+                old_path: src,
+                new_path: dst,
+            } => {
                 let src_exists = exists_or_log!(&src);
                 let dst_exists = exists_or_log!(&dst);
                 if src_exists && !dst_exists {
@@ -160,26 +234,49 @@ impl VfsWalManager {
                             }
                         }
                         Err(err) => {
-                            yh_console_log::yhlog("warn", &format!("WAL: failed to list dir [{}] during recovery: {}", path, err));
+                            yh_console_log::yhlog(
+                                "warn",
+                                &format!(
+                                    "WAL: failed to list dir [{}] during recovery: {}",
+                                    path, err
+                                ),
+                            );
                         }
                     }
                 }
             }
-            WalOperation::RestoreTrash { trash_path, original_path } => {
+            WalOperation::RestoreTrash {
+                trash_path,
+                original_path,
+            } => {
                 let trash_exists = exists_or_log!(&trash_path);
                 let orig_exists = exists_or_log!(&original_path);
                 // If still in trash and target is free, continue restore
                 if trash_exists && !orig_exists {
                     let _ = engine.move_file(&trash_path, &original_path).await;
-                    yh_console_log::yhlog("info", &format!("WAL: Resumed trash restore from {} to {}", trash_path, original_path));
+                    yh_console_log::yhlog(
+                        "info",
+                        &format!(
+                            "WAL: Resumed trash restore from {} to {}",
+                            trash_path, original_path
+                        ),
+                    );
                 } else if orig_exists && !trash_exists {
                     // Already restored
                 } else if orig_exists && trash_exists {
                     // Both exist, potentially inconsistent, do nothing
-                    yh_console_log::yhlog("warn", &format!("WAL: Ambiguous state for restore {} -> {}, skipping physical op", trash_path, original_path));
+                    yh_console_log::yhlog(
+                        "warn",
+                        &format!(
+                            "WAL: Ambiguous state for restore {} -> {}, skipping physical op",
+                            trash_path, original_path
+                        ),
+                    );
                 }
             }
         }
-        self.complete_operation(log_id).await.map_err(|e| e.to_string())
+        self.complete_operation(log_id)
+            .await
+            .map_err(|e| e.to_string())
     }
 }

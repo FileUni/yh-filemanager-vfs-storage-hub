@@ -19,7 +19,15 @@ fn file_name_from_path(path: &str) -> &str {
 pub struct VfsBatchExecutor;
 impl VfsBatchExecutor {
     /// Execute batch move task
-    pub async fn execute_move(engine: Arc<ScopedVfsStorageEngine>, task_handler: Arc<dyn VfsTaskHandler>, task_id: Uuid, src_paths: Vec<String>, dst_dir: String, timeout_secs: u64, user_id: &str) {
+    pub async fn execute_move(
+        engine: Arc<ScopedVfsStorageEngine>,
+        task_handler: Arc<dyn VfsTaskHandler>,
+        task_id: Uuid,
+        src_paths: Vec<String>,
+        dst_dir: String,
+        timeout_secs: u64,
+        user_id: &str,
+    ) {
         let task_future = async {
             let mut success_count = 0;
             let mut failed_count = 0;
@@ -76,8 +84,16 @@ impl VfsBatchExecutor {
                 }
                 if (idx + 1) % 5 == 0 || idx == total - 1 {
                     let progress = ((idx + 1) as f32 / total as f32 * 100.0) as i32;
-                    let message = format!("Processed {}/{} (Success: {}, Failed: {})", idx + 1, total, success_count, failed_count);
-                    let _ = task_handler.update_task(task_id, progress, Some("running"), Some(&message)).await;
+                    let message = format!(
+                        "Processed {}/{} (Success: {}, Failed: {})",
+                        idx + 1,
+                        total,
+                        success_count,
+                        failed_count
+                    );
+                    let _ = task_handler
+                        .update_task(task_id, progress, Some("running"), Some(&message))
+                        .await;
                 }
             }
             (success_count, failed_count)
@@ -87,7 +103,15 @@ impl VfsBatchExecutor {
                 if failed_count == 0 {
                     let _ = task_handler.success_task(task_id).await;
                 } else {
-                    let _ = task_handler.fail_task(task_id, &format!("Completed with failures: {} success, {} failed", success_count, failed_count)).await;
+                    let _ = task_handler
+                        .fail_task(
+                            task_id,
+                            &format!(
+                                "Completed with failures: {} success, {} failed",
+                                success_count, failed_count
+                            ),
+                        )
+                        .await;
                 }
             }
             Err(_) => {
@@ -96,7 +120,15 @@ impl VfsBatchExecutor {
         }
     }
     /// Execute batch copy task
-    pub async fn execute_copy(engine: Arc<ScopedVfsStorageEngine>, task_handler: Arc<dyn VfsTaskHandler>, task_id: Uuid, src_paths: Vec<String>, dst_dir: String, timeout_secs: u64, user_id: &str) {
+    pub async fn execute_copy(
+        engine: Arc<ScopedVfsStorageEngine>,
+        task_handler: Arc<dyn VfsTaskHandler>,
+        task_id: Uuid,
+        src_paths: Vec<String>,
+        dst_dir: String,
+        timeout_secs: u64,
+        user_id: &str,
+    ) {
         let task_future = async {
             let mut success_count = 0;
             let mut failed_count = 0;
@@ -153,8 +185,16 @@ impl VfsBatchExecutor {
                 }
                 if (idx + 1) % 5 == 0 || idx == total - 1 {
                     let progress = ((idx + 1) as f32 / total as f32 * 100.0) as i32;
-                    let message = format!("Processed {}/{} (Success: {}, Failed: {})", idx + 1, total, success_count, failed_count);
-                    let _ = task_handler.update_task(task_id, progress, Some("running"), Some(&message)).await;
+                    let message = format!(
+                        "Processed {}/{} (Success: {}, Failed: {})",
+                        idx + 1,
+                        total,
+                        success_count,
+                        failed_count
+                    );
+                    let _ = task_handler
+                        .update_task(task_id, progress, Some("running"), Some(&message))
+                        .await;
                 }
             }
             (success_count, failed_count)
@@ -164,7 +204,15 @@ impl VfsBatchExecutor {
                 if failed_count == 0 {
                     let _ = task_handler.success_task(task_id).await;
                 } else {
-                    let _ = task_handler.fail_task(task_id, &format!("Completed with failures: {} success, {} failed", success_count, failed_count)).await;
+                    let _ = task_handler
+                        .fail_task(
+                            task_id,
+                            &format!(
+                                "Completed with failures: {} success, {} failed",
+                                success_count, failed_count
+                            ),
+                        )
+                        .await;
                 }
             }
             Err(_) => {
@@ -173,7 +221,14 @@ impl VfsBatchExecutor {
         }
     }
     /// Execute batch delete task
-    pub async fn execute_delete(engine: Arc<ScopedVfsStorageEngine>, task_handler: Arc<dyn VfsTaskHandler>, task_id: Uuid, paths: Vec<String>, timeout_secs: u64, user_id: &str) {
+    pub async fn execute_delete(
+        engine: Arc<ScopedVfsStorageEngine>,
+        task_handler: Arc<dyn VfsTaskHandler>,
+        task_id: Uuid,
+        paths: Vec<String>,
+        timeout_secs: u64,
+        user_id: &str,
+    ) {
         let task_future = async {
             let mut success_count = 0;
             let mut failed_count = 0;
@@ -224,8 +279,16 @@ impl VfsBatchExecutor {
                 }
                 if (idx + 1) % 5 == 0 || idx == total - 1 {
                     let progress = ((idx + 1) as f32 / total as f32 * 100.0) as i32;
-                    let message = format!("Processed {}/{} (Success: {}, Failed: {})", idx + 1, total, success_count, failed_count);
-                    let _ = task_handler.update_task(task_id, progress, Some("running"), Some(&message)).await;
+                    let message = format!(
+                        "Processed {}/{} (Success: {}, Failed: {})",
+                        idx + 1,
+                        total,
+                        success_count,
+                        failed_count
+                    );
+                    let _ = task_handler
+                        .update_task(task_id, progress, Some("running"), Some(&message))
+                        .await;
                 }
             }
             (success_count, failed_count)
@@ -235,7 +298,15 @@ impl VfsBatchExecutor {
                 if failed_count == 0 {
                     let _ = task_handler.success_task(task_id).await;
                 } else {
-                    let _ = task_handler.fail_task(task_id, &format!("Completed with failures: {} success, {} failed", success_count, failed_count)).await;
+                    let _ = task_handler
+                        .fail_task(
+                            task_id,
+                            &format!(
+                                "Completed with failures: {} success, {} failed",
+                                success_count, failed_count
+                            ),
+                        )
+                        .await;
                 }
             }
             Err(_) => {

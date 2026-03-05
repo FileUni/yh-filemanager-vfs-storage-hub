@@ -14,9 +14,25 @@ pub struct BatchOperationLog<'a> {
 }
 #[async_trait]
 pub trait VfsTaskHandler: Send + Sync {
-    async fn create_task(&self, user_id: &str, task_type: &str, payload: serde_json::Value) -> Result<Uuid, String>;
-    async fn update_progress(&self, id: Uuid, progress: i32, status: Option<&str>) -> Result<(), String>;
-    async fn update_task(&self, id: Uuid, progress: i32, status: Option<&str>, message: Option<&str>) -> Result<(), String>;
+    async fn create_task(
+        &self,
+        user_id: &str,
+        task_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<Uuid, String>;
+    async fn update_progress(
+        &self,
+        id: Uuid,
+        progress: i32,
+        status: Option<&str>,
+    ) -> Result<(), String>;
+    async fn update_task(
+        &self,
+        id: Uuid,
+        progress: i32,
+        status: Option<&str>,
+        message: Option<&str>,
+    ) -> Result<(), String>;
     async fn fail_task(&self, id: Uuid, error: &str) -> Result<(), String>;
     async fn success_task(&self, id: Uuid) -> Result<(), String>;
 
