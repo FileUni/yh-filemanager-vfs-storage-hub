@@ -1,6 +1,6 @@
 [package]
 name = "yh-filemanager-vfs-storage-hub"
-version = "0.0.1-alpha8"
+version = "0.0.2-alpha1"
 edition = "2024"
 description = "VFS Storage Hub based on OpenDAL for FileUni"
 
