@@ -660,8 +660,8 @@ impl VfsFileIndexConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsTempFileConfig {
     #[config(
-        desc_zh = "临时文件存储目录相对路径，用于存储上传分片和临时处理文件",
-        desc_en = "Temporary file storage directory relative path, for storing upload chunks and temporary processing files",
+        desc_zh = "临时文件存储目录，用于存储上传分片和临时处理文件",
+        desc_en = "Temporary file storage directory for storing upload chunks and temporary processing files",
         example = "{APPDATADIR}/tmp/vfs"
     )]
     pub dir: Option<Arc<str>>,
