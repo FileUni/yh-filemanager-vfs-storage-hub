@@ -73,8 +73,8 @@ pub struct VfsConnectorConfig {
     )]
     pub name: Option<Arc<str>>,
     #[config(
-        desc_zh = "存储后端驱动类型，可选项: fs(本地文件系统)|android_saf(Android SAF 授权目录)|s3(AWS S3兼容)|webdav(WebDAV)|ftp|sftp，默认fs，生产环境推荐s3",
-        desc_en = "Storage backend driver type, options: fs(local filesystem)|android_saf(Android SAF granted directory)|s3(AWS S3 compatible)|webdav|ftp|sftp, default fs, recommend s3 for production",
+        desc_zh = "存储后端驱动类型，可选项: fs(本地文件系统)|android_saf(Android SAF 授权目录)|ios_scoped_fs(iOS 安全作用域目录)|s3(AWS S3兼容)|webdav(WebDAV)|ftp|sftp，默认fs，生产环境推荐s3",
+        desc_en = "Storage backend driver type, options: fs(local filesystem)|android_saf(Android SAF granted directory)|ios_scoped_fs(iOS security-scoped directory)|s3(AWS S3 compatible)|webdav|ftp|sftp, default fs, recommend s3 for production",
         example = "fs"
     )]
     pub driver: Option<Arc<str>>,
@@ -1244,6 +1244,17 @@ impl VfsStorageHubConfig {
                 {
                     errors.push(format!(
                         "[{}] connectors[{}].root must be a SAF tree uri (content://...) for android_saf",
+                        s, i
+                    ));
+                }
+
+                if matches!(conn.enable, Some(true))
+                    && conn.driver.as_deref() == Some("ios_scoped_fs")
+                    && let Some(root) = conn.root.as_deref()
+                    && !root.trim().starts_with("bookmark_b64:")
+                {
+                    errors.push(format!(
+                        "[{}] connectors[{}].root must start with 'bookmark_b64:' for ios_scoped_fs",
                         s, i
                     ));
                 }

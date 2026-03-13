@@ -56,3 +56,7 @@ utoipa = { version = "5.4.0", features = ["chrono", "uuid"] }
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21.1"
 ndk-context = "0.1.1"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = { version = "0.6.2", default-features = false, features = ["std"] }
+objc2-foundation = "0.3.2"

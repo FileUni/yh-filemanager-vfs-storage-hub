@@ -25,6 +25,9 @@ pub mod wal;
 
 #[cfg(target_os = "android")]
 pub mod android_saf;
+
+#[cfg(target_os = "ios")]
+pub mod ios_scoped_fs;
 pub use hub::VfsStorageHub;
 pub use pool::VfsPool;
 pub use scoped::ScopedVfsStorageEngine;
