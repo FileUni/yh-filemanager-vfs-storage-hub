@@ -79,8 +79,8 @@ pub struct VfsConnectorConfig {
     )]
     pub driver: Option<Arc<str>>,
     #[config(
-        desc_zh = "存储根路径，对于本地文件系统为目录路径，对于S3等为bucket名称",
-        desc_en = "Storage root path, directory path for local filesystem, bucket name for S3, etc.",
+        desc_zh = "存储根定位：fs=目录路径；s3=根前缀；android_saf=SAF tree uri(content://...)；ios_scoped_fs=bookmark_b64:<BASE64>",
+        desc_en = "Storage root locator: fs=directory path; s3=root prefix; android_saf=SAF tree uri (content://...); ios_scoped_fs=bookmark_b64:<BASE64>",
         example = "{APPDATADIR}/vfs"
     )]
     pub root: Option<Arc<str>>,
