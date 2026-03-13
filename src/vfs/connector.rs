@@ -17,6 +17,22 @@ pub async fn build_operator(config: &VfsConnectorConfig) -> VfsResult<Operator> 
             }
             Operator::new(builder)?.finish()
         }
+        "android_saf" => {
+            #[cfg(target_os = "android")]
+            {
+                let mut builder = crate::vfs::android_saf::AndroidSaf::default();
+                if let Some(root) = &config.root {
+                    builder = builder.root(root);
+                }
+                Operator::new(builder)?.finish()
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                return Err(VfsError::Internal(
+                    "android_saf connector is supported only on Android".to_string(),
+                ));
+            }
+        }
         "s3" => {
             let mut builder = opendal::services::S3::default();
             if let Some(root) = &config.root {

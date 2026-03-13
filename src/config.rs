@@ -23,6 +23,47 @@ fn require_allocator_profile() -> HardwareProfile {
     }
 }
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+mod mobile_fs_guard {
+    use std::path::{Component, Path, PathBuf};
+
+    fn normalize_absolute_path(path: &Path) -> Result<PathBuf, String> {
+        if !path.is_absolute() {
+            return Err("path must be absolute".to_string());
+        }
+        let mut out = PathBuf::new();
+        for comp in path.components() {
+            match comp {
+                Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+                Component::RootDir => out.push(comp.as_os_str()),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    let _ = out.pop();
+                }
+                Component::Normal(part) => out.push(part),
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn validate_fs_root_under_app_data_dir(root: &str) -> Result<(), String> {
+        let app_data_dir = yh_config_infra::utils::get_app_data_dir()
+            .ok_or_else(|| "{APPDATADIR} is not initialized".to_string())?;
+
+        let base = normalize_absolute_path(Path::new(app_data_dir.as_ref()))?;
+        let candidate = normalize_absolute_path(Path::new(root))?;
+
+        if !candidate.starts_with(&base) {
+            return Err(format!(
+                "fs connector root must be inside app sandbox (under APPDATADIR). Got: '{}' (APPDATADIR='{}')",
+                root,
+                app_data_dir
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsConnectorConfig {
     #[config(
@@ -32,8 +73,8 @@ pub struct VfsConnectorConfig {
     )]
     pub name: Option<Arc<str>>,
     #[config(
-        desc_zh = "存储后端驱动类型，可选项: fs(本地文件系统)|s3(AWS S3兼容)|webdav(WebDAV)|ftp|sftp，默认fs，生产环境推荐s3",
-        desc_en = "Storage backend driver type, options: fs(local filesystem)|s3(AWS S3 compatible)|webdav|ftp|sftp, default fs, recommend s3 for production",
+        desc_zh = "存储后端驱动类型，可选项: fs(本地文件系统)|android_saf(Android SAF 授权目录)|s3(AWS S3兼容)|webdav(WebDAV)|ftp|sftp，默认fs，生产环境推荐s3",
+        desc_en = "Storage backend driver type, options: fs(local filesystem)|android_saf(Android SAF granted directory)|s3(AWS S3 compatible)|webdav|ftp|sftp, default fs, recommend s3 for production",
         example = "fs"
     )]
     pub driver: Option<Arc<str>>,
@@ -1195,6 +1236,32 @@ impl VfsStorageHubConfig {
                     format!("connectors[{}].root", i),
                     errors
                 );
+
+                if matches!(conn.enable, Some(true))
+                    && conn.driver.as_deref() == Some("android_saf")
+                    && let Some(root) = conn.root.as_deref()
+                    && !root.trim().starts_with("content://")
+                {
+                    errors.push(format!(
+                        "[{}] connectors[{}].root must be a SAF tree uri (content://...) for android_saf",
+                        s, i
+                    ));
+                }
+
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                {
+                    if matches!(conn.enable, Some(true)) && conn.driver.as_deref() == Some("fs") {
+                        if let Some(root) = conn.root.as_deref() {
+                            if let Err(e) = mobile_fs_guard::validate_fs_root_under_app_data_dir(root)
+                            {
+                                errors.push(format!(
+                                    "[{}] connectors[{}].root: {}",
+                                    s, i, e
+                                ));
+                            }
+                        }
+                    }
+                }
                 yh_config_infra::config_collect_bool!(
                     conn.enable,
                     s,
