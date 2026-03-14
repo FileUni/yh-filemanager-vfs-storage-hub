@@ -24,6 +24,11 @@ impl VfsStorageHub {
     pub async fn new(config: VfsHubConfigGuard, db: Arc<DatabaseConnection>) -> VfsResult<Self> {
         yh_console_log::yhlog("info", "VFS Storage Hub: Starting initialization...");
         let connectors = config.get_connectors();
+        if connectors.is_empty() {
+            return Err(crate::vfs::error::VfsError::Internal(
+                "No connectors configured (vfs_storage_hub.connectors is empty)".to_string(),
+            ));
+        }
         let mut operators = HashMap::with_capacity(connectors.len());
         // Build operators
         for connector in connectors {
@@ -31,6 +36,11 @@ impl VfsStorageHub {
             operators.insert(connector.get_name().to_string(), op);
         }
         let pools_cfg = config.get_pools();
+        if pools_cfg.is_empty() {
+            return Err(crate::vfs::error::VfsError::Internal(
+                "No pools configured (vfs_storage_hub.pools is empty)".to_string(),
+            ));
+        }
         let mut pools = HashMap::with_capacity(pools_cfg.len());
         for pool_cfg in pools_cfg {
             let primary_connector_name = yh_config_infra::config_require_str!(

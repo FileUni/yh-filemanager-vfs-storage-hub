@@ -1,6 +1,6 @@
 // VFS storage hub configuration module
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::OwnedRwLockReadGuard;
@@ -881,13 +881,13 @@ pub struct VfsStorageHubConfig {
     #[config(
         desc_zh = "存储连接器配置列表，定义所有可用的存储后端",
         desc_en = "Storage connector configuration list, defines all available storage backends",
-        example = "[]"
+        example = "[{ name = \"local-fs\", driver = \"fs\", root = \"{APPDATADIR}/vfs\", enable = true, options = {} }]"
     )]
     pub connectors: Option<Vec<VfsConnectorConfig>>,
     #[config(
         desc_zh = "存储池配置列表，定义可用的存储池",
         desc_en = "Storage pool configuration list, defines available storage pools",
-        example = "[]"
+        example = "[{ name = \"default-pool\", primary_connector = \"local-fs\", backup_connector = \"local-fs\", enable_write_cache = false, enable = true, options = {} }]"
     )]
     pub pools: Option<Vec<VfsPoolConfig>>,
     #[config(
@@ -1216,6 +1216,15 @@ impl VfsStorageHubConfig {
         } else {
             errors.push(format!("[{}] maintenance is required (section)", s));
         }
+        // Connectors / Pools / Policies are core for VFS and must be present.
+        // Connectors and pools must be non-empty, otherwise VFS cannot route any request.
+        yh_config_infra::config_collect_not_empty_vec!(self.connectors, s, "connectors", errors);
+        yh_config_infra::config_collect_not_empty_vec!(self.pools, s, "pools", errors);
+        if self.policies.is_none() {
+            errors.push(format!("[{}] policies is required (even if empty [])", s));
+        }
+
+        let mut connector_name_set: HashSet<String> = HashSet::new();
         if let Some(connectors) = &self.connectors {
             for (i, conn) in connectors.iter().enumerate() {
                 yh_config_infra::config_collect_not_empty!(
@@ -1236,6 +1245,20 @@ impl VfsStorageHubConfig {
                     format!("connectors[{}].root", i),
                     errors
                 );
+
+                if let Some(name) = conn
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    if !connector_name_set.insert(name.to_string()) {
+                        errors.push(format!(
+                            "[{}] connectors[{}].name '{}' is duplicated",
+                            s, i, name
+                        ));
+                    }
+                }
 
                 if matches!(conn.enable, Some(true))
                     && conn.driver.as_deref() == Some("android_saf")
@@ -1263,16 +1286,15 @@ impl VfsStorageHubConfig {
                 {
                     if matches!(conn.enable, Some(true)) && conn.driver.as_deref() == Some("fs") {
                         if let Some(root) = conn.root.as_deref() {
-                            if let Err(e) = mobile_fs_guard::validate_fs_root_under_app_data_dir(root)
+                            if let Err(e) =
+                                mobile_fs_guard::validate_fs_root_under_app_data_dir(root)
                             {
-                                errors.push(format!(
-                                    "[{}] connectors[{}].root: {}",
-                                    s, i, e
-                                ));
+                                errors.push(format!("[{}] connectors[{}].root: {}", s, i, e));
                             }
                         }
                     }
                 }
+
                 yh_config_infra::config_collect_bool!(
                     conn.enable,
                     s,
@@ -1280,9 +1302,9 @@ impl VfsStorageHubConfig {
                     errors
                 );
             }
-        } else {
-            errors.push(format!("[{}] connectors is required (even if empty [])", s));
         }
+
+        let mut pool_name_set: HashSet<String> = HashSet::new();
         if let Some(pools) = &self.pools {
             for (i, pool) in pools.iter().enumerate() {
                 yh_config_infra::config_collect_not_empty!(
@@ -1297,12 +1319,17 @@ impl VfsStorageHubConfig {
                     format!("pools[{}].primary_connector", i),
                     errors
                 );
-                yh_config_infra::config_collect_not_empty!(
-                    pool.backup_connector,
-                    s,
-                    format!("pools[{}].backup_connector", i),
-                    errors
-                );
+
+                // backup_connector is optional. When present, it must be non-empty.
+                if let Some(backup) = pool.backup_connector.as_deref()
+                    && backup.trim().is_empty()
+                {
+                    errors.push(format!(
+                        "[{}] pools[{}].backup_connector cannot be empty (omit field or set a connector name)",
+                        s, i
+                    ));
+                }
+
                 yh_config_infra::config_collect_bool!(
                     pool.enable_write_cache,
                     s,
@@ -1315,10 +1342,69 @@ impl VfsStorageHubConfig {
                     format!("pools[{}].enable", i),
                     errors
                 );
+
+                if let Some(name) = pool
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    if !pool_name_set.insert(name.to_string()) {
+                        errors.push(format!(
+                            "[{}] pools[{}].name '{}' is duplicated",
+                            s, i, name
+                        ));
+                    }
+                }
+
+                // Validate connector references for this pool.
+                if !connector_name_set.is_empty() {
+                    if let Some(primary) = pool
+                        .primary_connector
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                    {
+                        if !connector_name_set.contains(primary) {
+                            errors.push(format!(
+                                "[{}] pools[{}].primary_connector references unknown connector '{}'",
+                                s, i, primary
+                            ));
+                        }
+                    }
+
+                    if let Some(backup) = pool
+                        .backup_connector
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                    {
+                        if !connector_name_set.contains(backup) {
+                            errors.push(format!(
+                                "[{}] pools[{}].backup_connector references unknown connector '{}'",
+                                s, i, backup
+                            ));
+                        }
+                    }
+                }
             }
-        } else {
-            errors.push(format!("[{}] pools is required", s));
         }
+
+        // default_pool must match an existing pool.
+        if let Some(default_pool) = self
+            .default_pool
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            && !pool_name_set.is_empty()
+            && !pool_name_set.contains(default_pool)
+        {
+            errors.push(format!(
+                "[{}] default_pool '{}' must match an existing pool name in pools",
+                s, default_pool
+            ));
+        }
+
         if let Some(policies) = &self.policies {
             for (i, poly) in policies.iter().enumerate() {
                 yh_config_infra::config_collect_not_empty!(
@@ -1333,15 +1419,32 @@ impl VfsStorageHubConfig {
                     format!("policies[{}].pool_name", i),
                     errors
                 );
-                yh_config_infra::config_collect_gt_zero!(
-                    poly.default_quota,
-                    s,
-                    format!("policies[{}].default_quota", i),
-                    errors
-                );
+                match poly.default_quota {
+                    Some(v) if v >= 0 => {}
+                    Some(_) => errors.push(format!(
+                        "[{}] policies[{}].default_quota cannot be negative",
+                        s, i
+                    )),
+                    None => errors.push(format!(
+                        "[{}] policies[{}].default_quota is required (number >= 0)",
+                        s, i
+                    )),
+                }
+
+                if let Some(pool_name) = poly
+                    .pool_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    && !pool_name_set.is_empty()
+                    && !pool_name_set.contains(pool_name)
+                {
+                    errors.push(format!(
+                        "[{}] policies[{}].pool_name references unknown pool '{}'",
+                        s, i, pool_name
+                    ));
+                }
             }
-        } else {
-            errors.push(format!("[{}] policies is required", s));
         }
     }
     pub fn get_connectors(&self) -> &Vec<VfsConnectorConfig> {
@@ -1391,371 +1494,7 @@ impl ConfigApp for VfsStorageHubAppConfig {
 
 impl VfsStorageHubAppConfig {
     pub fn validate(&self, errors: &mut Vec<String>) {
-        let c = &self.vfs_storage_hub;
-
-        let s = Self::get_section_name();
-        yh_config_infra::config_collect_bool!(c.enable_webdav, s, "enable_webdav", errors);
-        yh_config_infra::config_collect_bool!(c.enable_sftp, s, "enable_sftp", errors);
-        yh_config_infra::config_collect_bool!(c.enable_ftp, s, "enable_ftp", errors);
-        yh_config_infra::config_collect_bool!(c.enable_s3, s, "enable_s3", errors);
-        yh_config_infra::config_collect_bool!(c.enable_api, s, "enable_api", errors);
-        yh_config_infra::config_collect_not_empty!(c.default_pool, s, "default_pool", errors);
-        if let Some(tf) = &c.temp_file {
-            yh_config_infra::config_collect_not_empty!(tf.dir, s, "temp_file.dir", errors);
-            yh_config_infra::config_collect_gt_zero!(tf.max_age, s, "temp_file.max_age", errors);
-        } else {
-            errors.push(format!("[{}] temp_file is required (section)", s));
-        }
-        if let Some(bo) = &c.batch_operation {
-            yh_config_infra::config_collect_gt_zero!(
-                bo.timeout_secs,
-                s,
-                "batch_operation.timeout_secs",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                bo.max_concurrent_tasks,
-                s,
-                "batch_operation.max_concurrent_tasks",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                bo.max_concurrent_tasks_low_memory,
-                s,
-                "batch_operation.max_concurrent_tasks_low_memory",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                bo.max_concurrent_tasks_throughput,
-                s,
-                "batch_operation.max_concurrent_tasks_throughput",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                bo.wal_min_size_bytes,
-                s,
-                "batch_operation.wal_min_size_bytes",
-                errors
-            );
-            yh_config_infra::config_collect_bool!(
-                bo.wal_skip_temp_path,
-                s,
-                "batch_operation.wal_skip_temp_path",
-                errors
-            );
-        } else {
-            errors.push(format!("[{}] batch_operation is required (section)", s));
-        }
-        if let Some(fc) = &c.file_compress {
-            yh_config_infra::config_collect_bool!(fc.enable, s, "file_compress.enable", errors);
-            yh_config_infra::config_collect_any!(
-                fc.exe_7zip_path,
-                s,
-                "file_compress.exe_7zip_path",
-                errors
-            );
-            yh_config_infra::config_collect_not_empty!(
-                fc.default_compression_format,
-                s,
-                "file_compress.default_compression_format",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.process_manager_max_concurrency,
-                s,
-                "file_compress.process_manager_max_concurrency",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.process_manager_max_concurrency_low_memory,
-                s,
-                "file_compress.process_manager_max_concurrency_low_memory",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.process_manager_max_concurrency_throughput,
-                s,
-                "file_compress.process_manager_max_concurrency_throughput",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.max_cpu_threads,
-                s,
-                "file_compress.max_cpu_threads",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.max_cpu_threads_low_memory,
-                s,
-                "file_compress.max_cpu_threads_low_memory",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.max_cpu_threads_throughput,
-                s,
-                "file_compress.max_cpu_threads_throughput",
-                errors
-            );
-            yh_config_infra::config_collect_range!(
-                fc.compression_max_level,
-                s,
-                "file_compress.compression_max_level",
-                0,
-                9,
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.timeout_secs,
-                s,
-                "file_compress.timeout_secs",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.max_extract_size_gb,
-                s,
-                "file_compress.max_extract_size_gb",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.max_compress_items,
-                s,
-                "file_compress.max_compress_items",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.max_compress_total_size_mb,
-                s,
-                "file_compress.max_compress_total_size_mb",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.max_compress_output_size_mb,
-                s,
-                "file_compress.max_compress_output_size_mb",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fc.max_decompress_archive_size_mb,
-                s,
-                "file_compress.max_decompress_archive_size_mb",
-                errors
-            );
-            yh_config_infra::config_collect_bool!(
-                fc.enable_archive_browser,
-                s,
-                "file_compress.enable_archive_browser",
-                errors
-            );
-            if fc.decompression_formats.is_none() {
-                errors.push(format!(
-                    "[{}] file_compress.decompression_formats is required",
-                    s
-                ));
-            }
-        } else {
-            errors.push(format!("[{}] file_compress is required (section)", s));
-        }
-        if let Some(fi) = &c.file_index {
-            yh_config_infra::config_collect_range!(
-                fi.vfs_sync_index_mode,
-                s,
-                "file_index.vfs_sync_index_mode",
-                0,
-                3,
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fi.max_concurrent_refresh,
-                s,
-                "file_index.max_concurrent_refresh",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fi.max_concurrent_refresh_low_memory,
-                s,
-                "file_index.max_concurrent_refresh_low_memory",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fi.max_concurrent_refresh_throughput,
-                s,
-                "file_index.max_concurrent_refresh_throughput",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fi.max_files_per_refresh,
-                s,
-                "file_index.max_files_per_refresh",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fi.refresh_timeout,
-                s,
-                "file_index.refresh_timeout",
-                errors
-            );
-            yh_config_infra::config_collect_not_empty!(
-                fi.refresh_trigger_filename,
-                s,
-                "file_index.refresh_trigger_filename",
-                errors
-            );
-            yh_config_infra::config_collect_bool!(
-                fi.enable_partition,
-                s,
-                "file_index.enable_partition",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fi.partition_count,
-                s,
-                "file_index.partition_count",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fi.admin_consistency_check_batch_size,
-                s,
-                "file_index.admin_consistency_check_batch_size",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                fi.admin_consistency_check_timeout,
-                s,
-                "file_index.admin_consistency_check_timeout",
-                errors
-            );
-        } else {
-            errors.push(format!("[{}] file_index is required (section)", s));
-        }
-        if let Some(fs) = &c.file_share {
-            yh_config_infra::config_collect_bool!(fs.enable, s, "file_share.enable", errors);
-            yh_config_infra::config_collect_bool!(
-                fs.isdisable_seacher_engine,
-                s,
-                "file_share.isdisable_seacher_engine",
-                errors
-            );
-            yh_config_infra::config_collect_bool!(
-                fs.enable_user_direct_share,
-                s,
-                "file_share.enable_user_direct_share",
-                errors
-            );
-            yh_config_infra::config_collect_any!(
-                fs.trash_retention_days,
-                s,
-                "file_share.trash_retention_days",
-                errors
-            );
-        } else {
-            errors.push(format!("[{}] file_share is required (section)", s));
-        }
-        if let Some(mc) = &c.maintenance {
-            yh_config_infra::config_collect_bool!(
-                mc.s3_multipart_cleanup_enabled,
-                s,
-                "maintenance.s3_multipart_cleanup_enabled",
-                errors
-            );
-            yh_config_infra::config_collect_gt_zero!(
-                mc.s3_multipart_grace_period_secs,
-                s,
-                "maintenance.s3_multipart_grace_period_secs",
-                errors
-            );
-        } else {
-            errors.push(format!("[{}] maintenance is required (section)", s));
-        }
-        if let Some(connectors) = &c.connectors {
-            for (i, conn) in connectors.iter().enumerate() {
-                yh_config_infra::config_collect_not_empty!(
-                    conn.name,
-                    s,
-                    format!("connectors[{}].name", i),
-                    errors
-                );
-                yh_config_infra::config_collect_not_empty!(
-                    conn.driver,
-                    s,
-                    format!("connectors[{}].driver", i),
-                    errors
-                );
-                yh_config_infra::config_collect_not_empty!(
-                    conn.root,
-                    s,
-                    format!("connectors[{}].root", i),
-                    errors
-                );
-                yh_config_infra::config_collect_bool!(
-                    conn.enable,
-                    s,
-                    format!("connectors[{}].enable", i),
-                    errors
-                );
-            }
-        } else {
-            errors.push(format!("[{}] connectors is required (even if empty [])", s));
-        }
-        if let Some(pools) = &c.pools {
-            for (i, pool) in pools.iter().enumerate() {
-                yh_config_infra::config_collect_not_empty!(
-                    pool.name,
-                    s,
-                    format!("pools[{}].name", i),
-                    errors
-                );
-                yh_config_infra::config_collect_not_empty!(
-                    pool.primary_connector,
-                    s,
-                    format!("pools[{}].primary_connector", i),
-                    errors
-                );
-                yh_config_infra::config_collect_not_empty!(
-                    pool.backup_connector,
-                    s,
-                    format!("pools[{}].backup_connector", i),
-                    errors
-                );
-                yh_config_infra::config_collect_bool!(
-                    pool.enable_write_cache,
-                    s,
-                    format!("pools[{}].enable_write_cache", i),
-                    errors
-                );
-                yh_config_infra::config_collect_bool!(
-                    pool.enable,
-                    s,
-                    format!("pools[{}].enable", i),
-                    errors
-                );
-            }
-        } else {
-            errors.push(format!("[{}] pools is required", s));
-        }
-        if let Some(policies) = &c.policies {
-            for (i, poly) in policies.iter().enumerate() {
-                yh_config_infra::config_collect_not_empty!(
-                    poly.role_id,
-                    s,
-                    format!("policies[{}].role_id", i),
-                    errors
-                );
-                yh_config_infra::config_collect_not_empty!(
-                    poly.pool_name,
-                    s,
-                    format!("policies[{}].pool_name", i),
-                    errors
-                );
-                yh_config_infra::config_collect_gt_zero!(
-                    poly.default_quota,
-                    s,
-                    format!("policies[{}].default_quota", i),
-                    errors
-                );
-            }
-        } else {
-            errors.push(format!("[{}] policies is required", s));
-        }
+        self.vfs_storage_hub.validate(Self::get_section_name(), errors);
     }
 }
 
