@@ -222,7 +222,7 @@ fn query_cursor<'a>(
     env: &mut jni::JNIEnv<'a>,
     resolver: &JObject<'a>,
     uri: &JObject<'a>,
-    projection: &[JObject<'a>],
+    projection: &[&JObject<'a>],
 ) -> Result<Option<JObject<'a>>> {
     let array = env
         .new_object_array(
@@ -362,7 +362,7 @@ fn resolve_existing_doc_id(
     let mut current = root_doc_id.to_string();
     for part in norm.split('/').filter(|p| !p.is_empty()) {
         let child_uri = build_child_documents_uri_using_tree(env, tree_uri_obj, &current)?;
-        let cursor = query_cursor(env, resolver, &child_uri, &[doc_col_id, doc_col_name])?
+        let cursor = query_cursor(env, resolver, &child_uri, &[&doc_col_id, &doc_col_name])?
             .ok_or_else(|| {
                 Error::new(
                     ErrorKind::Unexpected,
@@ -423,7 +423,7 @@ fn resolve_dir_doc_id_create(
             env,
             resolver,
             &child_uri,
-            &[doc_col_id, doc_col_name, doc_col_mime],
+            &[&doc_col_id, &doc_col_name, &doc_col_mime],
         )?
         .ok_or_else(|| {
             Error::new(
@@ -523,7 +523,7 @@ fn stat_by_doc_id(
         env,
         resolver,
         &doc_uri,
-        &[doc_col_mime, doc_col_size, doc_col_last],
+        &[&doc_col_mime, &doc_col_size, &doc_col_last],
     )?
     .ok_or_else(|| {
         Error::new(
@@ -585,14 +585,14 @@ pub fn take_persistable_permission(tree_uri: &str) -> Result<()> {
         .find_class("android/content/Intent")
         .map_err(|e| opendal_error_from_jni(&mut env, "find Intent", e))?;
     let read_flag = env
-        .get_static_field(intent_class, "FLAG_GRANT_READ_URI_PERMISSION", "I")
+        .get_static_field(&intent_class, "FLAG_GRANT_READ_URI_PERMISSION", "I")
         .map_err(|e| opendal_error_from_jni(&mut env, "Intent.FLAG_GRANT_READ_URI_PERMISSION", e))?
         .i()
         .map_err(|e| {
             opendal_error_from_jni(&mut env, "Intent.FLAG_GRANT_READ_URI_PERMISSION", e)
         })?;
     let write_flag = env
-        .get_static_field(intent_class, "FLAG_GRANT_WRITE_URI_PERMISSION", "I")
+        .get_static_field(&intent_class, "FLAG_GRANT_WRITE_URI_PERMISSION", "I")
         .map_err(|e| opendal_error_from_jni(&mut env, "Intent.FLAG_GRANT_WRITE_URI_PERMISSION", e))?
         .i()
         .map_err(|e| {
@@ -691,7 +691,7 @@ pub fn list(tree_uri: &str, root_doc_id: &str, path: &str) -> Result<Vec<oio::En
         &mut env,
         &resolver,
         &child_uri,
-        &[doc_col_name, doc_col_mime, doc_col_size, doc_col_last],
+        &[&doc_col_name, &doc_col_mime, &doc_col_size, &doc_col_last],
     )? {
         Some(c) => c,
         None => return Ok(Vec::new()),
@@ -1013,7 +1013,7 @@ pub fn rename(tree_uri: &str, root_doc_id: &str, from: &str, to: &str) -> Result
     if from_parent_id != to_parent_id {
         let moved = env
             .call_static_method(
-                dc,
+                &dc,
                 "moveDocument",
                 "(Landroid/content/ContentResolver;Landroid/net/Uri;Landroid/net/Uri;Landroid/net/Uri;)Landroid/net/Uri;",
                 &[
@@ -1049,7 +1049,7 @@ pub fn rename(tree_uri: &str, root_doc_id: &str, from: &str, to: &str) -> Result
             .map_err(|e| opendal_error_from_jni(&mut env, "new_string(rename)", e))?;
         let renamed = env
             .call_static_method(
-                dc,
+                &dc,
                 "renameDocument",
                 "(Landroid/content/ContentResolver;Landroid/net/Uri;Ljava/lang/String;)Landroid/net/Uri;",
                 &[JValue::Object(&resolver), JValue::Object(&current_uri), JValue::Object(&jname)],
