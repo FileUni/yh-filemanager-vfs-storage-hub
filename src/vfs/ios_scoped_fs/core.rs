@@ -2,8 +2,8 @@ use super::{IOS_BOOKMARK_PREFIX, IOS_SCOPED_FS_SCHEME};
 use base64::{engine::general_purpose, Engine as _};
 use objc2::runtime::Bool;
 use objc2_foundation::{NSData, NSURLBookmarkResolutionOptions, NSURL};
-use opendal::raw::{oio, AccessorInfo, Capability};
-use opendal::{Error, ErrorKind, Result};
+use opendal::raw::{oio, AccessorInfo};
+use opendal::{Capability, Error, ErrorKind, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -51,7 +51,7 @@ impl IosScopedFsCore {
         let data = unsafe { NSData::dataWithBytes_length(bytes.as_ptr().cast(), bytes.len()) };
 
         let mut is_stale = Bool::new(false);
-        let mut is_stale_ptr: *mut Bool = &mut is_stale;
+        let is_stale_ptr: *mut Bool = &mut is_stale;
 
         let url = unsafe {
             NSURL::URLByResolvingBookmarkData_options_relativeToURL_bookmarkDataIsStale_error(

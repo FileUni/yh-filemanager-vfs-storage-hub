@@ -3,8 +3,8 @@
 use super::ANDROID_SAF_MIME_DIR;
 use jni::objects::{JObject, JString, JValue};
 use jni::sys::{jint, jobject};
-use opendal::raw::oio;
-use opendal::{EntryMode, Error, ErrorKind, Metadata, Result, Timestamp};
+use opendal::raw::{oio, Timestamp};
+use opendal::{EntryMode, Error, ErrorKind, Metadata, Result};
 use std::io::Write;
 
 const MIME_OCTET_STREAM: &str = "application/octet-stream";
@@ -63,14 +63,17 @@ fn java_vm() -> Result<jni::JavaVM> {
         .map_err(|e| Error::new(ErrorKind::Unexpected, "Failed to obtain JavaVM").set_source(e))
 }
 
-fn app_context_obj(env: &mut jni::JNIEnv<'_>) -> Result<JObject<'_>> {
+fn app_context_obj<'a>(_env: &mut jni::JNIEnv<'a>) -> Result<JObject<'a>> {
     let ctx = ndk_context::android_context();
     let raw = ctx.context() as jobject;
     // SAFETY: The context object is a valid JNI object reference.
     Ok(unsafe { JObject::from_raw(raw) })
 }
 
-fn get_content_resolver(env: &mut jni::JNIEnv<'_>, context: &JObject<'_>) -> Result<JObject<'_>> {
+fn get_content_resolver<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    context: &JObject<'a>,
+) -> Result<JObject<'a>> {
     env.call_method(
         context,
         "getContentResolver",
@@ -82,7 +85,7 @@ fn get_content_resolver(env: &mut jni::JNIEnv<'_>, context: &JObject<'_>) -> Res
     .map_err(|e| opendal_error_from_jni(env, "getContentResolver", e))
 }
 
-fn parse_uri(env: &mut jni::JNIEnv<'_>, uri: &str) -> Result<JObject<'_>> {
+fn parse_uri<'a>(env: &mut jni::JNIEnv<'a>, uri: &str) -> Result<JObject<'a>> {
     let uri_class = env
         .find_class("android/net/Uri")
         .map_err(|e| opendal_error_from_jni(env, "find Uri", e))?;
@@ -100,19 +103,19 @@ fn parse_uri(env: &mut jni::JNIEnv<'_>, uri: &str) -> Result<JObject<'_>> {
     .map_err(|e| opendal_error_from_jni(env, "Uri.parse", e))
 }
 
-fn documents_contract_class(env: &mut jni::JNIEnv<'_>) -> Result<jni::objects::JClass<'_>> {
+fn documents_contract_class<'a>(env: &mut jni::JNIEnv<'a>) -> Result<jni::objects::JClass<'a>> {
     env.find_class("android/provider/DocumentsContract")
         .map_err(|e| opendal_error_from_jni(env, "find DocumentsContract", e))
 }
 
-fn documents_contract_document_class(
-    env: &mut jni::JNIEnv<'_>,
-) -> Result<jni::objects::JClass<'_>> {
+fn documents_contract_document_class<'a>(
+    env: &mut jni::JNIEnv<'a>,
+) -> Result<jni::objects::JClass<'a>> {
     env.find_class("android/provider/DocumentsContract$Document")
         .map_err(|e| opendal_error_from_jni(env, "find DocumentsContract$Document", e))
 }
 
-fn get_doc_column(env: &mut jni::JNIEnv<'_>, field: &str) -> Result<JObject<'_>> {
+fn get_doc_column<'a>(env: &mut jni::JNIEnv<'a>, field: &str) -> Result<JObject<'a>> {
     let doc_class = documents_contract_document_class(env)?;
     env.get_static_field(doc_class, field, "Ljava/lang/String;")
         .map_err(|e| opendal_error_from_jni(env, "get Document column", e))?
@@ -120,11 +123,11 @@ fn get_doc_column(env: &mut jni::JNIEnv<'_>, field: &str) -> Result<JObject<'_>>
         .map_err(|e| opendal_error_from_jni(env, "get Document column", e))
 }
 
-fn build_document_uri_using_tree(
-    env: &mut jni::JNIEnv<'_>,
-    tree_uri: &JObject<'_>,
+fn build_document_uri_using_tree<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    tree_uri: &JObject<'a>,
     doc_id: &str,
-) -> Result<JObject<'_>> {
+) -> Result<JObject<'a>> {
     let dc = documents_contract_class(env)?;
     let jdoc = env
         .new_string(doc_id)
@@ -140,11 +143,11 @@ fn build_document_uri_using_tree(
     .map_err(|e| opendal_error_from_jni(env, "buildDocumentUriUsingTree", e))
 }
 
-fn build_child_documents_uri_using_tree(
-    env: &mut jni::JNIEnv<'_>,
-    tree_uri: &JObject<'_>,
+fn build_child_documents_uri_using_tree<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    tree_uri: &JObject<'a>,
     parent_doc_id: &str,
-) -> Result<JObject<'_>> {
+) -> Result<JObject<'a>> {
     let dc = documents_contract_class(env)?;
     let jdoc = env
         .new_string(parent_doc_id)
@@ -215,12 +218,12 @@ fn cursor_close(env: &mut jni::JNIEnv<'_>, cursor: &JObject<'_>) {
     let _ = env.call_method(cursor, "close", "()V", &[]);
 }
 
-fn query_cursor(
-    env: &mut jni::JNIEnv<'_>,
-    resolver: &JObject<'_>,
-    uri: &JObject<'_>,
-    projection: &[JObject<'_>],
-) -> Result<Option<JObject<'_>>> {
+fn query_cursor<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    resolver: &JObject<'a>,
+    uri: &JObject<'a>,
+    projection: &[JObject<'a>],
+) -> Result<Option<JObject<'a>>> {
     let array = env
         .new_object_array(
             projection.len() as jint,
@@ -824,7 +827,7 @@ pub fn open_write_fd(
     )?;
 
     // Check existing.
-    let existing = resolve_existing_doc_id(&mut env, &resolver, &tree_uri_obj, &parent_id, name);
+    let existing = resolve_existing_doc_id(&mut env, &resolver, &tree_uri_obj, &parent_id, &name);
 
     let file_doc_id = match existing {
         Ok(id) => {

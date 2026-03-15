@@ -1,7 +1,7 @@
 use super::jni;
 use super::{ANDROID_SAF_MIME_DIR, ANDROID_SAF_SCHEME};
-use opendal::raw::{AccessorInfo, Capability, OpRead, OpWrite, oio};
-use opendal::{Error, ErrorKind, Metadata, Result};
+use opendal::raw::{oio, AccessorInfo, OpRead, OpWrite};
+use opendal::{Capability, Error, ErrorKind, Metadata, Result};
 use std::sync::Arc;
 
 #[derive(Debug)]

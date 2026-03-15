@@ -5,7 +5,7 @@ use super::reader::IosScopedFsReader;
 use super::writer::IosScopedFsWriter;
 use super::IOS_SCOPED_FS_SCHEME;
 use opendal::raw::{
-    Access, AccessorInfo, OpCopy, OpCreateDir, OpDelete, OpList, OpRead, OpRename, OpStat, OpWrite,
+    Access, AccessorInfo, OpCopy, OpCreateDir, OpList, OpRead, OpRename, OpStat, OpWrite,
     RpCopy, RpCreateDir, RpDelete, RpList, RpRead, RpRename, RpStat, RpWrite, oio,
 };
 use opendal::{Builder, EntryMode, Error, ErrorKind, Metadata, Result};
