@@ -345,10 +345,10 @@ fn split_parent_child(path: &str) -> (String, String) {
     (parent, name)
 }
 
-fn resolve_existing_doc_id(
-    env: &mut jni::JNIEnv<'_>,
-    resolver: &JObject<'_>,
-    tree_uri_obj: &JObject<'_>,
+fn resolve_existing_doc_id<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    resolver: &JObject<'a>,
+    tree_uri_obj: &JObject<'a>,
     root_doc_id: &str,
     path: &str,
 ) -> Result<String> {
@@ -399,10 +399,10 @@ fn resolve_existing_doc_id(
     Ok(current)
 }
 
-fn resolve_dir_doc_id_create(
-    env: &mut jni::JNIEnv<'_>,
-    resolver: &JObject<'_>,
-    tree_uri_obj: &JObject<'_>,
+fn resolve_dir_doc_id_create<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    resolver: &JObject<'a>,
+    tree_uri_obj: &JObject<'a>,
     root_doc_id: &str,
     dir_path: &str,
     create_intermediate: bool,
@@ -508,10 +508,10 @@ fn resolve_dir_doc_id_create(
     Ok(current)
 }
 
-fn stat_by_doc_id(
-    env: &mut jni::JNIEnv<'_>,
-    resolver: &JObject<'_>,
-    tree_uri_obj: &JObject<'_>,
+fn stat_by_doc_id<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    resolver: &JObject<'a>,
+    tree_uri_obj: &JObject<'a>,
     doc_id: &str,
 ) -> Result<Metadata> {
     let doc_col_mime = get_doc_column(env, "COLUMN_MIME_TYPE")?;
