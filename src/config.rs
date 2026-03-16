@@ -1251,13 +1251,12 @@ impl VfsStorageHubConfig {
                     .as_deref()
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
+                    && !connector_name_set.insert(name.to_string())
                 {
-                    if !connector_name_set.insert(name.to_string()) {
-                        errors.push(format!(
-                            "[{}] connectors[{}].name '{}' is duplicated",
-                            s, i, name
-                        ));
-                    }
+                    errors.push(format!(
+                        "[{}] connectors[{}].name '{}' is duplicated",
+                        s, i, name
+                    ));
                 }
 
                 if matches!(conn.enable, Some(true))
@@ -1348,44 +1347,41 @@ impl VfsStorageHubConfig {
                     .as_deref()
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
+                    && !pool_name_set.insert(name.to_string())
                 {
-                    if !pool_name_set.insert(name.to_string()) {
-                        errors.push(format!(
-                            "[{}] pools[{}].name '{}' is duplicated",
-                            s, i, name
-                        ));
-                    }
+                    errors.push(format!(
+                        "[{}] pools[{}].name '{}' is duplicated",
+                        s, i, name
+                    ));
                 }
 
                 // Validate connector references for this pool.
-                if !connector_name_set.is_empty() {
-                    if let Some(primary) = pool
+                if !connector_name_set.is_empty()
+                    && let Some(primary) = pool
                         .primary_connector
                         .as_deref()
                         .map(str::trim)
                         .filter(|v| !v.is_empty())
-                    {
-                        if !connector_name_set.contains(primary) {
-                            errors.push(format!(
-                                "[{}] pools[{}].primary_connector references unknown connector '{}'",
-                                s, i, primary
-                            ));
-                        }
-                    }
+                    && !connector_name_set.contains(primary)
+                {
+                    errors.push(format!(
+                        "[{}] pools[{}].primary_connector references unknown connector '{}'",
+                        s, i, primary
+                    ));
+                }
 
-                    if let Some(backup) = pool
+                if !connector_name_set.is_empty()
+                    && let Some(backup) = pool
                         .backup_connector
                         .as_deref()
                         .map(str::trim)
                         .filter(|v| !v.is_empty())
-                    {
-                        if !connector_name_set.contains(backup) {
-                            errors.push(format!(
-                                "[{}] pools[{}].backup_connector references unknown connector '{}'",
-                                s, i, backup
-                            ));
-                        }
-                    }
+                    && !connector_name_set.contains(backup)
+                {
+                    errors.push(format!(
+                        "[{}] pools[{}].backup_connector references unknown connector '{}'",
+                        s, i, backup
+                    ));
                 }
             }
         }

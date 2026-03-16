@@ -56,15 +56,15 @@ pub async fn build_operator(config: &VfsConnectorConfig) -> VfsResult<Operator> 
             // Backward compatibility for existing configs.
             // OpenDAL expects `access_key_id` and `secret_access_key`.
             if driver == "s3" {
-                if !opts.contains_key("access_key_id") {
-                    if let Some(value) = opts.get("access_key").cloned() {
-                        opts.insert("access_key_id".to_string(), value);
-                    }
+                if !opts.contains_key("access_key_id")
+                    && let Some(value) = opts.get("access_key").cloned()
+                {
+                    opts.insert("access_key_id".to_string(), value);
                 }
-                if !opts.contains_key("secret_access_key") {
-                    if let Some(value) = opts.get("secret_key").cloned() {
-                        opts.insert("secret_access_key".to_string(), value);
-                    }
+                if !opts.contains_key("secret_access_key")
+                    && let Some(value) = opts.get("secret_key").cloned()
+                {
+                    opts.insert("secret_access_key".to_string(), value);
                 }
                 // Drop legacy keys to avoid ambiguity.
                 opts.remove("access_key");
