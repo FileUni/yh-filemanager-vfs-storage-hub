@@ -6,12 +6,12 @@ This document is the sole detailed documentation for `crates/yh-filemanager-vfs-
 
 - Module Positioning: Unified storage governance core (VFS Hub) for `fileuni`.
 - Core Responsibilities:
-  - Unified physical file operation entry point (across API/FTP/SFTP/WebDAV/S3 semantic layers).
-  - User scope isolation (`create_scoped_engine`).
-  - Metadata index write-through and self-healing (`yh_vfs_file_index`).
-  - WAL write-ahead log and crash recovery (`yh_vfs_wal`).
-  - Quota check and atomic update (`yh_vfs_user_settings`).
-  - Recycle bin, favorites, sharing, batch tasks, compression/decompression, and other business capabilities.
+ - Unified physical file operation entry point (across API/FTP/SFTP/WebDAV/S3 semantic layers).
+ - User scope isolation (`create_scoped_engine`).
+ - Metadata index write-through and self-healing (`yh_vfs_file_index`).
+ - WAL write-ahead log and crash recovery (`yh_vfs_wal`).
+ - Quota check and atomic update (`yh_vfs_user_settings`).
+ - Recycle bin, favorites, sharing, batch tasks, compression/decompression, and other business capabilities.
 - Key Constraint: Upper layer严禁 concatenating physical paths; must operate through scoped engine.
 
 ## 2. Key Paths and Module Division of Labor
@@ -37,9 +37,9 @@ This document is the sole detailed documentation for `crates/yh-filemanager-vfs-
 
 - Policy Source: `vfs_storage_hub.policies` (`role_id -> pool_name -> default_quota`).
 - Routing Logic:
-  - Priority to user settings table `yh_vfs_user_settings.pool_name`.
-  - Otherwise route by role policy.
-  - Then fallback to `default_pool`.
+ - Priority to user settings table `yh_vfs_user_settings.pool_name`.
+ - Otherwise route by role policy.
+ - Then fallback to `default_pool`.
 - User first access auto-completes settings (including `base_dir=/users/{user_id}`, default quota).
 
 ### 3.3 User File Isolation by `user_id`
@@ -52,9 +52,9 @@ This document is the sole detailed documentation for `crates/yh-filemanager-vfs-
 
 - Logical Prefix: `/.virtual/tmp`.
 - Management Capabilities:
-  - User-level temp file/directory creation.
-  - Active file tracking, avoiding mistaken deletion.
-  - RAII auto cleanup + scheduled expiration cleanup.
+ - User-level temp file/directory creation.
+ - Active file tracking, avoiding mistaken deletion.
+ - RAII auto cleanup + scheduled expiration cleanup.
 - WAL Compatible: Can skip temp path WAL via config `wal_skip_temp_path`.
 
 ### 3.5 Support for `yh-email-manager` Email Attachments
@@ -64,28 +64,28 @@ This document is the sole detailed documentation for `crates/yh-filemanager-vfs-
 - Belongs to "integrable base exists, dedicated adaptation not implemented in this module".
 
 ### 3.6 Support for `yh-chat-manager` File Transfer
-- **Current Status**: Supports file metadata transfer via chat protocol.
-- **Important Limitation**: Since `yh-chat-manager` doesn't have message persistence capability, all file references transferred via chat are **temporary**. System doesn't record file send history. Users should use "File Share" feature for long-term stable access.
+- Current Status: Supports file metadata transfer via chat protocol.
+- Important Limitation: Since `yh-chat-manager` doesn't have message persistence capability, all file references transferred via chat are temporary. System doesn't record file send history. Users should use "File Share" feature for long-term stable access.
 
 ### 3.7 Compression and Decompression Mechanism (Built-in + External 7z)
 
 - Current implementation is "hybrid mode", not "pure 7z mode":
-  - External `7z`: Main path, supports `zip/7z/tar/gzip/tar.gz` process mode.
-  - Rust built-in fallback: `zip/tar.gz/gz` still retained (`compress_*_native`/`decompress_*_native`).
+ - External `7z`: Main path, supports `zip/7z/tar/gzip/tar.gz` process mode.
+ - Rust built-in fallback: `zip/tar.gz/gz` still retained (`compress_*_native`/`decompress_*_native`).
 - Queue and Concurrency: Uses `yh_external_process_manager`'s `run_with_permit` for concurrency limiting.
 - Security Defense:
-  - Pre-compression: `max_compress_items`, `max_compress_total_size_mb`.
-  - During compression: Monitors output package size `max_compress_output_size_mb`, kills on exceed.
-  - Pre-decompression: Archive size limit `max_decompress_archive_size_mb`.
-  - Post-decompression: Traverses output directory accumulating size, limits `max_extract_size_gb` (Zip Bomb protection).
-  - Timeout: `timeout_secs` expires kills child process.
+ - Pre-compression: `max_compress_items`, `max_compress_total_size_mb`.
+ - During compression: Monitors output package size `max_compress_output_size_mb`, kills on exceed.
+ - Pre-decompression: Archive size limit `max_decompress_archive_size_mb`.
+ - Post-decompression: Traverses output directory accumulating size, limits `max_extract_size_gb` (Zip Bomb protection).
+ - Timeout: `timeout_secs` expires kills child process.
 - Result Consistency:
-  - Triggers `sync_index` after decompression.
-  - Supports `delete_source`/`delete_archive` for post-success source deletion.
+ - Triggers `sync_index` after decompression.
+ - Supports `delete_source`/`delete_archive` for post-success source deletion.
 - Online Capabilities:
-  - `stream_compress_reader`: Single file streaming compression download (directory direct stream not supported).
-  - `list_archive_contents`: Browse archive directory without extracting.
-  - `extract_archive_file`: Single file streaming extraction from archive.
+ - `stream_compress_reader`: Single file streaming compression download (directory direct stream not supported).
+ - `list_archive_contents`: Browse archive directory without extracting.
+ - `extract_archive_file`: Single file streaming extraction from archive.
 
 ### 3.8 WAL Functionality
 
@@ -102,16 +102,16 @@ This document is the sole detailed documentation for `crates/yh-filemanager-vfs-
 ### 3.10 Admin Forced WAL Interruption Mechanism
 
 - Implemented Capabilities:
-  - `VfsWalManager::revoke_all`: Clears WAL table.
-  - `clear_all_maintenance`: Force clears all maintenance locks.
+ - `VfsWalManager::revoke_all`: Clears WAL table.
+ - `clear_all_maintenance`: Force clears all maintenance locks.
 - Note: Both combined can achieve "admin forced interrupt recovery chain" operations capability.
 
 ### 3.11 Quota Implementation
 
 - Data Fields: `storage_quota`, `storage_used` (user-level).
 - Checkpoints:
-  - Incremental check during `write/write_at/copy/write_stream/decompress`.
-  - Thumbnail cache paths (`/.thumbs`, `/.thumbs_cache`) default not counted in quota.
+ - Incremental check during `write/write_at/copy/write_stream/decompress`.
+ - Thumbnail cache paths (`/.thumbs`, `/.thumbs_cache`) default not counted in quota.
 - Update Strategy: `UPDATE ... storage_used = storage_used + delta` atomic update.
 - Exception: `storage_quota == 0` means unlimited.
 
@@ -125,34 +125,34 @@ This document is the sole detailed documentation for `crates/yh-filemanager-vfs-
 ### 3.13 Favorites, Sharing, Recycle Bin Mechanisms
 
 - Favorites:
-  - Field: `favorite_color`.
-  - Logic: `0` is non-favorite, `>0` is favorite.
-  - Current code doesn't enforce `0-9`; `vfs/types.rs` comment says `1-7`, actual DB can store any integer.
+ - Field: `favorite_color`.
+ - Logic: `0` is non-favorite, `>0` is favorite.
+ - Current code doesn't enforce `0-9`; `vfs/types.rs` comment says `1-7`, actual DB can store any integer.
 - Sharing:
-  - `yh_vfs_file_shares`, supports password (Argon2 hash), expiration time, download count, direct link flag.
-  - Supports paginated search, filtering, sorting, soft delete.
+ - `yh_vfs_file_shares`, supports password (Argon2 hash), expiration time, download count, direct link flag.
+ - Supports paginated search, filtering, sorting, soft delete.
 - Recycle Bin:
-  - Physical Directory: `/.recycle_bin`.
-  - Delete Behavior: Move to recycle bin (not immediate physical delete).
-  - Conflict Avoidance: Currently uses `timestamp + original_name` for recycle bin path.
-  - Restore Behavior: Restores based on `original_path`.
-  - Auto Cleanup: Cleans expired recycle bin files by `trash_retention_days`.
+ - Physical Directory: `/.recycle_bin`.
+ - Delete Behavior: Move to recycle bin (not immediate physical delete).
+ - Conflict Avoidance: Currently uses `timestamp + original_name` for recycle bin path.
+ - Restore Behavior: Restores based on `original_path`.
+ - Auto Cleanup: Cleans expired recycle bin files by `trash_retention_days`.
 
 ### 3.14 Recycle Bin Auto Cleanup and Anti-Rename
 
 - Auto Cleanup: Implemented (maintenance service periodic cleanup).
 - Anti-Rename:
-  - Recycle bin entry uses timestamp prefix, reducing rename conflict probability.
-  - General path conflict handling capability `get_unique_path` exists and used for batch tasks.
-  - `restore_from_trash_impl` currently directly restores by `original_path`, doesn't auto-call `get_unique_path` for restore conflict avoidance; restore target conflict relies on underlying behavior, room for improvement.
+ - Recycle bin entry uses timestamp prefix, reducing rename conflict probability.
+ - General path conflict handling capability `get_unique_path` exists and used for batch tasks.
+ - `restore_from_trash_impl` currently directly restores by `original_path`, doesn't auto-call `get_unique_path` for restore conflict avoidance; restore target conflict relies on underlying behavior, room for improvement.
 
 ### 3.15 Thumbnail Mechanism and Garbage Control
 
 - This module doesn't implement thumbnail "generator".
 - Implemented Governance Strategy:
-  - Identifies thumbnail cache paths (`/.thumbs`, `/.thumbs_cache`).
-  - Thumbnail cache paths default skip quota, skip index, can skip WAL.
-  - User settings table has multi-format disable switch fields (`thumbnail_disable_*`), but no specific generation logic consumption found in this crate.
+ - Identifies thumbnail cache paths (`/.thumbs`, `/.thumbs_cache`).
+ - Thumbnail cache paths default skip quota, skip index, can skip WAL.
+ - User settings table has multi-format disable switch fields (`thumbnail_disable_*`), but no specific generation logic consumption found in this crate.
 - This is "governance/isolation strategy implemented, thumbnail production chain not landed in this module".
 
 ## 4. Core Algorithm Descriptions
@@ -202,19 +202,19 @@ This document is the sole detailed documentation for `crates/yh-filemanager-vfs-
 
 - This module config is strong validation mode; key fields missing or invalid refuses startup.
 - Key items related to compression/decompression:
-  - `file_compress.enable`
-  - `file_compress.exe_7zip_path`
-  - `file_compress.process_manager_max_concurrency`
-  - `file_compress.max_cpu_threads`
-  - `file_compress.compression_max_level`
-  - `file_compress.timeout_secs`
-  - `file_compress.max_extract_size_gb`
-  - `file_compress.max_compress_items`
-  - `file_compress.max_compress_total_size_mb`
-  - `file_compress.max_compress_output_size_mb`
-  - `file_compress.max_decompress_archive_size_mb`
-  - `file_compress.decompression_formats`
-  - `file_compress.enable_archive_browser`
+ - `file_compress.enable`
+ - `file_compress.exe_7zip_path`
+ - `file_compress.process_manager_max_concurrency`
+ - `file_compress.max_cpu_threads`
+ - `file_compress.compression_max_level`
+ - `file_compress.timeout_secs`
+ - `file_compress.max_extract_size_gb`
+ - `file_compress.max_compress_items`
+ - `file_compress.max_compress_total_size_mb`
+ - `file_compress.max_compress_output_size_mb`
+ - `file_compress.max_decompress_archive_size_mb`
+ - `file_compress.decompression_formats`
+ - `file_compress.enable_archive_browser`
 
 ## 6. Interaction with Other Modules
 
