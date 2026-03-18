@@ -36,17 +36,12 @@ pub trait VfsTaskHandler: Send + Sync {
     async fn fail_task(&self, id: Uuid, error: &str) -> Result<(), String>;
     async fn success_task(&self, id: Uuid) -> Result<(), String>;
 
-    /// Check if task is cancelled
+    /// Check whether a task is cancelled.
     fn is_cancelled(&self, id: Uuid) -> bool;
-    /// Cleanup task resources (like cancellation tokens)
+    /// Cleanup task resources (e.g. cancellation tokens).
     fn cleanup_task(&self, id: Uuid);
-    /// Get Any reference for downcasting
+    /// Get `Any` reference for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
-    /// Log batch operation
-    ///
-    ///
-    /// Records the execution result of a single file in batch operations, including file path,
-    /// target path, status, error message, etc. This method is used to track detailed execution
-    /// information of batch operations, helping users understand specific issues and failure reasons.
+    /// Log a single item result in a batch operation.
     async fn log_batch_operation(&self, log: BatchOperationLog<'_>) -> Result<(), String>;
 }

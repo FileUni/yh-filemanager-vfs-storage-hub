@@ -1,7 +1,4 @@
-// Scoped VFS Storage Engine Module
-//
-// VFS
-//  This module provides the VFS operation engine implementation within a specific user scope.
+// User-scoped VFS operation engine.
 pub mod batch;
 pub mod engine;
 pub mod internal;
