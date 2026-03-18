@@ -1,6 +1,4 @@
-// VFS (Write-Ahead Log)
-//
-// VFS
+//! Write-ahead log (WAL).
 use crate::vfs::{VfsStorage, VfsStorageHub};
 use sea_orm::sea_query::Index;
 use sea_orm::*;

@@ -1,6 +1,4 @@
-// VFS Storage Pool
-//
-// Manages primary and backup storage connections
+//! Storage pool for VFS.
 use crate::config::VfsPoolConfig;
 use crate::vfs::VfsResult;
 use crate::vfs::VfsStorage;

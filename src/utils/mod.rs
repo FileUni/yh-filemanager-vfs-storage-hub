@@ -1,6 +1,4 @@
-// Utility Layer
-//
-// Provides utilities for temporary file management, compression/decompression, caching, etc.
+//! VFS utilities.
 pub mod cache;
 pub mod compression;
 pub mod temp_file;

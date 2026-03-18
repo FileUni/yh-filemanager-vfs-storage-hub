@@ -1,6 +1,4 @@
-// Connector Management
-//
-// Build connectors for various storage backends based on OpenDAL
+//! Build OpenDAL connectors for storage backends.
 use crate::config::VfsConnectorConfig;
 use crate::vfs::{VfsError, VfsResult};
 use opendal::layers::{LoggingLayer, RetryLayer};

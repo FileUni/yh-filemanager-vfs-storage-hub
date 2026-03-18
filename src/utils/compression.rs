@@ -1,7 +1,4 @@
-// VFS Storage Hub compression and decompression (7z process version)
-//
-//7z
-//  Implements all compression/decompression via external 7z process, supporting concurrency control and streaming.
+//! Compression/decompression helpers (7z process based).
 use crate::vfs::error::{VfsError, VfsResult};
 use crate::vfs::{VfsFileInfo, VfsStorage};
 use flate2::Compression;

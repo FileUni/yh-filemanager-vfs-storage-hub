@@ -1,7 +1,7 @@
-// Path sanitization and validation tests.
-//
-// NOTE: This file is currently not wired into lib.rs; keep it consistent with
-// `ScopedVfsStorageEngine::validate_file_operation` for documentation purposes.
+//! Path sanitization and validation tests.
+//!
+//! NOTE: Not wired into lib.rs; keep in sync with
+//! `ScopedVfsStorageEngine::validate_file_operation`.
 
 #[cfg(test)]
 mod path_tests {
