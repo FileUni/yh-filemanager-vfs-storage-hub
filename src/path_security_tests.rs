@@ -1,22 +1,63 @@
-// Path sanitization and validation tests
-// These tests verify the security checks for file paths
+// Path sanitization and validation tests.
+//
+// NOTE: This file is currently not wired into lib.rs; keep it consistent with
+// `ScopedVfsStorageEngine::validate_file_operation` for documentation purposes.
 
 #[cfg(test)]
 mod path_tests {
-    /// Test that validates the path security check logic
-    /// This replicates the logic from internal.rs validate_file_operation
     fn validate_path_security(path: &str) -> Result<String, String> {
-        let normalized = if path.starts_with('/') { path.to_string() } else { format!("/{}", path) };
+        let normalized = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
 
-        // Unified security line: intercept all dangerous path patterns
-        //1. (..), 2. (//), 3. (./)
-        if normalized.contains("..") || normalized.contains("//") || normalized.contains("./") {
-            return Err(format!("Security violation: dangerous path pattern detected in '{}'", normalized));
-        }
-
-        // Prohibit control characters
         if normalized.chars().any(|c| c.is_control()) {
             return Err("Security violation: control characters in path".to_string());
+        }
+
+        let normalized = normalized.replace('\\', "/");
+
+        fn validate_segments(p: &str) -> Result<(), String> {
+            if !p.starts_with('/') {
+                return Err("Security violation: path must be absolute".to_string());
+            }
+            if p == "/" {
+                return Ok(());
+            }
+            let ends_with_slash = p.ends_with('/') && p.len() > 1;
+            let mut split = p.split('/').peekable();
+            let mut idx: usize = 0;
+
+            while let Some(seg) = split.next() {
+                let is_last = split.peek().is_none();
+                if seg.is_empty() {
+                    let is_leading = idx == 0;
+                    let is_trailing = ends_with_slash && is_last;
+                    if is_leading || is_trailing {
+                        idx = idx.saturating_add(1);
+                        continue;
+                    }
+                    return Err(format!("Security violation: empty path segment in '{}'", p));
+                }
+                if seg == "." || seg == ".." {
+                    return Err(format!(
+                        "Security violation: dot segment detected in '{}'",
+                        p
+                    ));
+                }
+
+                idx = idx.saturating_add(1);
+            }
+            Ok(())
+        }
+
+        validate_segments(&normalized)?;
+        if normalized.contains('%') {
+            let decoded = percent_encoding::percent_decode_str(&normalized)
+                .decode_utf8()
+                .map_err(|_| "Security violation: invalid percent encoding in path".to_string())?;
+            validate_segments(decoded.as_ref())?;
         }
 
         Ok(normalized)
@@ -72,24 +113,10 @@ mod path_tests {
     fn test_path_traversal_parent_directory() {
         let result = validate_path_security("/documents/../etc/passwd");
         assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.contains("Security violation"));
-        }
-    }
-    fn test_path_traversal_parent_directory() {
-        let result = validate_path_security("/documents/../etc/passwd");
-        assert!(result.is_err());
         assert!(result.unwrap_err().contains("Security violation"));
     }
 
     #[test]
-    fn test_path_traversal_at_start() {
-        let result = validate_path_security("/../etc/passwd");
-        assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.contains("Security violation"));
-        }
-    }
     fn test_path_traversal_at_start() {
         let result = validate_path_security("/../etc/passwd");
         assert!(result.is_err());
@@ -106,13 +133,6 @@ mod path_tests {
     fn test_path_double_slash() {
         let result = validate_path_security("/documents//file.txt");
         assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.contains("Security violation"));
-        }
-    }
-    fn test_path_double_slash() {
-        let result = validate_path_security("/documents//file.txt");
-        assert!(result.is_err());
         assert!(result.unwrap_err().contains("Security violation"));
     }
 
@@ -123,13 +143,6 @@ mod path_tests {
     }
 
     #[test]
-    fn test_path_single_dot_current_directory() {
-        let result = validate_path_security("/documents/./file.txt");
-        assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.contains("Security violation"));
-        }
-    }
     fn test_path_single_dot_current_directory() {
         let result = validate_path_security("/documents/./file.txt");
         assert!(result.is_err());
@@ -147,14 +160,6 @@ mod path_tests {
         // Null character
         let result = validate_path_security("/documents/fil\x00e.txt");
         assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.contains("control characters"));
-        }
-    }
-    fn test_path_control_character() {
-        // Null character
-        let result = validate_path_security("/documents/fil\x00e.txt");
-        assert!(result.is_err());
         assert!(result.unwrap_err().contains("control characters"));
     }
 
@@ -162,14 +167,13 @@ mod path_tests {
     fn test_path_newline_character() {
         let result = validate_path_security("/documents/file\n.txt");
         assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.contains("control characters"));
-        }
-    }
-    fn test_path_newline_character() {
-        let result = validate_path_security("/documents/file\n.txt");
-        assert!(result.is_err());
         assert!(result.unwrap_err().contains("control characters"));
+    }
+
+    #[test]
+    fn test_path_percent_encoded_parent_traversal() {
+        let result = validate_path_security("/a/%2e%2e/b");
+        assert!(result.is_err());
     }
 
     #[test]

@@ -47,27 +47,84 @@ impl ScopedVfsStorageEngine {
         let path = validated.trim_start_matches('/');
         Ok(format!("{}/{}", self.user_id, path))
     }
-    pub(super) async fn validate_file_operation(&self, path: &str) -> VfsResult<String> {
+    fn validate_file_operation_impl(path: &str) -> VfsResult<String> {
         let normalized = if path.starts_with('/') {
             path.to_string()
         } else {
             format!("/{}", path)
         };
-        // Unified security line: intercept all dangerous path patterns
-        //1. (..), 2. (//), 3. (./)
-        if normalized.contains("..") || normalized.contains("//") || normalized.contains("./") {
-            return Err(VfsError::Internal(format!(
-                "Security violation: dangerous path pattern detected in '{}'",
-                normalized
-            )));
-        }
+
         // Prohibit control characters
         if normalized.chars().any(|c| c.is_control()) {
             return Err(VfsError::Internal(
                 "Security violation: control characters in path".to_string(),
             ));
         }
+
+        // Normalize separators to avoid backend-dependent behavior.
+        let normalized = normalized.replace('\\', "/");
+
+        fn validate_segments(p: &str) -> Result<(), VfsError> {
+            if !p.starts_with('/') {
+                return Err(VfsError::Internal(
+                    "Security violation: path must be absolute".to_string(),
+                ));
+            }
+
+            if p == "/" {
+                return Ok(());
+            }
+
+            // Reject empty segments in the middle ("//" or "///"), but allow leading '/' and
+            // allow a single trailing '/' for directory semantics.
+            let ends_with_slash = p.ends_with('/') && p.len() > 1;
+            let mut split = p.split('/').peekable();
+            let mut idx: usize = 0;
+
+            while let Some(seg) = split.next() {
+                let is_last = split.peek().is_none();
+                if seg.is_empty() {
+                    let is_leading = idx == 0;
+                    let is_trailing = ends_with_slash && is_last;
+                    if is_leading || is_trailing {
+                        idx = idx.saturating_add(1);
+                        continue;
+                    }
+                    return Err(VfsError::Internal(format!(
+                        "Security violation: empty path segment in '{}'",
+                        p
+                    )));
+                }
+                if seg == "." || seg == ".." {
+                    return Err(VfsError::Internal(format!(
+                        "Security violation: dot segment detected in '{}'",
+                        p
+                    )));
+                }
+
+                idx = idx.saturating_add(1);
+            }
+            Ok(())
+        }
+
+        // Validate raw segments first.
+        validate_segments(&normalized)?;
+
+        // Also validate percent-decoded view to prevent encoded traversal (e.g. %2e%2e).
+        if normalized.contains('%') {
+            let decoded = percent_encoding::percent_decode_str(&normalized)
+                .decode_utf8()
+                .map_err(|_| {
+                    VfsError::Internal("Security violation: invalid percent encoding in path".to_string())
+                })?;
+            validate_segments(decoded.as_ref())?;
+        }
+
         Ok(normalized)
+    }
+
+    pub(super) async fn validate_file_operation(&self, path: &str) -> VfsResult<String> {
+        Self::validate_file_operation_impl(path)
     }
     pub(super) fn is_temp_path(&self, path: &str) -> bool {
         path.starts_with(LOGICAL_TEMP_PREFIX)
@@ -279,5 +336,41 @@ impl ScopedVfsStorageEngine {
         let translated = self.translate_file_info(info, false);
         self.upsert_index_helper(normalized, &translated).await?;
         Ok(translated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScopedVfsStorageEngine;
+
+    #[test]
+    fn path_allows_double_dot_in_filename() {
+        assert!(ScopedVfsStorageEngine::validate_file_operation_impl("/foo..bar.txt").is_ok());
+    }
+
+    #[test]
+    fn path_rejects_parent_traversal_segment() {
+        assert!(
+            ScopedVfsStorageEngine::validate_file_operation_impl("/documents/../etc/passwd")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn path_rejects_current_dir_segment() {
+        assert!(
+            ScopedVfsStorageEngine::validate_file_operation_impl("/documents/./file.txt")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn path_rejects_double_slash() {
+        assert!(ScopedVfsStorageEngine::validate_file_operation_impl("/a//b/c").is_err());
+    }
+
+    #[test]
+    fn path_rejects_percent_encoded_parent_traversal() {
+        assert!(ScopedVfsStorageEngine::validate_file_operation_impl("/a/%2e%2e/b").is_err());
     }
 }
