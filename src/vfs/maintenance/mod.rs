@@ -1,5 +1,5 @@
-// VFS Maintenance Service Module
-//
+//! VFS maintenance routines.
+
 use crate::utils::temp_file::get_global_temp_manager;
 use crate::vfs::{VfsStorage, VfsStorageHub};
 use sea_orm::{DatabaseConnection, EntityTrait};
