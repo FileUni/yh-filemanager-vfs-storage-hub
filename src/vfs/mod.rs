@@ -1,8 +1,4 @@
-// VFS
-//
-// VFS
-// OpenDAL
-// Basic definitions
+//! Virtual file system (VFS) core.
 pub mod error;
 pub mod journal;
 pub mod maintenance_mode;
@@ -13,7 +9,6 @@ pub use journal::{VfsJournalEvent, VfsJournalRecorder};
 pub use maintenance_mode::*;
 pub use traits::VfsStorage;
 pub use types::{VfsBatchError, VfsBatchResult, VfsFileInfo, VfsMetadata, VfsPaginationParams};
-// Implementation Layer
 pub mod batch;
 pub mod connector;
 pub mod hub;

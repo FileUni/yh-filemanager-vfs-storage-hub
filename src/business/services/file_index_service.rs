@@ -998,7 +998,7 @@ impl FileIndexService {
                 .exec(&txn)
                 .await?;
         }
-        //2. RowUpdatedAt sync_start
+        // Prune stale rows (row_updated_at < sync_start).
         file_index::Entity::delete_many()
             .filter(file_index::Column::UserId.eq(user_id))
             .filter(file_index::Column::ParentPath.eq(parent_path))

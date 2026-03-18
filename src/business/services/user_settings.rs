@@ -93,7 +93,6 @@ impl UserSettingsService {
         additional_size: i64,
     ) -> VfsCommonResult<bool> {
         if let Some(settings) = user_settings::Entity::find_by_id(user_id).one(db).await? {
-            //0
             if settings.storage_quota == 0 {
                 return Ok(false);
             }

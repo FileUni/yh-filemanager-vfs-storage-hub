@@ -1,6 +1,4 @@
-// VFS Batch Operation Execution Module
-//
-//  Responsible for the specific execution flow of batch tasks, supporting progress reporting, detailed logging, and timeout control.
+//! Batch operation executor (progress/logging/timeout).
 use crate::vfs::task::{BatchOperationLog, VfsTaskHandler};
 use crate::vfs::{ScopedVfsStorageEngine, VfsStorage};
 use std::sync::Arc;

@@ -119,13 +119,13 @@ impl ScopedVfsStorageEngine {
     }
     pub(super) async fn sync_index_impl(&self, path: &str) -> VfsResult<Vec<VfsFileInfo>> {
         let normalized = self.validate_file_operation(path).await?;
-        //1. Get concurrency lock to prevent redundant syncs
+        // Lock to avoid redundant syncs.
         let guard = self.pool.sync_guards.get_guard(&self.user_id, &normalized);
         let _lock = guard.lock().await;
-        //2. Fetch real list from physical storage
+        // Fetch physical listing.
         let p_path = self.get_physical_path(&normalized).await?;
         let p_entries = self.pool.list(&p_path).await?;
-        //3. Prepare batch Upsert data
+        // Prepare batch upsert.
         let mut active_models = Vec::with_capacity(p_entries.len());
         let now = chrono::Utc::now();
         let norm_path = if normalized == "/" {
@@ -166,14 +166,14 @@ impl ScopedVfsStorageEngine {
                 ..Default::default()
             });
         }
-        //4. Invoke optimized batch sync service
+        // Sync.
         self.index_service
             .sync_directory_optimized(&self.user_id, &normalized, active_models)
             .await
             .map_err(|e| VfsError::Internal(e.to_string()))?;
-        //5. Invalidate parent cache
+        // Invalidate cache.
         self.cache.invalidate("ls", &normalized).await;
-        //6. Re-fetch merged list from DB to include favorite_color, etc.
+        // Re-fetch merged list from DB.
         let merged_entries = self
             .index_service
             .list_files(&self.user_id, &normalized)

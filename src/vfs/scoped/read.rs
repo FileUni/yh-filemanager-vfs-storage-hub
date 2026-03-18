@@ -1,4 +1,3 @@
-// VFS Scoped Read Implementation
 use super::ScopedVfsStorageEngine;
 use crate::vfs::error::{VfsError, VfsResult};
 use crate::vfs::{LOGICAL_TEMP_PREFIX, VfsFileInfo, VfsMetadata, VfsPaginationParams, VfsStorage};

@@ -1,4 +1,3 @@
-// VfsStorage Trait Implementation
 use super::ScopedVfsStorageEngine;
 use crate::utils::temp_file::VfsTempFileGuard;
 use crate::vfs::error::VfsResult;

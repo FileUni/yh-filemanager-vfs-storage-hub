@@ -227,7 +227,7 @@ impl ScopedVfsStorageEngine {
         if let Some(target_slice) = content.get_mut(offset_idx..offset_idx + data.len()) {
             target_slice.copy_from_slice(&data);
         } else {
-            // This should not happen due to resize above, but for absolute safety:
+            // Unreachable after resize; guard anyway.
             return Err(VfsError::Internal(
                 "Buffer overflow in write_at".to_string(),
             ));
