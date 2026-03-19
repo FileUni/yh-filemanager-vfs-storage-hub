@@ -1097,7 +1097,7 @@ mod tests {
     // =============== Native compression/decompression tests ===============
     #[test]
     fn test_zip_integrity_native() -> anyhow::Result<()> {
-        let tmp_dir = std::env::temp_dir().join(format!("vfs_test_{}", uuid::Uuid::new_v4()));
+        let tmp_dir = std::env::temp_dir().join(format!("vfs_test_{}", uuid::Uuid::now_v7()));
         let src_dir = tmp_dir.join("src");
         let dst_zip = tmp_dir.join("test.zip");
         let out_dir = tmp_dir.join("out");
@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn test_tar_gz_integrity_native() -> anyhow::Result<()> {
-        let tmp_dir = std::env::temp_dir().join(format!("vfs_test_tar_{}", uuid::Uuid::new_v4()));
+        let tmp_dir = std::env::temp_dir().join(format!("vfs_test_tar_{}", uuid::Uuid::now_v7()));
         let src_dir = tmp_dir.join("src");
         let dst_tar = tmp_dir.join("test.tar.gz");
         let out_dir = tmp_dir.join("out");
@@ -1160,7 +1160,7 @@ mod tests {
 
     #[test]
     fn test_gzip_single_file_native() -> anyhow::Result<()> {
-        let tmp_dir = std::env::temp_dir().join(format!("vfs_test_gz_{}", uuid::Uuid::new_v4()));
+        let tmp_dir = std::env::temp_dir().join(format!("vfs_test_gz_{}", uuid::Uuid::now_v7()));
         let src_file = tmp_dir.join("test.txt");
         let dst_gz = tmp_dir.join("test.txt.gz");
         let out_file = tmp_dir.join("output.txt");

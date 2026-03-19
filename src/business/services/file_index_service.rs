@@ -68,7 +68,7 @@ impl FileIndexService {
         };
         let now = chrono::Utc::now();
         let active = file_index::ActiveModel {
-            id: Set(uuid::Uuid::new_v4().to_string()),
+            id: Set(uuid::Uuid::now_v7().to_string()),
             user_id: Set(user_id.to_string()),
             parent_path: Set(parent),
             name: Set(info.name.to_string()),

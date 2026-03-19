@@ -154,7 +154,7 @@ impl ScopedVfsStorageEngine {
                 continue;
             }
             active_models.push(crate::business::entities::file_index::ActiveModel {
-                id: sea_orm::ActiveValue::Set(uuid::Uuid::new_v4().to_string()),
+                id: sea_orm::ActiveValue::Set(uuid::Uuid::now_v7().to_string()),
                 user_id: sea_orm::ActiveValue::Set(self.user_id.to_string()),
                 parent_path: sea_orm::ActiveValue::Set(normalized.to_string()),
                 name: sea_orm::ActiveValue::Set(translated.name.to_string()),

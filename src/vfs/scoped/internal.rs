@@ -290,7 +290,7 @@ impl ScopedVfsStorageEngine {
             .create_user_temp_dir(&self.user_id, "upload")
             .await
             .map_err(|e| VfsError::Internal(e.to_string()))?;
-        let temp_file_path = temp_dir.join(uuid::Uuid::new_v4().to_string());
+        let temp_file_path = temp_dir.join(uuid::Uuid::now_v7().to_string());
         let mut file = tokio::fs::File::create(&temp_file_path)
             .await
             .map_err(VfsError::Io)?;
