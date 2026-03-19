@@ -7,6 +7,7 @@ use futures::stream::BoxStream;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use std::cmp::Ordering;
 
 static INDEX_SYNC_SEMAPHORE: once_cell::sync::OnceCell<Arc<Semaphore>> =
     once_cell::sync::OnceCell::new();
@@ -144,22 +145,34 @@ impl ScopedVfsStorageEngine {
         }
         let physical = self.get_physical_path(&normalized).await?;
         let physical_entries = self.pool.list(&physical).await?;
+        let norm_path = if normalized == "/" {
+            "/"
+        } else {
+            normalized.trim_end_matches('/')
+        };
+        let norm_path_slash = format!("{}/", norm_path);
         Ok(physical_entries
             .into_iter()
-            .map(|e| {
-                let file_name = file_name_from_path(&e.path);
-                VfsFileInfo {
-                    name: file_name.into(),
-                    path: format!("{}/{}", normalized.trim_end_matches('/'), file_name).into(),
-                    is_dir: e.is_dir,
-                    size: e.size,
-                    modified: e.modified,
-                    favorite_color: 0,
-                    has_active_share: None,
-                    has_active_direct: None,
-                    trashed_at: None,
-                    original_path: None,
+            .map(|e| self.translate_file_info(e, false))
+            .filter(|translated| {
+                // Hide thumbnail cache
+                if self.is_thumbnail_cache_path(translated.path.as_ref()) {
+                    return false;
                 }
+
+                // Filter out the directory itself (some backends include the listing prefix).
+                let trans_path = translated.path.as_ref();
+                if trans_path == norm_path || (norm_path != "/" && trans_path == norm_path_slash) {
+                    return false;
+                }
+
+                // Ensure direct child only.
+                let parent = if let Some((p, _)) = trans_path.rsplit_once('/') {
+                    if p.is_empty() { "/" } else { p }
+                } else {
+                    return false;
+                };
+                parent == norm_path
             })
             .collect())
     }
@@ -259,25 +272,45 @@ impl ScopedVfsStorageEngine {
         page_size: i64,
     ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
         let normalized = self.validate_file_operation(parent_path).await?;
+
+        // Keep behavior consistent with `list_impl`: allow optional index refresh.
+        // This helps self-heal when index is missing/outdated.
+        let _ = self.execute_sync_decision(&normalized).await?;
+
         let (entries, total) = self
             .index_service
             .list_files_paginated(&self.user_id, &normalized, page, page_size)
             .await
             .map_err(|e| VfsError::Internal(e.to_string()))?;
-        let files = entries
+
+        if total > 0 {
+            let files = entries
+                .into_iter()
+                .map(|e| VfsFileInfo {
+                    name: e.name.into(),
+                    path: e.path.into(),
+                    is_dir: e.is_dir,
+                    size: e.size as u64,
+                    modified: e.file_updated_at.map(|t| t.into()),
+                    favorite_color: e.favorite_color,
+                    has_active_share: None,
+                    has_active_direct: None,
+                    trashed_at: e.file_trashed_at.map(|t| t.into()),
+                    original_path: e.original_path.map(|p| p.into()),
+                })
+                .collect();
+            return Ok((files, total));
+        }
+
+        // Fallback: index might be empty (e.g. missing unique constraint / first run).
+        // Use physical listing (via `list_impl`) + in-memory pagination.
+        let all = self.list_impl(&normalized).await?;
+        let total = all.len() as i64;
+        let offset = ((page - 1) * page_size).max(0) as usize;
+        let files = all
             .into_iter()
-            .map(|e| VfsFileInfo {
-                name: e.name.into(),
-                path: e.path.into(),
-                is_dir: e.is_dir,
-                size: e.size as u64,
-                modified: e.file_updated_at.map(|t| t.into()),
-                favorite_color: e.favorite_color,
-                has_active_share: None,
-                has_active_direct: None,
-                trashed_at: e.file_trashed_at.map(|t| t.into()),
-                original_path: e.original_path.map(|p| p.into()),
-            })
+            .skip(offset)
+            .take(page_size.max(0) as usize)
             .collect();
         Ok((files, total))
     }
@@ -287,31 +320,100 @@ impl ScopedVfsStorageEngine {
         params: VfsPaginationParams<'_>,
     ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
         let normalized = self.validate_file_operation(parent_path).await?;
+        let params_for_fallback = params.clone();
+
+        // Optional self-heal sync (background or blocking depending on config).
+        // If sync returns a fresh listing (mode=2), use it directly.
+        if let Some(fresh) = self.execute_sync_decision(&normalized).await? {
+            return Self::paginate_with_sort_in_memory(fresh, params);
+        }
+
         match self
             .index_service
             .list_files_paginated_with_sort(&self.user_id, &normalized, params)
             .await
         {
             Ok((entries, total)) => {
-                let files = entries
-                    .into_iter()
-                    .map(|e| VfsFileInfo {
-                        name: e.name.into(),
-                        path: e.path.into(),
-                        is_dir: e.is_dir,
-                        size: e.size as u64,
-                        modified: e.file_updated_at.map(|t| t.into()),
-                        favorite_color: e.favorite_color,
-                        has_active_share: None,
-                        has_active_direct: None,
-                        trashed_at: e.file_trashed_at.map(|t| t.into()),
-                        original_path: e.original_path.map(|p| p.into()),
-                    })
-                    .collect();
-                Ok((files, total))
+                if total > 0 {
+                    let files = entries
+                        .into_iter()
+                        .map(|e| VfsFileInfo {
+                            name: e.name.into(),
+                            path: e.path.into(),
+                            is_dir: e.is_dir,
+                            size: e.size as u64,
+                            modified: e.file_updated_at.map(|t| t.into()),
+                            favorite_color: e.favorite_color,
+                            has_active_share: None,
+                            has_active_direct: None,
+                            trashed_at: e.file_trashed_at.map(|t| t.into()),
+                            original_path: e.original_path.map(|p| p.into()),
+                        })
+                        .collect();
+                    return Ok((files, total));
+                }
+
+                // Fallback to physical listing when index is empty.
+                let all = self.list_impl(&normalized).await?;
+                Self::paginate_with_sort_in_memory(all, params_for_fallback)
             }
-            Err(e) => Err(VfsError::Internal(e.to_string())),
+            Err(e) => {
+                // If DB query fails, do not fail browsing. Use physical listing.
+                yh_console_log::yhlog(
+                    "warn",
+                    &format!(
+                        "VFS list_files_paginated_with_sort index query failed, fallback to physical list: user_id={} parent_path={} err={}",
+                        self.user_id, normalized, e
+                    ),
+                );
+                let all = self.list_impl(&normalized).await?;
+                Self::paginate_with_sort_in_memory(all, params_for_fallback)
+            }
         }
+    }
+
+    fn paginate_with_sort_in_memory(
+        mut all: Vec<VfsFileInfo>,
+        params: VfsPaginationParams<'_>,
+    ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
+    // Search filter
+    if let Some(kw) = params.keyword
+        && !kw.is_empty()
+    {
+        let kw_lower = kw.to_lowercase();
+        all.retain(|e| {
+            e.name.to_lowercase().contains(&kw_lower) || e.path.to_lowercase().contains(&kw_lower)
+        });
+    }
+
+    // Sorting (keep directories first, consistent with DB behavior).
+    let sort_field = params.sort_by.unwrap_or("name");
+    let order = params.order.unwrap_or("asc");
+    let is_desc = order == "desc";
+
+    all.sort_by(|a, b| {
+        let dir_cmp = b.is_dir.cmp(&a.is_dir);
+        if dir_cmp != Ordering::Equal {
+            return dir_cmp;
+        }
+        let cmp = match sort_field {
+            "size" => a.size.cmp(&b.size),
+            "modified" => a.modified.cmp(&b.modified),
+            "path" => a.path.cmp(&b.path),
+            "created_at" => a.modified.cmp(&b.modified),
+            _ => a.name.cmp(&b.name),
+        };
+        if is_desc { cmp.reverse() } else { cmp }
+    });
+
+    let total = all.len() as i64;
+    let offset = ((params.page - 1) * params.page_size).max(0) as usize;
+    let files = all
+        .into_iter()
+        .skip(offset)
+        .take(params.page_size.max(0) as usize)
+        .collect();
+    Ok((files, total))
     }
     pub(super) async fn search_files_paginated_impl(
         &self,

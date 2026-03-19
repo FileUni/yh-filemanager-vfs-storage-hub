@@ -186,10 +186,21 @@ impl ScopedVfsStorageEngine {
         if self.is_thumbnail_cache_path(logical_path) {
             return Ok(());
         }
-        let _ = self
+        if let Err(e) = self
             .index_service
             .upsert_file(&self.user_id, logical_path, info)
-            .await;
+            .await
+        {
+            // Governance rule: do not rollback physical IO when DB update fails.
+            // Still log loudly to make the issue observable.
+            yh_console_log::yhlog(
+                "error",
+                &format!(
+                    "VFS index upsert failed: user_id={} path={} err={}",
+                    self.user_id, logical_path, e
+                ),
+            );
+        }
         self.cache.invalidate_parent_ls(logical_path).await;
         self.cache.invalidate("stat", logical_path).await;
         Ok(())

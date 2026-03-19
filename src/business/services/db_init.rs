@@ -58,10 +58,23 @@ pub async fn init_vfs_tables(db: &Arc<sea_orm::DatabaseConnection>) -> Result<()
         .if_not_exists()
         .to_owned();
 
+    // Unique index for upsert target (user_id, path).
+    // Many write-through code paths rely on `ON CONFLICT(user_id, path)`.
+    // Without this constraint SQLite will reject the statement and the index will stay empty.
+    let uidx_vfs_user_path = Index::create()
+        .name("uidx_vfs_user_path")
+        .table(file_index::Entity)
+        .col(file_index::Column::UserId)
+        .col(file_index::Column::Path)
+        .unique()
+        .if_not_exists()
+        .to_owned();
+
     db.execute(backend.build(&idx_vfs_list)).await?;
     db.execute(backend.build(&idx_vfs_search)).await?;
     db.execute(backend.build(&idx_vfs_recycle)).await?;
     db.execute(backend.build(&idx_vfs_path_prefix)).await?;
+    db.execute(backend.build(&uidx_vfs_user_path)).await?;
 
     let stmt_file_shares = schema
         .create_table_from_entity(file_share::Entity)
