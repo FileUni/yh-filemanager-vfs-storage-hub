@@ -34,7 +34,7 @@ impl SshKeyService {
         comment: Option<String>,
     ) -> VfsCommonResult<SshKeyInfo> {
         let (fingerprint, key_type) = Self::parse_public_key(public_key)?;
-        let id = Uuid::new_v4().to_string();
+        let id = Uuid::now_v7().to_string();
         let now = Utc::now();
         let key = ssh_keys::ActiveModel {
             id: Set(id),
