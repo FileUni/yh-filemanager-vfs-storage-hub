@@ -429,7 +429,8 @@ impl VfsFileCompressConfig {
     pub fn validate(&self, section: &str, errors: &mut Vec<String>) {
         let s = section;
         yh_config_infra::config_collect_bool!(self.enable, s, "enable", errors);
-        yh_config_infra::config_collect_not_empty!(self.exe_7zip_path, s, "exe_7zip_path", errors);
+        // Allow empty string to explicitly disable 7z integration while keeping native ZIP/Tar/Gzip.
+        yh_config_infra::config_collect_any!(self.exe_7zip_path, s, "exe_7zip_path", errors);
         yh_config_infra::config_collect_not_empty!(
             self.default_compression_format,
             s,
@@ -523,6 +524,32 @@ impl VfsFileCompressConfig {
             "enable_archive_browser",
             errors
         );
+
+        // Cross-field consistency: if 7z format is enabled, exe_7zip_path must be non-empty.
+        // Actual executability (PATH / file existence) is checked by config orchestrator preflight.
+        let exe_7z = self
+            .exe_7zip_path
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("");
+        let default_fmt = self
+            .default_compression_format
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let wants_7z_by_default = default_fmt == "7z";
+        let allows_7z_extract = self
+            .decompression_formats
+            .as_ref()
+            .map(|v| v.iter().any(|s| s.trim().eq_ignore_ascii_case("7z")))
+            .unwrap_or(false);
+        if (wants_7z_by_default || allows_7z_extract) && exe_7z.is_empty() {
+            errors.push(format!(
+                "[{}] file_compress.exe_7zip_path cannot be empty when 7z format is enabled",
+                s
+            ));
+        }
     }
 }
 
