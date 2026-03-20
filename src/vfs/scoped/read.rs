@@ -288,6 +288,25 @@ impl ScopedVfsStorageEngine {
     }
     pub(super) async fn stat_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         let normalized = self.validate_file_operation(path).await?;
+        if self.is_temp_path(&normalized) {
+            let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
+            let local_path = self.temp_manager.get_user_temp_dir(&self.user_id).join(rel);
+            let meta = tokio::fs::metadata(&local_path)
+                .await
+                .map_err(VfsError::Io)?;
+            return Ok(VfsFileInfo {
+                name: file_name_from_path(&normalized).into(),
+                path: normalized.into(),
+                is_dir: meta.is_dir(),
+                size: meta.len(),
+                modified: meta.modified().ok().map(Into::into),
+                favorite_color: 0,
+                has_active_share: None,
+                has_active_direct: None,
+                trashed_at: None,
+                original_path: None,
+            });
+        }
         if let Some(info) = self.pending_stat(&normalized).await {
             return Ok(info);
         }
