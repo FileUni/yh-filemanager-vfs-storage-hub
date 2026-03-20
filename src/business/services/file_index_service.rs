@@ -27,6 +27,9 @@ impl FileIndexService {
                     file_index::Column::ParentPath,
                     file_index::Column::Name,
                     file_index::Column::IsDir,
+                    file_index::Column::StorageId,
+                    file_index::Column::BackendType,
+                    file_index::Column::BackendKey,
                     file_index::Column::Size,
                     file_index::Column::Etag,
                     file_index::Column::FileUpdatedAt,
@@ -57,6 +60,18 @@ impl FileIndexService {
         logical_path: &str,
         info: &crate::vfs::VfsFileInfo,
     ) -> Result<file_index::Model, DbErr> {
+        self.upsert_file_with_location(user_id, logical_path, info, None, None, None)
+            .await
+    }
+    pub async fn upsert_file_with_location(
+        &self,
+        user_id: &str,
+        logical_path: &str,
+        info: &crate::vfs::VfsFileInfo,
+        storage_id: Option<&str>,
+        backend_type: Option<&str>,
+        backend_key: Option<&str>,
+    ) -> Result<file_index::Model, DbErr> {
         let parent = std::path::Path::new(logical_path)
             .parent()
             .map(|p| p.to_string_lossy().to_string())
@@ -74,6 +89,9 @@ impl FileIndexService {
             name: Set(info.name.to_string()),
             path: Set(logical_path.to_string()),
             is_dir: Set(info.is_dir),
+            storage_id: Set(storage_id.map(std::borrow::ToOwned::to_owned)),
+            backend_type: Set(backend_type.map(std::borrow::ToOwned::to_owned)),
+            backend_key: Set(backend_key.map(std::borrow::ToOwned::to_owned)),
             size: Set(info.size as i64),
             file_updated_at: Set(info.modified.map(|dt| dt.into())),
             row_updated_at: Set(now.into()),
@@ -333,6 +351,41 @@ impl FileIndexService {
             .filter(file_index::Column::RowDeletedAt.is_null())
             .one(&*self.db)
             .await
+    }
+    pub async fn resolve_file_ids_by_paths(
+        &self,
+        user_id: &str,
+        paths: &[String],
+    ) -> Result<std::collections::HashMap<String, String>, DbErr> {
+        if paths.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let entries = file_index::Entity::find()
+            .filter(file_index::Column::UserId.eq(user_id))
+            .filter(file_index::Column::Path.is_in(paths.iter().cloned()))
+            .filter(file_index::Column::RowDeletedAt.is_null())
+            .all(&*self.db)
+            .await?;
+        Ok(entries.into_iter().map(|entry| (entry.path, entry.id)).collect())
+    }
+    pub async fn get_active_shares_for_paths(
+        &self,
+        user_id: &str,
+        paths: &[String],
+    ) -> Result<std::collections::HashMap<String, (bool, bool)>, DbErr> {
+        let path_to_id = self.resolve_file_ids_by_paths(user_id, paths).await?;
+        if path_to_id.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let file_ids: Vec<String> = path_to_id.values().cloned().collect();
+        let share_map = self.get_active_shares_for_files(&file_ids).await?;
+        Ok(path_to_id
+            .into_iter()
+            .map(|(path, id)| {
+                let status = share_map.get(&id).copied().unwrap_or((false, false));
+                (path, status)
+            })
+            .collect())
     }
     /// Get total size (recursive) - Use SQL Sum
     pub async fn get_total_size(&self, user_id: &str, path_prefix: &str) -> Result<i64, DbErr> {
@@ -921,6 +974,9 @@ impl FileIndexService {
                     file_index::Column::ParentPath,
                     file_index::Column::Name,
                     file_index::Column::IsDir,
+                    file_index::Column::StorageId,
+                    file_index::Column::BackendType,
+                    file_index::Column::BackendKey,
                     file_index::Column::Size,
                     file_index::Column::FileUpdatedAt,
                     file_index::Column::RowUpdatedAt,
