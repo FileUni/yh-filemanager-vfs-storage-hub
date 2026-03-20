@@ -2,7 +2,7 @@ use super::{CachePathPolicy, read_cache::ReadCacheManager};
 use crate::business::entities::file_index;
 use crate::business::services::{FileIndexService, user_settings::UserSettingsService};
 use crate::config::VfsWriteCacheConfig;
-use crate::vfs::{VfsFileInfo, VfsJournalEvent};
+use crate::vfs::{VfsFileInfo, VfsJournalEvent, global_vfs_metrics};
 use bytes::Bytes;
 use dashmap::DashMap;
 use opendal::{Metadata, Operator};
@@ -264,12 +264,14 @@ impl WriteCacheManager {
         data: Bytes,
     ) -> anyhow::Result<Option<VfsFileInfo>> {
         if !self.should_cache(logical_path, data.len()) {
+            global_vfs_metrics().record_write_cache_bypass();
             return Ok(None);
         }
         if let Some(read_cache) = &self.read_cache {
             read_cache.remove(physical_path).await;
         }
         if !self.can_admit(physical_path, data.len() as u64).await {
+            global_vfs_metrics().record_write_cache_bypass();
             return Ok(None);
         }
         let modified_at = now_ts();
@@ -283,6 +285,7 @@ impl WriteCacheManager {
                 .await?;
             self.mark_dirty(logical_path, physical_path, user_id);
             let size = existing.inner.lock().await.size;
+            global_vfs_metrics().record_write_cache_enqueue();
             return Ok(Some(file_info_from_pending(
                 physical_path,
                 size,
@@ -325,6 +328,7 @@ impl WriteCacheManager {
         drop(guard);
         self.entries.insert(physical_path.to_string(), record);
         self.mark_dirty(logical_path, physical_path, user_id);
+        global_vfs_metrics().record_write_cache_enqueue();
         Ok(Some(file_info_from_pending(
             physical_path,
             data.len() as u64,
@@ -355,6 +359,7 @@ impl WriteCacheManager {
             (inner.blob.clone(), inner.size, inner.modified_at)
         };
         let data = self.read_blob_bytes(&blob).await.ok()?;
+        global_vfs_metrics().record_write_cache_pending_read();
         Some((
             data,
             file_info_from_pending(physical_path, size, modified_at),
