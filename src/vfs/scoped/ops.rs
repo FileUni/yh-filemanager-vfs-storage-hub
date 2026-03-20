@@ -128,6 +128,8 @@ impl ScopedVfsStorageEngine {
         // Prepare batch upsert.
         let mut active_models = Vec::with_capacity(p_entries.len());
         let now = chrono::Utc::now();
+        let storage_id = self.pool.config.get_name().to_string();
+        let backend_type = self.pool.get_backend_type();
         let norm_path = if normalized == "/" {
             "/"
         } else {
@@ -153,6 +155,7 @@ impl ScopedVfsStorageEngine {
             if parent != norm_path {
                 continue;
             }
+            let backend_key = self.get_physical_path(trans_path).await?;
             active_models.push(crate::business::entities::file_index::ActiveModel {
                 id: sea_orm::ActiveValue::Set(uuid::Uuid::now_v7().to_string()),
                 user_id: sea_orm::ActiveValue::Set(self.user_id.to_string()),
@@ -160,6 +163,9 @@ impl ScopedVfsStorageEngine {
                 name: sea_orm::ActiveValue::Set(translated.name.to_string()),
                 path: sea_orm::ActiveValue::Set(translated.path.to_string()),
                 is_dir: sea_orm::ActiveValue::Set(translated.is_dir),
+                storage_id: sea_orm::ActiveValue::Set(Some(storage_id.clone())),
+                backend_type: sea_orm::ActiveValue::Set(Some(backend_type.clone())),
+                backend_key: sea_orm::ActiveValue::Set(Some(backend_key)),
                 size: sea_orm::ActiveValue::Set(translated.size as i64),
                 file_updated_at: sea_orm::ActiveValue::Set(translated.modified.map(|dt| dt.into())),
                 row_updated_at: sea_orm::ActiveValue::Set(now.into()),

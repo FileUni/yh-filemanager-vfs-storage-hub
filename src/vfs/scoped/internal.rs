@@ -373,22 +373,27 @@ impl ScopedVfsStorageEngine {
         use tokio_util::io::ReaderStream;
         let vfs_stream = ReaderStream::new(buffer_file)
             .map(|res| res.map_err(|e| VfsError::Internal(e.to_string())));
-        self.pool
-            .write_stream(
-                &self.get_physical_path(normalized).await?,
-                Box::pin(vfs_stream),
+        let physical_path = self.get_physical_path(normalized).await?;
+        let wal_id = self
+            .begin_wal(
+                crate::vfs::wal::WalOperation::Write {
+                    path: normalized.to_string(),
+                    size: total_written,
+                },
+                self.should_skip_wal_for_write(normalized, total_written)
+                    .await,
             )
             .await?;
+        let write_result = self.pool.write_stream(&physical_path, Box::pin(vfs_stream)).await;
         let _ = tokio::fs::remove_file(&temp_file_path).await;
+        write_result?;
+        self.complete_wal(wal_id).await;
         if total_written as i64 - initial_file_size != 0 {
             let _ = self
                 .update_quota(total_written as i64 - initial_file_size)
                 .await;
         }
-        let info = self
-            .pool
-            .stat(&self.get_physical_path(normalized).await?)
-            .await?;
+        let info = self.pool.stat(&physical_path).await?;
         let translated = self.translate_file_info(info, false);
         self.upsert_index_helper(normalized, &translated).await?;
         Ok(translated)
