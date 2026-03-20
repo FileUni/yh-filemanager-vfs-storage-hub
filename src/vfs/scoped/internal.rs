@@ -316,11 +316,20 @@ impl ScopedVfsStorageEngine {
             .map_err(|e| VfsError::Internal(e.to_string()))
     }
     pub(super) async fn check_quota(&self, additional_size: i64) -> VfsResult<()> {
-        if UserSettingsService::check_quota_exceeded(&self.db, &self.user_id, additional_size)
+        let pending_delta = self.pool.pending_quota_delta(&self.user_id);
+        let settings = UserSettingsService::get_user_settings(&self.db, &self.user_id)
             .await
-            .map_err(|e| VfsError::Internal(e.to_string()))?
-        {
-            return Err(VfsError::QuotaExceeded);
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
+        if let Some(settings) = settings {
+            if settings.storage_quota > 0 {
+                let projected = settings
+                    .storage_used
+                    .saturating_add(pending_delta)
+                    .saturating_add(additional_size);
+                if projected > settings.storage_quota {
+                    return Err(VfsError::QuotaExceeded);
+                }
+            }
         }
         Ok(())
     }
@@ -334,7 +343,10 @@ impl ScopedVfsStorageEngine {
             } else {
                 None
             };
-            Ok((s.storage_used as u64, quota))
+            let used = s
+                .storage_used
+                .saturating_add(self.pool.pending_quota_delta(&self.user_id));
+            Ok((used.max(0) as u64, quota))
         } else {
             Ok((0, None))
         }

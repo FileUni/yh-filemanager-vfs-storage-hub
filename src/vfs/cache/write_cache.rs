@@ -1,6 +1,6 @@
 use super::{CachePathPolicy, read_cache::ReadCacheManager};
 use crate::business::entities::file_index;
-use crate::business::services::FileIndexService;
+use crate::business::services::{FileIndexService, user_settings::UserSettingsService};
 use crate::config::VfsWriteCacheConfig;
 use crate::vfs::{VfsFileInfo, VfsJournalEvent};
 use bytes::Bytes;
@@ -79,6 +79,14 @@ struct DirectoryIndexSyncTask {
 }
 
 #[derive(Debug, Clone)]
+struct UserQuotaSyncTask {
+    user_id: Arc<str>,
+    delta: i64,
+    next_sync_at: i64,
+    retry_count: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct PendingWriteInfo {
     pub physical_path: Arc<str>,
     pub size: u64,
@@ -102,6 +110,7 @@ pub struct WriteCacheManager {
     dirty_paths: DashMap<String, ()>,
     dirty_dirs: DashMap<String, ()>,
     index_sync_dirs: DashMap<String, DirectoryIndexSyncTask>,
+    quota_sync_users: DashMap<String, UserQuotaSyncTask>,
     primary: Arc<Operator>,
     db: Arc<DatabaseConnection>,
     pool_name: Arc<str>,
@@ -217,6 +226,7 @@ impl WriteCacheManager {
             dirty_paths: DashMap::new(),
             dirty_dirs: DashMap::new(),
             index_sync_dirs: DashMap::new(),
+            quota_sync_users: DashMap::new(),
             primary,
             db,
             pool_name: Arc::from(pool_name),
@@ -378,6 +388,13 @@ impl WriteCacheManager {
         self.dirty_dirs.contains_key(parent_physical_path)
     }
 
+    pub fn pending_quota_delta(&self, user_id: &str) -> i64 {
+        self.quota_sync_users
+            .get(user_id)
+            .map(|entry| entry.value().delta)
+            .unwrap_or(0)
+    }
+
     pub async fn flush_path(&self, physical_path: &str) -> crate::vfs::VfsResult<()> {
         let Some(entry) = self
             .entries
@@ -416,17 +433,36 @@ impl WriteCacheManager {
                         let _ = this_clone.flush_entry(entry, false).await;
                     });
                 }
-                let sync_tasks: Vec<DirectoryIndexSyncTask> = this
+                let due_dir_keys: Vec<String> = this
                     .index_sync_dirs
                     .iter()
                     .filter_map(|entry| {
-                        (entry.value().next_sync_at <= now_ts()).then(|| entry.value().clone())
+                        (entry.value().next_sync_at <= now_ts()).then(|| entry.key().clone())
                     })
                     .collect();
-                for task in sync_tasks {
+                for task_key in due_dir_keys {
+                    let Some((_, task)) = this.index_sync_dirs.remove(&task_key) else {
+                        continue;
+                    };
                     let this_clone = Arc::clone(&this);
                     tokio::spawn(async move {
-                        let _ = this_clone.sync_directory_index(task).await;
+                        let _ = this_clone.sync_directory_index(task_key, task).await;
+                    });
+                }
+                let due_quota_keys: Vec<String> = this
+                    .quota_sync_users
+                    .iter()
+                    .filter_map(|entry| {
+                        (entry.value().next_sync_at <= now_ts()).then(|| entry.key().clone())
+                    })
+                    .collect();
+                for user_key in due_quota_keys {
+                    let Some((_, task)) = this.quota_sync_users.remove(&user_key) else {
+                        continue;
+                    };
+                    let this_clone = Arc::clone(&this);
+                    tokio::spawn(async move {
+                        let _ = this_clone.sync_user_quota(user_key, task).await;
                     });
                 }
             }
@@ -535,9 +571,9 @@ impl WriteCacheManager {
                 .put(entry.physical_path.as_ref(), data, info.clone())
                 .await;
         }
-        let _ = previous_size;
-        let _ = info;
+        let delta = info.size as i64 - previous_size;
         self.schedule_index_sync(&entry);
+        self.schedule_quota_sync(entry.user_id.as_ref(), entry.logical_path.as_ref(), delta);
         Ok(())
     }
 
@@ -866,14 +902,50 @@ impl WriteCacheManager {
             });
     }
 
-    async fn sync_directory_index(&self, task: DirectoryIndexSyncTask) -> anyhow::Result<()> {
-        let task_key = format!("{}\n{}", task.user_id, task.logical_parent_path);
-        let entries = self.list_directory_entries(task.physical_parent_path.as_ref()).await?;
+    fn schedule_quota_sync(&self, user_id: &str, logical_path: &str, delta: i64) {
+        if delta == 0
+            || logical_path.contains("/.thumbs")
+            || logical_path.contains("/.thumbs_cache")
+        {
+            return;
+        }
+        let task_key = user_id.to_string();
+        if let Some(mut task) = self.quota_sync_users.get_mut(&task_key) {
+            task.delta += delta;
+            task.next_sync_at = now_ts() + 1;
+            task.retry_count = 0;
+            let should_remove = task.delta == 0;
+            drop(task);
+            if should_remove {
+                self.quota_sync_users.remove(&task_key);
+            }
+            return;
+        }
+        self.quota_sync_users.insert(
+            task_key,
+            UserQuotaSyncTask {
+                user_id: Arc::from(user_id),
+                delta,
+                next_sync_at: now_ts() + 1,
+                retry_count: 0,
+            },
+        );
+    }
+
+    async fn sync_directory_index(
+        &self,
+        task_key: String,
+        task: DirectoryIndexSyncTask,
+    ) -> anyhow::Result<()> {
+        let entries = self
+            .list_directory_entries(task.physical_parent_path.as_ref())
+            .await?;
         let now = chrono::Utc::now();
         let models = entries
             .into_iter()
             .filter_map(|info| {
-                let logical_path = self.physical_to_logical_path(task.user_id.as_ref(), info.path.as_ref())?;
+                let logical_path =
+                    self.physical_to_logical_path(task.user_id.as_ref(), info.path.as_ref())?;
                 if !self.policy.allows(&logical_path) {
                     return None;
                 }
@@ -896,27 +968,71 @@ impl WriteCacheManager {
             .collect();
         let index_service = FileIndexService::new(Arc::clone(&self.db));
         if let Err(err) = index_service
-            .sync_directory_optimized(task.user_id.as_ref(), task.logical_parent_path.as_ref(), models)
+            .sync_directory_optimized(
+                task.user_id.as_ref(),
+                task.logical_parent_path.as_ref(),
+                models,
+            )
             .await
         {
-            self.index_sync_dirs.insert(
-                task_key,
-                DirectoryIndexSyncTask {
-                    next_sync_at: now_ts() + self.retry_delay_secs(task.retry_count.saturating_add(1), false),
-                    retry_count: task.retry_count.saturating_add(1),
-                    ..task
-                },
-            );
+            if !self.index_sync_dirs.contains_key(&task_key) {
+                self.index_sync_dirs.insert(
+                    task_key,
+                    DirectoryIndexSyncTask {
+                        next_sync_at: now_ts()
+                            + self.retry_delay_secs(task.retry_count.saturating_add(1), false),
+                        retry_count: task.retry_count.saturating_add(1),
+                        ..task
+                    },
+                );
+            }
             return Err(err.into());
         }
-        self.index_sync_dirs.remove(&task_key);
-        self.clear_dirty_markers(task.physical_parent_path.as_ref());
+        if !self.index_sync_dirs.contains_key(&task_key) {
+            self.clear_dirty_markers(task.physical_parent_path.as_ref());
+        }
         Ok(())
     }
 
-    async fn list_directory_entries(&self, physical_parent_path: &str) -> anyhow::Result<Vec<VfsFileInfo>> {
+    async fn sync_user_quota(
+        &self,
+        user_key: String,
+        task: UserQuotaSyncTask,
+    ) -> anyhow::Result<()> {
+        if task.delta == 0 {
+            return Ok(());
+        }
+        if let Err(err) =
+            UserSettingsService::update_storage_used(&self.db, task.user_id.as_ref(), task.delta)
+                .await
+        {
+            self.quota_sync_users
+                .entry(user_key)
+                .and_modify(|current| {
+                    current.delta += task.delta;
+                    current.next_sync_at = now_ts()
+                        + self.retry_delay_secs(current.retry_count.saturating_add(1), false);
+                    current.retry_count = current.retry_count.saturating_add(1);
+                })
+                .or_insert(UserQuotaSyncTask {
+                    user_id: Arc::clone(&task.user_id),
+                    delta: task.delta,
+                    next_sync_at: now_ts()
+                        + self.retry_delay_secs(task.retry_count.saturating_add(1), false),
+                    retry_count: task.retry_count.saturating_add(1),
+                });
+            return Err(err.into());
+        }
+        Ok(())
+    }
+
+    async fn list_directory_entries(
+        &self,
+        physical_parent_path: &str,
+    ) -> anyhow::Result<Vec<VfsFileInfo>> {
         use futures::StreamExt;
-        let list_path = if !physical_parent_path.is_empty() && !physical_parent_path.ends_with('/') {
+        let list_path = if !physical_parent_path.is_empty() && !physical_parent_path.ends_with('/')
+        {
             format!("{}/", physical_parent_path)
         } else {
             physical_parent_path.to_string()
@@ -927,7 +1043,8 @@ impl WriteCacheManager {
             let entry = entry_res?;
             let meta = entry.metadata();
             let entry_path = normalize_entry_path(entry.path()).to_string();
-            let info = if meta.last_modified().is_none() || (meta.is_file() && meta.content_length() == 0)
+            let info = if meta.last_modified().is_none()
+                || (meta.is_file() && meta.content_length() == 0)
             {
                 match self.primary.stat(entry.path()).await {
                     Ok(stat) => to_vfs_file_info(&entry_path, &stat),
@@ -947,7 +1064,11 @@ impl WriteCacheManager {
         }
         let prefix = format!("{}/", user_id);
         let stripped = physical_path.strip_prefix(&prefix)?;
-        Some(format!("/{}", stripped.trim_start_matches('/')).trim_end_matches('/').to_string())
+        Some(
+            format!("/{}", stripped.trim_start_matches('/'))
+                .trim_end_matches('/')
+                .to_string(),
+        )
     }
 
     fn clear_dirty_markers(&self, physical_parent_path: &str) {

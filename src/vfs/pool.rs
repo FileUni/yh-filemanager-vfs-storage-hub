@@ -168,6 +168,13 @@ impl VfsPool {
             .is_some_and(|cache| cache.is_dirty_dir(parent_physical_path))
     }
 
+    pub fn pending_quota_delta(&self, user_id: &str) -> i64 {
+        self.write_cache
+            .as_ref()
+            .map(|cache| cache.pending_quota_delta(user_id))
+            .unwrap_or(0)
+    }
+
     pub async fn invalidate_read_cache(&self, path: &str) {
         if let Some(read_cache) = &self.read_cache {
             read_cache.remove(path).await;
