@@ -5,6 +5,8 @@ use crate::vfs::{LOGICAL_TEMP_PREFIX, VfsFileInfo, VfsStorage};
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use std::borrow::Cow;
+use std::sync::atomic::Ordering;
 impl ScopedVfsStorageEngine {
     pub(super) async fn should_skip_wal_for_write(&self, path: &str, size: u64) -> bool {
         let config = crate::config::get_vfs_hub_config().await;
@@ -402,49 +404,69 @@ impl ScopedVfsStorageEngine {
             new_path.push_str(&info.path);
             info.path = new_path.into();
         } else {
-            // Decode path from OpenDAL
-            let decoded_path = percent_encoding::percent_decode_str(&info.path)
-                .decode_utf8_lossy()
-                .to_string();
-            let decoded_path = decoded_path.replace("\\", "/"); // Normalize slashes
-            // Restore physical path to logical path
-            //"user_id/relative/path"
-            let prefix = format!("{}/", self.user_id);
-            if let Some(logical) = decoded_path.strip_prefix(&prefix) {
+            let raw_path = info.path.as_ref();
+            let decoded_path = if raw_path.contains('%') {
+                Cow::Owned(
+                    percent_encoding::percent_decode_str(raw_path)
+                        .decode_utf8_lossy()
+                        .to_string(),
+                )
+            } else {
+                Cow::Borrowed(raw_path)
+            };
+            let normalized_path = if decoded_path.contains('\\') {
+                Cow::Owned(decoded_path.replace("\\", "/"))
+            } else {
+                decoded_path
+            };
+            if let Some(logical) = normalized_path.strip_prefix(self.user_path_prefix.as_ref()) {
                 info.path =
                     format!("/{}", logical.trim_start_matches('/').trim_end_matches('/')).into();
-            } else if decoded_path == self.user_id.as_ref()
-                || decoded_path == prefix
-                || decoded_path == "."
-                || decoded_path == "./"
+            } else if normalized_path == self.user_id.as_ref()
+                || normalized_path == self.user_path_prefix.as_ref()
+                || normalized_path == "."
+                || normalized_path == "./"
             {
                 info.path = "/".into();
             } else {
-                //user_id OpenDAL Driver
                 let search_pattern = format!("/{}/", self.user_id);
-                if let Some(pos) = decoded_path.find(&search_pattern) {
+                if let Some(pos) = normalized_path.find(&search_pattern) {
                     let start = pos + search_pattern.len();
-                    if let Some(logical) = decoded_path.get(start..) {
+                    if let Some(logical) = normalized_path.get(start..) {
                         info.path =
                             format!("/{}", logical.trim_start_matches('/').trim_end_matches('/'))
                                 .into();
                     } else {
                         info.path = format!(
                             "/{}",
-                            decoded_path.trim_start_matches('/').trim_end_matches('/')
+                            normalized_path
+                                .trim_start_matches('/')
+                                .trim_end_matches('/')
                         )
                         .into();
                     }
                 } else {
                     info.path = format!(
                         "/{}",
-                        decoded_path.trim_start_matches('/').trim_end_matches('/')
+                        normalized_path
+                            .trim_start_matches('/')
+                            .trim_end_matches('/')
                     )
                     .into();
                 }
             }
         }
         info
+    }
+    pub(super) async fn ensure_recycle_bin_initialized(&self) -> VfsResult<()> {
+        if self.recycle_bin_initialized.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        self.pool
+            .create_dir_all(&self.get_physical_path("/.recycle_bin").await?)
+            .await?;
+        self.recycle_bin_initialized.store(true, Ordering::Relaxed);
+        Ok(())
     }
     pub(super) fn check_maintenance(&self) -> VfsResult<()> {
         if crate::vfs::is_user_under_maintenance(&self.user_id) {
