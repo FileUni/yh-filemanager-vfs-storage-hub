@@ -3,7 +3,7 @@
 use super::ANDROID_SAF_MIME_DIR;
 use jni::objects::{JObject, JString, JValue};
 use jni::sys::{jint, jobject};
-use opendal::raw::{oio, Timestamp};
+use opendal::raw::{Timestamp, oio};
 use opendal::{EntryMode, Error, ErrorKind, Metadata, Result};
 use std::io::Write;
 

@@ -1,5 +1,5 @@
-use opendal::raw::oio;
 use opendal::Result;
+use opendal::raw::oio;
 
 #[derive(Debug)]
 pub struct IosScopedFsLister {

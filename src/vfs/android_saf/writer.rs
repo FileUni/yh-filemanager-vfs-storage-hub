@@ -36,7 +36,10 @@ impl oio::Write for AndroidSafWriter {
     }
 
     async fn close(&mut self) -> Result<Metadata> {
-        self.file.flush().await.map_err(opendal::raw::new_std_io_error)?;
+        self.file
+            .flush()
+            .await
+            .map_err(opendal::raw::new_std_io_error)?;
         self.file
             .sync_all()
             .await

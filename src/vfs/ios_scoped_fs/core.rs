@@ -1,8 +1,8 @@
 use super::{IOS_BOOKMARK_PREFIX, IOS_SCOPED_FS_SCHEME};
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use objc2::runtime::Bool;
-use objc2_foundation::{NSData, NSURLBookmarkResolutionOptions, NSURL};
-use opendal::raw::{oio, AccessorInfo};
+use objc2_foundation::{NSData, NSURL, NSURLBookmarkResolutionOptions};
+use opendal::raw::{AccessorInfo, oio};
 use opendal::{Capability, Error, ErrorKind, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

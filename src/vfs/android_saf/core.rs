@@ -1,6 +1,6 @@
 use super::jni;
 use super::{ANDROID_SAF_MIME_DIR, ANDROID_SAF_SCHEME};
-use opendal::raw::{oio, AccessorInfo, OpRead, OpWrite};
+use opendal::raw::{AccessorInfo, OpRead, OpWrite, oio};
 use opendal::{Capability, Error, ErrorKind, Metadata, Result};
 use std::sync::Arc;
 
@@ -119,18 +119,21 @@ impl AndroidSafCore {
             .map_err(opendal::raw::new_task_join_error)?
     }
 
-    pub async fn open_for_read(&self, path: &str, args: &OpRead) -> Result<(tokio::fs::File, usize)> {
+    pub async fn open_for_read(
+        &self,
+        path: &str,
+        args: &OpRead,
+    ) -> Result<(tokio::fs::File, usize)> {
         let offset = args.range().offset();
         let size = args.range().size().unwrap_or(u64::MAX) as usize;
 
         let tree_uri = Arc::clone(&self.tree_uri);
         let root_doc_id = Arc::clone(&self.root_doc_id);
         let path = path.to_string();
-        let fd = tokio::task::spawn_blocking(move || {
-            jni::open_read_fd(&tree_uri, &root_doc_id, &path)
-        })
-        .await
-        .map_err(opendal::raw::new_task_join_error)??;
+        let fd =
+            tokio::task::spawn_blocking(move || jni::open_read_fd(&tree_uri, &root_doc_id, &path))
+                .await
+                .map_err(opendal::raw::new_task_join_error)??;
 
         // SAF file descriptors are unix fds.
         let std_file = unsafe { std::fs::File::from_raw_fd(fd) };

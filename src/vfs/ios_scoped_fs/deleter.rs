@@ -1,6 +1,6 @@
 use super::core::IosScopedFsCore;
-use opendal::raw::{OpDelete, oio};
 use opendal::Result;
+use opendal::raw::{OpDelete, oio};
 use std::sync::Arc;
 
 #[derive(Debug)]

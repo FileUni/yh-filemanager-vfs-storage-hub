@@ -1,10 +1,10 @@
 use crate::business::services::FileIndexService;
-use crate::utils::temp_file::{get_global_temp_manager_sync, VfsTempFileManager};
 use crate::utils::VfsCache;
+use crate::utils::temp_file::{VfsTempFileManager, get_global_temp_manager_sync};
+use crate::vfs::VfsResult;
 use crate::vfs::error::VfsError;
 use crate::vfs::pool::VfsPool;
 use crate::vfs::wal::VfsWalManager;
-use crate::vfs::VfsResult;
 use sea_orm::DatabaseConnection;
 use std::sync::Arc;
 

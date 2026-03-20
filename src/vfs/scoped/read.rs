@@ -4,10 +4,10 @@ use crate::vfs::{LOGICAL_TEMP_PREFIX, VfsFileInfo, VfsMetadata, VfsPaginationPar
 use bytes::Bytes;
 use futures::Stream;
 use futures::stream::BoxStream;
+use std::cmp::Ordering;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use std::cmp::Ordering;
 
 static INDEX_SYNC_SEMAPHORE: once_cell::sync::OnceCell<Arc<Semaphore>> =
     once_cell::sync::OnceCell::new();
@@ -376,44 +376,45 @@ impl ScopedVfsStorageEngine {
         mut all: Vec<VfsFileInfo>,
         params: VfsPaginationParams<'_>,
     ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
-    // Search filter
-    if let Some(kw) = params.keyword
-        && !kw.is_empty()
-    {
-        let kw_lower = kw.to_lowercase();
-        all.retain(|e| {
-            e.name.to_lowercase().contains(&kw_lower) || e.path.to_lowercase().contains(&kw_lower)
-        });
-    }
-
-    // Sorting (keep directories first, consistent with DB behavior).
-    let sort_field = params.sort_by.unwrap_or("name");
-    let order = params.order.unwrap_or("asc");
-    let is_desc = order == "desc";
-
-    all.sort_by(|a, b| {
-        let dir_cmp = b.is_dir.cmp(&a.is_dir);
-        if dir_cmp != Ordering::Equal {
-            return dir_cmp;
+        // Search filter
+        if let Some(kw) = params.keyword
+            && !kw.is_empty()
+        {
+            let kw_lower = kw.to_lowercase();
+            all.retain(|e| {
+                e.name.to_lowercase().contains(&kw_lower)
+                    || e.path.to_lowercase().contains(&kw_lower)
+            });
         }
-        let cmp = match sort_field {
-            "size" => a.size.cmp(&b.size),
-            "modified" => a.modified.cmp(&b.modified),
-            "path" => a.path.cmp(&b.path),
-            "created_at" => a.modified.cmp(&b.modified),
-            _ => a.name.cmp(&b.name),
-        };
-        if is_desc { cmp.reverse() } else { cmp }
-    });
 
-    let total = all.len() as i64;
-    let offset = ((params.page - 1) * params.page_size).max(0) as usize;
-    let files = all
-        .into_iter()
-        .skip(offset)
-        .take(params.page_size.max(0) as usize)
-        .collect();
-    Ok((files, total))
+        // Sorting (keep directories first, consistent with DB behavior).
+        let sort_field = params.sort_by.unwrap_or("name");
+        let order = params.order.unwrap_or("asc");
+        let is_desc = order == "desc";
+
+        all.sort_by(|a, b| {
+            let dir_cmp = b.is_dir.cmp(&a.is_dir);
+            if dir_cmp != Ordering::Equal {
+                return dir_cmp;
+            }
+            let cmp = match sort_field {
+                "size" => a.size.cmp(&b.size),
+                "modified" => a.modified.cmp(&b.modified),
+                "path" => a.path.cmp(&b.path),
+                "created_at" => a.modified.cmp(&b.modified),
+                _ => a.name.cmp(&b.name),
+            };
+            if is_desc { cmp.reverse() } else { cmp }
+        });
+
+        let total = all.len() as i64;
+        let offset = ((params.page - 1) * params.page_size).max(0) as usize;
+        let files = all
+            .into_iter()
+            .skip(offset)
+            .take(params.page_size.max(0) as usize)
+            .collect();
+        Ok((files, total))
     }
     pub(super) async fn search_files_paginated_impl(
         &self,

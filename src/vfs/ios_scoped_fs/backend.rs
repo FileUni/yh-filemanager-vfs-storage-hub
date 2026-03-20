@@ -1,12 +1,12 @@
+use super::IOS_SCOPED_FS_SCHEME;
 use super::core::IosScopedFsCore;
 use super::deleter::IosScopedFsDeleter;
 use super::lister::IosScopedFsLister;
 use super::reader::IosScopedFsReader;
 use super::writer::IosScopedFsWriter;
-use super::IOS_SCOPED_FS_SCHEME;
 use opendal::raw::{
-    Access, AccessorInfo, OpCopy, OpCreateDir, OpList, OpRead, OpRename, OpStat, OpWrite,
-    RpCopy, RpCreateDir, RpDelete, RpList, RpRead, RpRename, RpStat, RpWrite, oio,
+    Access, AccessorInfo, OpCopy, OpCreateDir, OpList, OpRead, OpRename, OpStat, OpWrite, RpCopy,
+    RpCreateDir, RpDelete, RpList, RpRead, RpRename, RpStat, RpWrite, oio,
 };
 use opendal::{Builder, EntryMode, Error, ErrorKind, Metadata, Result};
 use std::sync::Arc;
@@ -33,7 +33,10 @@ impl Builder for IosScopedFsBuilder {
 
     fn build(self) -> Result<impl Access> {
         let root = self.root.ok_or_else(|| {
-            Error::new(ErrorKind::ConfigInvalid, "ios_scoped_fs root is not specified")
+            Error::new(
+                ErrorKind::ConfigInvalid,
+                "ios_scoped_fs root is not specified",
+            )
         })?;
         let core = IosScopedFsCore::new(&root)?;
         Ok(IosScopedFsBackend {
@@ -156,7 +159,7 @@ impl Access for IosScopedFsBackend {
         let mut rd = match tokio::fs::read_dir(&abs).await {
             Ok(v) => v,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok((RpList::default(), IosScopedFsLister::new(Vec::new())))
+                return Ok((RpList::default(), IosScopedFsLister::new(Vec::new())));
             }
             Err(err) => return Err(opendal::raw::new_std_io_error(err)),
         };
@@ -185,7 +188,11 @@ impl Access for IosScopedFsBackend {
                 .metadata()
                 .await
                 .map_err(opendal::raw::new_std_io_error)?;
-            let mode = if is_dir { EntryMode::DIR } else { EntryMode::FILE };
+            let mode = if is_dir {
+                EntryMode::DIR
+            } else {
+                EntryMode::FILE
+            };
             let mut m = Metadata::new(mode).with_content_length(meta.len());
             if let Ok(modified) = meta.modified() {
                 if let Ok(ts) = opendal::raw::Timestamp::try_from(modified) {

@@ -5,8 +5,7 @@ use super::reader::AndroidSafReader;
 use super::writer::AndroidSafWriter;
 use opendal::raw::{
     Access, AccessorInfo, OpCopy, OpCreateDir, OpList, OpRead, OpRename, OpStat, OpWrite, RpCopy,
-    RpCreateDir, RpDelete, RpList, RpRead, RpRename, RpStat,
-    RpWrite, oio,
+    RpCreateDir, RpDelete, RpList, RpRead, RpRename, RpStat, RpWrite, oio,
 };
 use opendal::{Builder, Error, ErrorKind, Metadata, Result};
 use std::sync::Arc;

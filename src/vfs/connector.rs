@@ -1,8 +1,8 @@
 //! Build OpenDAL connectors for storage backends.
 use crate::config::VfsConnectorConfig;
 use crate::vfs::{VfsError, VfsResult};
-use opendal::layers::{LoggingLayer, RetryLayer};
 use opendal::Operator;
+use opendal::layers::{LoggingLayer, RetryLayer};
 
 use std::collections::BTreeMap;
 
@@ -80,5 +80,7 @@ pub async fn build_operator(config: &VfsConnectorConfig) -> VfsResult<Operator> 
     // Add basic layers
     // business::services::file_index_service OpenDAL
     // Database-based metadata indexing has been implemented, so OpenDAL's local metadata cache is not needed here
-    Ok(op.layer(LoggingLayer::default()).layer(RetryLayer::default()))
+    Ok(op
+        .layer(LoggingLayer::default())
+        .layer(RetryLayer::default()))
 }

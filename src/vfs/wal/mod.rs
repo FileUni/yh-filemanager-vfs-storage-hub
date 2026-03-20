@@ -274,7 +274,10 @@ impl VfsWalManager {
         let page_size = page_size.max(1);
         let mut condition = Condition::all();
 
-        if let Some(user_id) = user_id_filter.map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(user_id) = user_id_filter
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             condition = condition.add(entity::Column::UserId.eq(user_id));
         }
 
@@ -340,7 +343,9 @@ impl VfsWalManager {
             .map(|value| format!("ADMIN_MARKED_HANDLED: {}", value))
             .unwrap_or_else(|| "ADMIN_MARKED_HANDLED".to_string());
         let failure_reason = match row.failure_reason.as_deref() {
-            Some(existing) if !existing.is_empty() => Some(format!("{}\n{}", existing, handled_note)),
+            Some(existing) if !existing.is_empty() => {
+                Some(format!("{}\n{}", existing, handled_note))
+            }
             _ => Some(handled_note),
         };
         let now = chrono::Utc::now();
