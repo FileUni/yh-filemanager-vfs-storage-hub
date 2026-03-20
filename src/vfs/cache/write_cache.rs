@@ -521,7 +521,9 @@ impl WriteCacheManager {
                     inner.state = PendingWriteState::Abnormal;
                     inner.next_retry_at = now_ts() + self.retry_delay_secs(inner.retry_count, true);
                     drop(inner);
+                    global_vfs_metrics().record_write_cache_abnormal_spill();
                     self.log_abnormal_journal(&entry, &err.to_string()).await;
+                    global_vfs_metrics().record_write_cache_flush_failure();
                     return Err(crate::vfs::VfsError::Internal(err.to_string()));
                 }
             }
@@ -530,6 +532,7 @@ impl WriteCacheManager {
             } else {
                 PendingWriteState::Pending
             };
+            global_vfs_metrics().record_write_cache_flush_failure();
             return Err(crate::vfs::VfsError::Internal(err.to_string()));
         }
 
@@ -579,6 +582,7 @@ impl WriteCacheManager {
         let delta = info.size as i64 - previous_size;
         self.schedule_index_sync(&entry);
         self.schedule_quota_sync(entry.user_id.as_ref(), entry.logical_path.as_ref(), delta);
+        global_vfs_metrics().record_write_cache_flush_success();
         Ok(())
     }
 
