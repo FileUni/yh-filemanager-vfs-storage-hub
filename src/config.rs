@@ -633,6 +633,18 @@ pub struct VfsFileIndexConfig {
     )]
     pub max_files_per_refresh: Option<u32>,
     #[config(
+        desc_zh = "低内存档位（memory_allocator.profile=low_memory）时单次刷新分批大小，必须显式配置；值越小，内存占用越低但总耗时可能更高",
+        desc_en = "Chunk size per index refresh in low_memory profile, must be explicitly configured; smaller values reduce memory usage but may increase total runtime.",
+        example = "256"
+    )]
+    pub max_files_per_refresh_low_memory: Option<u32>,
+    #[config(
+        desc_zh = "高吞吐档位（memory_allocator.profile=throughput）时单次刷新分批大小，必须显式配置；值越大，更能利用高性能硬件吞吐",
+        desc_en = "Chunk size per index refresh in throughput profile, must be explicitly configured; larger values make better use of high-performance hardware.",
+        example = "2000"
+    )]
+    pub max_files_per_refresh_throughput: Option<u32>,
+    #[config(
         desc_zh = "索引刷新操作超时时间（秒），范围: 60-3600，默认300，超时将终止任务，大目录建议增加",
         desc_en = "Index refresh operation timeout (seconds), range: 60-3600, default 300, task will be terminated when timeout, recommend increasing for large directories",
         example = "300"
@@ -710,6 +722,32 @@ impl VfsFileIndexConfig {
             "vfs_storage_hub",
             "file_index.refresh_timeout"
         )
+    }
+    pub fn get_max_files_per_refresh(&self) -> u32 {
+        yh_config_infra::config_require_clone!(
+            self.max_files_per_refresh,
+            "vfs_storage_hub",
+            "file_index.max_files_per_refresh"
+        )
+    }
+    pub fn get_effective_max_files_per_refresh(&self) -> u32 {
+        match require_allocator_profile() {
+            HardwareProfile::LowMemory => {
+                yh_config_infra::config_require_clone!(
+                    self.max_files_per_refresh_low_memory,
+                    "vfs_storage_hub",
+                    "file_index.max_files_per_refresh_low_memory"
+                )
+            }
+            HardwareProfile::Throughput => {
+                yh_config_infra::config_require_clone!(
+                    self.max_files_per_refresh_throughput,
+                    "vfs_storage_hub",
+                    "file_index.max_files_per_refresh_throughput"
+                )
+            }
+            HardwareProfile::Balanced => self.get_max_files_per_refresh(),
+        }
     }
     pub fn get_refresh_trigger_filename(&self) -> &str {
         yh_config_infra::config_require_str!(
@@ -1544,6 +1582,18 @@ impl VfsStorageHubConfig {
                 fi.max_files_per_refresh,
                 s,
                 "file_index.max_files_per_refresh",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                fi.max_files_per_refresh_low_memory,
+                s,
+                "file_index.max_files_per_refresh_low_memory",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                fi.max_files_per_refresh_throughput,
+                s,
+                "file_index.max_files_per_refresh_throughput",
                 errors
             );
             yh_config_infra::config_collect_gt_zero!(
