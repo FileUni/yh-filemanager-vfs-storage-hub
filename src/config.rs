@@ -778,6 +778,18 @@ pub struct VfsReadCacheConfig {
     )]
     pub max_file_size_bytes: Option<u64>,
     #[config(
+        desc_zh = "是否允许缩略图路径进入读缓存。默认 false，避免缩略图生成与内容缓存相互放大。",
+        desc_en = "Allow thumbnail paths to enter read cache. Default false to avoid cache amplification between thumbnail generation and content caching.",
+        example = "false"
+    )]
+    pub cache_thumbnail_paths: Option<bool>,
+    #[config(
+        desc_zh = "读缓存跳过的文件扩展名列表（不带点号，大小写不敏感）。例如 [\"md\", \"markdown\"]。",
+        desc_en = "File extensions skipped by read cache (without leading dot, case-insensitive), for example [\"md\", \"markdown\"].",
+        example = "[]"
+    )]
+    pub skip_extensions: Option<Vec<Arc<str>>>,
+    #[config(
         desc_zh = "读缓存 TTL（秒）。超过后条目自动失效并回源读取。",
         desc_en = "Read cache TTL in seconds. Entries expire after this and reads fall back to origin.",
         example = "1800"
@@ -811,6 +823,20 @@ impl VfsReadCacheConfig {
             self.max_file_size_bytes,
             "vfs_storage_hub",
             "read_cache.max_file_size_bytes"
+        )
+    }
+    pub fn is_cache_thumbnail_paths(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.cache_thumbnail_paths,
+            "vfs_storage_hub",
+            "read_cache.cache_thumbnail_paths"
+        )
+    }
+    pub fn get_skip_extensions(&self) -> Vec<Arc<str>> {
+        yh_config_infra::config_require_clone!(
+            self.skip_extensions,
+            "vfs_storage_hub",
+            "read_cache.skip_extensions"
         )
     }
     pub fn get_ttl_secs(&self) -> u64 {
@@ -854,6 +880,18 @@ pub struct VfsWriteCacheConfig {
         example = "262144"
     )]
     pub max_file_size_bytes: Option<u64>,
+    #[config(
+        desc_zh = "是否允许缩略图路径进入写缓存。默认 false，避免缩略图写入把危险写缓存容量耗尽。",
+        desc_en = "Allow thumbnail paths to enter write cache. Default false to avoid thumbnail writes exhausting the risky write-back cache budget.",
+        example = "false"
+    )]
+    pub cache_thumbnail_paths: Option<bool>,
+    #[config(
+        desc_zh = "写缓存跳过的文件扩展名列表（不带点号，大小写不敏感）。例如 [\"md\", \"markdown\"] 可让 Markdown 文档始终走同步写入。",
+        desc_en = "File extensions skipped by write cache (without leading dot, case-insensitive). For example [\"md\", \"markdown\"] keeps Markdown documents on synchronous writes.",
+        example = "[]"
+    )]
+    pub skip_extensions: Option<Vec<Arc<str>>>,
     #[config(
         desc_zh = "后台刷盘并发数。值越大，对远端存储施加的并发压力越高。",
         desc_en = "Background flush concurrency. Higher values place more concurrent pressure on the remote storage.",
@@ -906,6 +944,20 @@ impl VfsWriteCacheConfig {
             self.max_file_size_bytes,
             "vfs_storage_hub",
             "write_cache.max_file_size_bytes"
+        )
+    }
+    pub fn is_cache_thumbnail_paths(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.cache_thumbnail_paths,
+            "vfs_storage_hub",
+            "write_cache.cache_thumbnail_paths"
+        )
+    }
+    pub fn get_skip_extensions(&self) -> Vec<Arc<str>> {
+        yh_config_infra::config_require_clone!(
+            self.skip_extensions,
+            "vfs_storage_hub",
+            "write_cache.skip_extensions"
         )
     }
     pub fn get_flush_concurrency(&self) -> usize {
@@ -1199,12 +1251,34 @@ impl VfsStorageHubConfig {
                 "read_cache.max_file_size_bytes",
                 errors
             );
+            yh_config_infra::config_collect_bool!(
+                rc.cache_thumbnail_paths,
+                s,
+                "read_cache.cache_thumbnail_paths",
+                errors
+            );
+            yh_config_infra::config_collect_any!(
+                rc.skip_extensions,
+                s,
+                "read_cache.skip_extensions",
+                errors
+            );
             yh_config_infra::config_collect_gt_zero!(rc.ttl_secs, s, "read_cache.ttl_secs", errors);
             if !matches!(rc.backend.as_deref(), Some("memory") | Some("local_dir")) {
                 errors.push(format!(
                     "[{}] read_cache.backend must be one of: memory | local_dir",
                     s
                 ));
+            }
+            if let Some(exts) = &rc.skip_extensions {
+                for (idx, ext) in exts.iter().enumerate() {
+                    if ext.trim().trim_start_matches('.').is_empty() {
+                        errors.push(format!(
+                            "[{}] read_cache.skip_extensions[{}] cannot be empty",
+                            s, idx
+                        ));
+                    }
+                }
             }
         } else {
             errors.push(format!("[{}] read_cache is required (section)", s));
@@ -1233,6 +1307,18 @@ impl VfsStorageHubConfig {
                 wc.max_file_size_bytes,
                 s,
                 "write_cache.max_file_size_bytes",
+                errors
+            );
+            yh_config_infra::config_collect_bool!(
+                wc.cache_thumbnail_paths,
+                s,
+                "write_cache.cache_thumbnail_paths",
+                errors
+            );
+            yh_config_infra::config_collect_any!(
+                wc.skip_extensions,
+                s,
+                "write_cache.skip_extensions",
                 errors
             );
             yh_config_infra::config_collect_gt_zero!(
@@ -1264,6 +1350,16 @@ impl VfsStorageHubConfig {
                     "[{}] write_cache.backend must be one of: memory | local_dir",
                     s
                 ));
+            }
+            if let Some(exts) = &wc.skip_extensions {
+                for (idx, ext) in exts.iter().enumerate() {
+                    if ext.trim().trim_start_matches('.').is_empty() {
+                        errors.push(format!(
+                            "[{}] write_cache.skip_extensions[{}] cannot be empty",
+                            s, idx
+                        ));
+                    }
+                }
             }
         } else {
             errors.push(format!("[{}] write_cache is required (section)", s));
