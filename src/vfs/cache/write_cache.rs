@@ -909,6 +909,7 @@ impl WriteCacheManager {
                 next_sync_at,
                 retry_count: 0,
             });
+        global_vfs_metrics().record_index_sync_spawned();
     }
 
     fn schedule_quota_sync(&self, user_id: &str, logical_path: &str, delta: i64) {
@@ -928,6 +929,7 @@ impl WriteCacheManager {
             if should_remove {
                 self.quota_sync_users.remove(&task_key);
             }
+            global_vfs_metrics().record_quota_sync_scheduled();
             return;
         }
         self.quota_sync_users.insert(
@@ -939,6 +941,7 @@ impl WriteCacheManager {
                 retry_count: 0,
             },
         );
+        global_vfs_metrics().record_quota_sync_scheduled();
     }
 
     async fn sync_directory_index(
