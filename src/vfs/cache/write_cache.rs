@@ -961,6 +961,8 @@ impl WriteCacheManager {
                     backend_key: Set(Some(info.path.to_string())),
                     size: Set(info.size as i64),
                     file_updated_at: Set(info.modified.map(|dt| dt.into())),
+                    favorite_color: Set(0),
+                    row_created_at: Set(now.into()),
                     row_updated_at: Set(now.into()),
                     ..Default::default()
                 })

@@ -94,6 +94,8 @@ impl FileIndexService {
             backend_key: Set(backend_key.map(std::borrow::ToOwned::to_owned)),
             size: Set(info.size as i64),
             file_updated_at: Set(info.modified.map(|dt| dt.into())),
+            favorite_color: Set(0),
+            row_created_at: Set(now.into()),
             row_updated_at: Set(now.into()),
             ..Default::default()
         };
