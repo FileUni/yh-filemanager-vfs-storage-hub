@@ -1020,6 +1020,25 @@ impl FileIndexService {
             .all(&*self.db)
             .await
     }
+
+    pub async fn find_expired_trash_batch(
+        &self,
+        retention_days: u32,
+        limit: u64,
+    ) -> Result<Vec<file_index::Model>, DbErr> {
+        if retention_days == 0 {
+            return Ok(vec![]);
+        }
+        let expired_at = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
+        file_index::Entity::find()
+            .filter(file_index::Column::FileTrashedAt.lt(expired_at))
+            .filter(file_index::Column::ParentPath.eq("/.recycle_bin"))
+            .filter(file_index::Column::RowDeletedAt.is_null())
+            .order_by_asc(file_index::Column::FileTrashedAt)
+            .limit(limit.max(1))
+            .all(&*self.db)
+            .await
+    }
     /// Complete directory sync (Batch Upsert + Physical Pruning)
     /// Uses timestamp-based pruning to avoid performance degradation from large NOT IN clauses
     pub async fn sync_directory_optimized(
