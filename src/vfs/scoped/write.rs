@@ -42,6 +42,8 @@ impl ScopedVfsStorageEngine {
             tokio::fs::write(&local_path, data)
                 .await
                 .map_err(VfsError::Io)?;
+            self.mark_wal_physical_done(wal_id).await;
+            self.mark_wal_metadata_done(wal_id).await;
             self.stat_impl(path).await
         } else {
             match self
@@ -50,8 +52,17 @@ impl ScopedVfsStorageEngine {
                 .await
             {
                 Ok(info) => {
+                    self.mark_wal_physical_done(wal_id).await;
                     let translated = self.translate_file_info(info, false);
-                    self.upsert_index_helper(&normalized, &translated).await?;
+                    if let Err(err) = self.upsert_index_helper(&normalized, &translated).await {
+                        self.fail_wal(
+                            wal_id,
+                            &format!("WRITE metadata sync failed for {}: {}", normalized, err),
+                        )
+                        .await;
+                        return Err(err);
+                    }
+                    self.mark_wal_metadata_done(wal_id).await;
                     Ok(translated)
                 }
                 Err(e) => Err(e),
@@ -68,6 +79,7 @@ impl ScopedVfsStorageEngine {
                     .await
             }
             Err(e) => {
+                self.fail_wal(wal_id, &e.to_string()).await;
                 self.journal_log("WRITE", &normalized, None, false, Some(e.to_string()))
                     .await
             }
@@ -103,6 +115,8 @@ impl ScopedVfsStorageEngine {
                     .await
                     .map_err(VfsError::Io)?;
             }
+            self.mark_wal_physical_done(wal_id).await;
+            self.mark_wal_metadata_done(wal_id).await;
             self.complete_wal(wal_id).await;
             return Ok(info);
         }
@@ -112,11 +126,33 @@ impl ScopedVfsStorageEngine {
             .await
         {
             Ok(_) => {
-                self.complete_wal(wal_id).await;
-                let _ = self
-                    .index_service
-                    .delete_file(&self.user_id, &normalized)
-                    .await;
+                self.mark_wal_physical_done(wal_id).await;
+                let mut metadata_complete = true;
+                if !skip_quota {
+                    if let Err(err) = self
+                        .index_service
+                        .delete_file(&self.user_id, &normalized)
+                        .await
+                    {
+                        metadata_complete = false;
+                        self.fail_wal(
+                            wal_id,
+                            &format!("DELETE metadata sync failed for {}: {}", normalized, err),
+                        )
+                        .await;
+                        yh_console_log::yhlog(
+                            "warn",
+                            &format!(
+                                "VFS delete metadata sync failed for user_id={} path={} err={}",
+                                self.user_id, normalized, err
+                            ),
+                        );
+                    }
+                }
+                if metadata_complete {
+                    self.mark_wal_metadata_done(wal_id).await;
+                    self.complete_wal(wal_id).await;
+                }
                 self.cache.invalidate_parent_ls(&normalized).await;
                 // Update quota (decrease)
                 if !skip_quota {
@@ -127,6 +163,7 @@ impl ScopedVfsStorageEngine {
                 Ok(info)
             }
             Err(e) => {
+                self.fail_wal(wal_id, &e.to_string()).await;
                 self.journal_log("DELETE", &normalized, None, false, Some(e.to_string()))
                     .await;
                 Err(e)
@@ -229,6 +266,7 @@ impl ScopedVfsStorageEngine {
         let result = self.pool.write(&physical_path, Bytes::from(content)).await;
         match result {
             Ok(info) => {
+                self.mark_wal_physical_done(wal_id).await;
                 // Update quota
                 if !skip_quota && diff > 0 {
                     let _ = self.update_quota(diff).await;
@@ -236,11 +274,20 @@ impl ScopedVfsStorageEngine {
                 self.journal_log("WRITE_AT", &normalized, None, true, None)
                     .await;
                 let translated = self.translate_file_info(info, false);
-                self.upsert_index_helper(&normalized, &translated).await?;
+                if let Err(err) = self.upsert_index_helper(&normalized, &translated).await {
+                    self.fail_wal(
+                        wal_id,
+                        &format!("WRITE_AT metadata sync failed for {}: {}", normalized, err),
+                    )
+                    .await;
+                    return Err(err);
+                }
+                self.mark_wal_metadata_done(wal_id).await;
                 self.complete_wal(wal_id).await;
                 Ok(translated)
             }
             Err(e) => {
+                self.fail_wal(wal_id, &e.to_string()).await;
                 self.journal_log("WRITE_AT", &normalized, None, false, Some(e.to_string()))
                     .await;
                 Err(e)
@@ -266,6 +313,8 @@ impl ScopedVfsStorageEngine {
             )
             .await
             .map_err(VfsError::Io)?;
+            self.mark_wal_physical_done(wal_id).await;
+            self.mark_wal_metadata_done(wal_id).await;
             self.complete_wal(wal_id).await;
             return self.stat_impl(path).await;
         }
@@ -273,16 +322,29 @@ impl ScopedVfsStorageEngine {
         let result = self.pool.create_dir(&physical_path).await;
         match result {
             Ok(_) => {
+                self.mark_wal_physical_done(wal_id).await;
                 self.journal_log("MKDIR", &normalized, None, true, None)
                     .await;
                 self.cache.invalidate_parent_ls(&normalized).await;
                 let info = self.pool.stat(&physical_path).await?;
                 let translated = self.translate_file_info(info, false);
-                self.upsert_index_helper(&normalized, &translated).await?;
+                if let Err(err) = self.upsert_index_helper(&normalized, &translated).await {
+                    self.fail_wal(
+                        wal_id,
+                        &format!(
+                            "CREATE_DIR metadata sync failed for {}: {}",
+                            normalized, err
+                        ),
+                    )
+                    .await;
+                    return Err(err);
+                }
+                self.mark_wal_metadata_done(wal_id).await;
                 self.complete_wal(wal_id).await;
                 Ok(translated)
             }
             Err(e) => {
+                self.fail_wal(wal_id, &e.to_string()).await;
                 self.journal_log("MKDIR", &normalized, None, false, Some(e.to_string()))
                     .await;
                 Err(e)
@@ -313,6 +375,8 @@ impl ScopedVfsStorageEngine {
                     .get_user_temp_dir(&self.user_id)
                     .join(self.get_relative_path(&norm_dst, LOGICAL_TEMP_PREFIX));
                 tokio::fs::rename(s, d).await.map_err(VfsError::Io)?;
+                self.mark_wal_physical_done(wal_id).await;
+                self.mark_wal_metadata_done(wal_id).await;
                 self.stat_impl(dst).await
             } else {
                 match self
@@ -324,15 +388,38 @@ impl ScopedVfsStorageEngine {
                     .await
                 {
                     Ok(_) => {
+                        self.mark_wal_physical_done(wal_id).await;
+                        let mut metadata_complete = true;
                         self.cache.invalidate_parent_ls(&norm_src).await;
                         self.cache.invalidate_parent_ls(&norm_dst).await;
                         if !self.is_thumbnail_cache_path(&norm_src)
                             && !self.is_thumbnail_cache_path(&norm_dst)
                         {
-                            let _ = self
+                            if let Err(err) = self
                                 .index_service
                                 .move_file(&self.user_id, &norm_src, &norm_dst)
+                                .await
+                            {
+                                metadata_complete = false;
+                                self.fail_wal(
+                                    wal_id,
+                                    &format!(
+                                        "MOVE metadata sync failed for {} -> {}: {}",
+                                        norm_src, norm_dst, err
+                                    ),
+                                )
                                 .await;
+                                yh_console_log::yhlog(
+                                    "warn",
+                                    &format!(
+                                        "VFS move metadata sync failed for user_id={} src={} dst={} err={}",
+                                        self.user_id, norm_src, norm_dst, err
+                                    ),
+                                );
+                            }
+                        }
+                        if metadata_complete {
+                            self.mark_wal_metadata_done(wal_id).await;
                         }
                         self.stat_impl(dst).await
                     }
@@ -347,11 +434,25 @@ impl ScopedVfsStorageEngine {
         };
         match &result {
             Ok(_) => {
-                self.complete_wal(wal_id).await;
+                if let Some(id) = wal_id {
+                    if let Some(wm) = &self.wal_manager {
+                        let should_complete = match wm.get_operation_status(id).await {
+                            Ok(Some(status)) => {
+                                matches!(status, crate::vfs::wal::WalStatus::MetadataDone)
+                            }
+                            Ok(None) => true,
+                            Err(_) => false,
+                        };
+                        if should_complete {
+                            self.complete_wal(Some(id)).await;
+                        }
+                    }
+                }
                 self.journal_log("MOVE", &norm_src, Some(&norm_dst), true, None)
                     .await
             }
             Err(e) => {
+                self.fail_wal(wal_id, &e.to_string()).await;
                 self.journal_log(
                     "MOVE",
                     &norm_src,

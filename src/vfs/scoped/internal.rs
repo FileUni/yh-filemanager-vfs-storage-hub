@@ -59,6 +59,48 @@ impl ScopedVfsStorageEngine {
             );
         }
     }
+    pub(super) async fn mark_wal_physical_done(&self, wal_id: Option<i64>) {
+        let (Some(id), Some(wm)) = (wal_id, &self.wal_manager) else {
+            return;
+        };
+        if let Err(err) = wm.mark_physical_done(id).await {
+            yh_console_log::yhlog(
+                "warn",
+                &format!(
+                    "VFS WAL physical_done failed: user_id={} wal_id={} err={}",
+                    self.user_id, id, err
+                ),
+            );
+        }
+    }
+    pub(super) async fn mark_wal_metadata_done(&self, wal_id: Option<i64>) {
+        let (Some(id), Some(wm)) = (wal_id, &self.wal_manager) else {
+            return;
+        };
+        if let Err(err) = wm.mark_metadata_done(id).await {
+            yh_console_log::yhlog(
+                "warn",
+                &format!(
+                    "VFS WAL metadata_done failed: user_id={} wal_id={} err={}",
+                    self.user_id, id, err
+                ),
+            );
+        }
+    }
+    pub(super) async fn fail_wal(&self, wal_id: Option<i64>, reason: &str) {
+        let (Some(id), Some(wm)) = (wal_id, &self.wal_manager) else {
+            return;
+        };
+        if let Err(err) = wm.fail_operation(id, reason).await {
+            yh_console_log::yhlog(
+                "warn",
+                &format!(
+                    "VFS WAL fail failed: user_id={} wal_id={} err={} reason={}",
+                    self.user_id, id, err, reason
+                ),
+            );
+        }
+    }
     pub(super) async fn journal_log(
         &self,
         action: &str,
@@ -394,7 +436,11 @@ impl ScopedVfsStorageEngine {
             .write_stream(&physical_path, Box::pin(vfs_stream))
             .await;
         let _ = tokio::fs::remove_file(&temp_file_path).await;
-        write_result?;
+        if let Err(err) = write_result {
+            self.fail_wal(wal_id, &err.to_string()).await;
+            return Err(err);
+        }
+        self.mark_wal_physical_done(wal_id).await;
         if total_written as i64 - initial_file_size != 0 {
             let _ = self
                 .update_quota(total_written as i64 - initial_file_size)
@@ -402,7 +448,18 @@ impl ScopedVfsStorageEngine {
         }
         let info = self.pool.stat(&physical_path).await?;
         let translated = self.translate_file_info(info, false);
-        self.upsert_index_helper(normalized, &translated).await?;
+        if let Err(err) = self.upsert_index_helper(normalized, &translated).await {
+            self.fail_wal(
+                wal_id,
+                &format!(
+                    "WRITE_STREAM metadata sync failed for {}: {}",
+                    normalized, err
+                ),
+            )
+            .await;
+            return Err(err);
+        }
+        self.mark_wal_metadata_done(wal_id).await;
         self.complete_wal(wal_id).await;
         Ok(translated)
     }
