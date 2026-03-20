@@ -1,6 +1,7 @@
 //! Virtual file system (VFS) core.
 pub mod error;
 pub mod journal;
+pub mod metrics;
 pub mod maintenance_mode;
 pub mod traits;
 pub mod types;
@@ -9,6 +10,7 @@ pub use journal::{
     VfsJournalEvent, VfsJournalRecorder, get_global_cache_journal_recorder,
     set_global_cache_journal_recorder,
 };
+pub use metrics::{VfsMetricsSnapshot, global_vfs_metrics, snapshot_global_vfs_metrics};
 pub use maintenance_mode::*;
 pub use traits::VfsStorage;
 pub use types::{VfsBatchError, VfsBatchResult, VfsFileInfo, VfsMetadata, VfsPaginationParams};

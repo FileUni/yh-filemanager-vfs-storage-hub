@@ -1,5 +1,6 @@
 use super::CachePathPolicy;
 use crate::config::VfsReadCacheConfig;
+use crate::vfs::global_vfs_metrics;
 use crate::vfs::VfsFileInfo;
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -115,29 +116,41 @@ impl ReadCacheManager {
 
     pub async fn get(&self, key: &str) -> Option<(Bytes, VfsFileInfo)> {
         if !self.enabled || !self.policy.allows(key) {
+            global_vfs_metrics().record_read_cache_miss();
             return None;
         }
         let now = now_ts();
         let entry = {
-            let mut entry = self.entries.get_mut(key)?;
+            let Some(mut entry) = self.entries.get_mut(key) else {
+                global_vfs_metrics().record_read_cache_miss();
+                return None;
+            };
             if entry.expires_at <= now {
                 drop(entry);
                 self.remove(key).await;
+                global_vfs_metrics().record_read_cache_miss();
                 return None;
             }
             entry.last_accessed_at = now;
             entry.clone()
         };
         match &entry.blob {
-            ReadCacheBlob::Memory(bytes) => Some((bytes.clone(), entry.info.clone())),
+            ReadCacheBlob::Memory(bytes) => {
+                global_vfs_metrics().record_read_cache_hit();
+                Some((bytes.clone(), entry.info.clone()))
+            }
             ReadCacheBlob::Disk(path) => match tokio::fs::read(path).await {
-                Ok(data) => Some((Bytes::from(data), entry.info.clone())),
+                Ok(data) => {
+                    global_vfs_metrics().record_read_cache_hit();
+                    Some((Bytes::from(data), entry.info.clone()))
+                }
                 Err(err) => {
                     yh_console_log::yhlog(
                         "warn",
                         &format!("Read cache disk read failed for '{}': {}", key, err),
                     );
                     self.remove(key).await;
+                    global_vfs_metrics().record_read_cache_miss();
                     None
                 }
             },
@@ -187,6 +200,7 @@ impl ReadCacheManager {
         };
         self.accounted_bytes.fetch_add(entry.size, Ordering::SeqCst);
         self.entries.insert(key.to_string(), entry);
+        global_vfs_metrics().record_read_cache_put(data.len() as u64);
     }
 
     pub async fn remove(&self, key: &str) {
