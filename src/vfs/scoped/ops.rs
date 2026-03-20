@@ -5,6 +5,22 @@ use crate::vfs::{VfsBatchResult, VfsFileInfo, VfsStorage};
 use futures::future::BoxFuture;
 use std::sync::Arc;
 impl ScopedVfsStorageEngine {
+    async fn move_regular_path_without_wal(&self, src: &str, dst: &str) -> VfsResult<VfsFileInfo> {
+        if self.is_temp_path(src) || self.is_temp_path(dst) {
+            return Err(VfsError::Internal(
+                "Recycle bin operations do not support temp paths".to_string(),
+            ));
+        }
+        self.pool
+            .move_file(
+                &self.get_physical_path(src).await?,
+                &self.get_physical_path(dst).await?,
+            )
+            .await?;
+        self.cache.invalidate_parent_ls(src).await;
+        self.cache.invalidate_parent_ls(dst).await;
+        self.stat_impl(dst).await
+    }
     pub(super) async fn set_favorite_impl(&self, path: &str, color: i32) -> VfsResult<VfsFileInfo> {
         let info = self.stat_impl(path).await?;
         let _ = self
@@ -68,28 +84,132 @@ impl ScopedVfsStorageEngine {
     }
     pub(super) async fn move_to_trash_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
-        let info = self.stat_impl(path).await?;
+        let normalized = self.validate_file_operation(path).await?;
+        if normalized.starts_with("/.recycle_bin/") {
+            return Err(VfsError::Internal(
+                "Path is already inside recycle bin".to_string(),
+            ));
+        }
+        let info = self.stat_impl(&normalized).await?;
         let timestamp = chrono::Utc::now().timestamp();
         let trash_path = format!("/.recycle_bin/{}_{}", timestamp, info.name);
-        let _ = self
-            .index_service
-            .trash_file(&self.user_id, &info.path, &trash_path)
+        if !self.exists_impl("/.recycle_bin").await.unwrap_or(false) {
+            self.pool
+                .create_dir_all(&self.get_physical_path("/.recycle_bin").await?)
+                .await?;
+        }
+        let wal_id = self
+            .begin_wal(
+                crate::vfs::wal::WalOperation::MoveToTrash {
+                    path: normalized.to_string(),
+                    trash_path: trash_path.clone(),
+                },
+                self.should_skip_wal_for_path(&normalized).await,
+            )
+            .await?;
+        let result = self
+            .move_regular_path_without_wal(&normalized, &trash_path)
             .await;
-        self.move_file_impl(path, &trash_path).await
+        match result {
+            Ok(info) => {
+                self.mark_wal_physical_done(wal_id).await;
+                if let Err(err) = self
+                    .index_service
+                    .trash_file(&self.user_id, &normalized, &trash_path)
+                    .await
+                {
+                    self.fail_wal(
+                        wal_id,
+                        &format!(
+                            "MOVE_TO_TRASH metadata sync failed for {} -> {}: {}",
+                            normalized, trash_path, err
+                        ),
+                    )
+                    .await;
+                    return Err(VfsError::Internal(err.to_string()));
+                }
+                self.mark_wal_metadata_done(wal_id).await;
+                self.complete_wal(wal_id).await;
+                self.journal_log("MOVE_TO_TRASH", &normalized, Some(&trash_path), true, None)
+                    .await;
+                Ok(info)
+            }
+            Err(err) => {
+                self.fail_wal(wal_id, &err.to_string()).await;
+                self.journal_log(
+                    "MOVE_TO_TRASH",
+                    &normalized,
+                    Some(&trash_path),
+                    false,
+                    Some(err.to_string()),
+                )
+                .await;
+                Err(err)
+            }
+        }
     }
     pub(super) async fn restore_from_trash_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
+        let normalized = self.validate_file_operation(path).await?;
+        if !normalized.starts_with("/.recycle_bin/") {
+            return Err(VfsError::Internal(
+                "Path is not inside recycle bin".to_string(),
+            ));
+        }
         if let Ok(Some(meta)) = self
             .index_service
-            .get_file_metadata(&self.user_id, path)
+            .get_file_metadata(&self.user_id, &normalized)
             .await
             && let Some(orig) = meta.original_path
         {
-            let _ = self
-                .index_service
-                .restore_file(&self.user_id, path, &orig)
-                .await;
-            return self.move_file_impl(path, &orig).await;
+            let wal_id = self
+                .begin_wal(
+                    crate::vfs::wal::WalOperation::RestoreTrash {
+                        trash_path: normalized.to_string(),
+                        original_path: orig.to_string(),
+                    },
+                    self.should_skip_wal_for_path(&normalized).await,
+                )
+                .await?;
+            let result = self.move_regular_path_without_wal(&normalized, &orig).await;
+            return match result {
+                Ok(info) => {
+                    self.mark_wal_physical_done(wal_id).await;
+                    if let Err(err) = self
+                        .index_service
+                        .restore_file(&self.user_id, &normalized, &orig)
+                        .await
+                    {
+                        self.fail_wal(
+                            wal_id,
+                            &format!(
+                                "RESTORE_TRASH metadata sync failed for {} -> {}: {}",
+                                normalized, orig, err
+                            ),
+                        )
+                        .await;
+                        Err(VfsError::Internal(err.to_string()))
+                    } else {
+                        self.mark_wal_metadata_done(wal_id).await;
+                        self.complete_wal(wal_id).await;
+                        self.journal_log("RESTORE_TRASH", &normalized, Some(&orig), true, None)
+                            .await;
+                        Ok(info)
+                    }
+                }
+                Err(err) => {
+                    self.fail_wal(wal_id, &err.to_string()).await;
+                    self.journal_log(
+                        "RESTORE_TRASH",
+                        &normalized,
+                        Some(&orig),
+                        false,
+                        Some(err.to_string()),
+                    )
+                    .await;
+                    Err(err)
+                }
+            };
         }
         Err(VfsError::Internal(
             "Not in trash or original path lost".to_string(),

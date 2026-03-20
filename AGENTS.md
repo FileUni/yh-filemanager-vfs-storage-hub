@@ -35,7 +35,7 @@ src/
 | Backup Connector | Read-only failover | Only read/stat/list fallback; writes are never mirrored |
 | File Index | Metadata truth for browse/search/trash/favorite/share state | Physical success after write-through update |
 | WAL | Operation journal for physical mutations | Only VFS scoped engine can record or complete WAL |
-| Recycle Bin | Safety for user deletes | Delete means move into `/.recycle_bin/` |
+| Recycle Bin | Safety for user deletes | Delete means dedicated `MOVE_TO_TRASH` journal + move into `/.recycle_bin/` |
 | Thumbnail Cache | User-owned per-directory cache | `/.thumbs` stays inside user directory tree |
 | Scratch Temp | Internal transient workspace | Local temp manager only, never exposed as physical storage path |
 
