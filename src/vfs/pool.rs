@@ -156,6 +156,18 @@ impl VfsPool {
         write_cache.pending_children(parent_physical_path).await
     }
 
+    pub fn is_dirty_path(&self, physical_path: &str) -> bool {
+        self.write_cache
+            .as_ref()
+            .is_some_and(|cache| cache.is_dirty_path(physical_path))
+    }
+
+    pub fn is_dirty_dir(&self, parent_physical_path: &str) -> bool {
+        self.write_cache
+            .as_ref()
+            .is_some_and(|cache| cache.is_dirty_dir(parent_physical_path))
+    }
+
     pub async fn invalidate_read_cache(&self, path: &str) {
         if let Some(read_cache) = &self.read_cache {
             read_cache.remove(path).await;

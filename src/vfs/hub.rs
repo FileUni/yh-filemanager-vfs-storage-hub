@@ -101,8 +101,6 @@ impl VfsStorageHub {
                     WriteCacheManager::new(
                         pool_name,
                         Arc::new(primary.clone()),
-                        Arc::clone(&db),
-                        primary.info().scheme().to_string(),
                         read_cache.as_ref().map(Arc::clone),
                         &write_cache_cfg,
                     )
