@@ -6,7 +6,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 impl ScopedVfsStorageEngine {
-    pub(super) async fn should_skip_wal(&self, path: &str, size: u64) -> bool {
+    pub(super) async fn should_skip_wal_for_write(&self, path: &str, size: u64) -> bool {
         let config = crate::config::get_vfs_hub_config().await;
         let cfg = config.get_batch_operation();
         if cfg.is_wal_skip_temp_path() && self.is_temp_path(path) {
@@ -19,6 +19,42 @@ impl ScopedVfsStorageEngine {
             return true;
         }
         false
+    }
+    pub(super) async fn should_skip_wal_for_path(&self, path: &str) -> bool {
+        let config = crate::config::get_vfs_hub_config().await;
+        let cfg = config.get_batch_operation();
+        if cfg.is_wal_skip_temp_path() && self.is_temp_path(path) {
+            return true;
+        }
+        self.is_thumbnail_cache_path(path)
+    }
+    pub(super) async fn begin_wal(
+        &self,
+        operation: crate::vfs::wal::WalOperation,
+        skip: bool,
+    ) -> VfsResult<Option<i64>> {
+        if skip {
+            return Ok(None);
+        }
+        let Some(wm) = &self.wal_manager else {
+            return Ok(None);
+        };
+        let wal_id = wm
+            .log_operation(&self.user_id, operation)
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
+        Ok(Some(wal_id))
+    }
+    pub(super) async fn complete_wal(&self, wal_id: Option<i64>) {
+        let (Some(id), Some(wm)) = (wal_id, &self.wal_manager) else {
+            return;
+        };
+        if let Err(err) = wm.complete_operation(id).await {
+            yh_console_log::yhlog(
+                "warn",
+                &format!("VFS WAL complete failed: user_id={} wal_id={} err={}", self.user_id, id, err),
+            );
+        }
     }
     pub(super) async fn journal_log(
         &self,
@@ -186,9 +222,18 @@ impl ScopedVfsStorageEngine {
         if self.is_thumbnail_cache_path(logical_path) {
             return Ok(());
         }
+        let physical_path = self.get_physical_path(logical_path).await?;
+        let backend_type = self.pool.get_backend_type();
         if let Err(e) = self
             .index_service
-            .upsert_file(&self.user_id, logical_path, info)
+            .upsert_file_with_location(
+                &self.user_id,
+                logical_path,
+                info,
+                Some(self.pool.config.get_name()),
+                Some(backend_type.as_str()),
+                Some(physical_path.as_str()),
+            )
             .await
         {
             // Governance rule: do not rollback physical IO when DB update fails.
