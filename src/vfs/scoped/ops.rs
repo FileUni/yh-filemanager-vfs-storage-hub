@@ -327,7 +327,10 @@ impl ScopedVfsStorageEngine {
             .collect())
     }
     pub(super) async fn sync_index_impl(&self, path: &str) -> VfsResult<Vec<VfsFileInfo>> {
-        Ok(self.sync_index_internal(path, true).await?.unwrap_or_default())
+        Ok(self
+            .sync_index_internal(path, true)
+            .await?
+            .unwrap_or_default())
     }
     pub(super) fn get_recursive_size_impl(&self, path: &str) -> BoxFuture<'static, VfsResult<i64>> {
         let service = Arc::clone(&self.index_service);
