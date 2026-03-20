@@ -32,8 +32,9 @@ src/
 |-----------|----------------|------|
 | Scoped Engine | Path isolation | Always create storage via `create_scoped_engine(...)` |
 | OpenDAL Pool | Physical content IO | Only data plane, never business truth |
+| Backup Connector | Read-only failover | Only read/stat/list fallback; writes are never mirrored |
 | File Index | Metadata truth for browse/search/trash/favorite/share state | Physical success after write-through update |
-| WAL | Crash recovery for physical mutations | Only VFS scoped engine can record or complete WAL |
+| WAL | Operation journal for physical mutations | Only VFS scoped engine can record or complete WAL |
 | Recycle Bin | Safety for user deletes | Delete means move into `/.recycle_bin/` |
 | Thumbnail Cache | User-owned per-directory cache | `/.thumbs` stays inside user directory tree |
 | Scratch Temp | Internal transient workspace | Local temp manager only, never exposed as physical storage path |
@@ -47,8 +48,10 @@ src/
 5. Quota check happens before physical write; quota usage update happens only after successful physical mutation.
 6. If DB index update fails after physical success, log loudly and repair later; never rollback the physical file in-band.
 7. `wal_min_size_bytes` only applies to regular file writes; delete/move/create-dir control operations are still WAL-tracked.
-8. `/.thumbs` is intentionally mixed into user directories for user-controlled cleanup, but should stay hidden from normal listings unless a dedicated UI chooses to expose it.
-9. `/.virtual/tmp` is a logical temp namespace; internal upload/render/decompress scratch files belong to `utils/temp_file.rs`, not to user-visible storage.
+8. WAL rows are not deleted on success anymore; they transition through journal states such as `pending`, `physical_done`, `metadata_done`, `completed`, and `failed`.
+9. `enable_write_cache` is reserved and must remain `false`; scoped engine streaming writes already provide the supported safe staging path.
+10. `/.thumbs` is intentionally mixed into user directories for user-controlled cleanup, but should stay hidden from normal listings unless a dedicated UI chooses to expose it.
+11. `/.virtual/tmp` is a logical temp namespace; internal upload/render/decompress scratch files belong to `utils/temp_file.rs`, not to user-visible storage.
 
 ## Data Flow
 

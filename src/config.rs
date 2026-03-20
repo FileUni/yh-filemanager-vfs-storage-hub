@@ -122,14 +122,14 @@ pub struct VfsPoolConfig {
     )]
     pub primary_connector: Option<Arc<str>>,
     #[config(
-        desc_zh = "备用存储连接器名称，主连接器不可用时自动切换",
-        desc_en = "Backup storage connector name, automatically switches when primary is unavailable",
+        desc_zh = "备用存储连接器名称，仅用于只读兜底（read/stat/list 等）；写入仍只落主连接器，不做双写复制",
+        desc_en = "Backup storage connector name used for read-only failover (read/stat/list). Writes still go to the primary connector only and are not mirrored",
         example = "local-backup"
     )]
     pub backup_connector: Option<Arc<str>>,
     #[config(
-        desc_zh = "是否启用写入缓存，提升写入性能但可能降低数据一致性",
-        desc_en = "Whether to enable write cache to improve write performance but may reduce data consistency",
+        desc_zh = "保留字段，当前不支持独立写入缓存；必须为 false，流式写入已经由 scoped engine 自带安全暂存",
+        desc_en = "Reserved field. Independent write cache is currently unsupported and must remain false; scoped engine streaming writes already provide safe staging",
         example = "false"
     )]
     pub enable_write_cache: Option<bool>,
@@ -1357,6 +1357,12 @@ impl VfsStorageHubConfig {
                     format!("pools[{}].enable_write_cache", i),
                     errors
                 );
+                if pool.enable_write_cache == Some(true) {
+                    errors.push(format!(
+                        "[{}] pools[{}].enable_write_cache=true is not supported; scoped engine already performs safe staging and this field must remain false",
+                        s, i
+                    ));
+                }
                 yh_config_infra::config_collect_bool!(
                     pool.enable,
                     s,
