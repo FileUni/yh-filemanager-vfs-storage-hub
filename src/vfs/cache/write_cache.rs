@@ -416,6 +416,19 @@ impl WriteCacheManager {
                         let _ = this_clone.flush_entry(entry, false).await;
                     });
                 }
+                let sync_tasks: Vec<DirectoryIndexSyncTask> = this
+                    .index_sync_dirs
+                    .iter()
+                    .filter_map(|entry| {
+                        (entry.value().next_sync_at <= now_ts()).then(|| entry.value().clone())
+                    })
+                    .collect();
+                for task in sync_tasks {
+                    let this_clone = Arc::clone(&this);
+                    tokio::spawn(async move {
+                        let _ = this_clone.sync_directory_index(task).await;
+                    });
+                }
             }
         });
     }
@@ -524,6 +537,7 @@ impl WriteCacheManager {
         }
         let _ = previous_size;
         let _ = info;
+        self.schedule_index_sync(&entry);
         Ok(())
     }
 
@@ -810,10 +824,46 @@ impl WriteCacheManager {
         }
     }
 
-    fn mark_dirty(&self, physical_path: &str) {
+    fn mark_dirty(&self, logical_path: &str, physical_path: &str, user_id: &str) {
         self.dirty_paths.insert(physical_path.to_string(), ());
         self.dirty_dirs
             .insert(parent_path(physical_path).to_string(), ());
+        let logical_parent_path = parent_path(logical_path);
+        let physical_parent_path = parent_path(physical_path);
+        let task_key = format!("{}\n{}", user_id, logical_parent_path);
+        self.index_sync_dirs.insert(
+            task_key,
+            DirectoryIndexSyncTask {
+                user_id: Arc::from(user_id),
+                logical_parent_path,
+                physical_parent_path,
+                next_sync_at: now_ts() + 1,
+                retry_count: 0,
+            },
+        );
+    }
+
+    fn schedule_index_sync(&self, entry: &PendingWriteRecord) {
+        if !self.policy.allows(entry.logical_path.as_ref()) {
+            return;
+        }
+        let logical_parent_path = parent_path(entry.logical_path.as_ref());
+        let physical_parent_path = parent_path(entry.physical_path.as_ref());
+        let task_key = format!("{}\n{}", entry.user_id, logical_parent_path);
+        let next_sync_at = now_ts() + 1;
+        self.index_sync_dirs
+            .entry(task_key)
+            .and_modify(|task| {
+                task.next_sync_at = next_sync_at;
+                task.retry_count = 0;
+            })
+            .or_insert_with(|| DirectoryIndexSyncTask {
+                user_id: Arc::clone(&entry.user_id),
+                logical_parent_path,
+                physical_parent_path,
+                next_sync_at,
+                retry_count: 0,
+            });
     }
 
     fn retry_delay_secs(&self, retry_count: u32, abnormal_logged: bool) -> i64 {
