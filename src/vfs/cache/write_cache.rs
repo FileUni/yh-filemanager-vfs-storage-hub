@@ -1,9 +1,13 @@
 use super::{CachePathPolicy, read_cache::ReadCacheManager};
+use crate::business::entities::file_index;
+use crate::business::services::FileIndexService;
 use crate::config::VfsWriteCacheConfig;
 use crate::vfs::{VfsFileInfo, VfsJournalEvent};
 use bytes::Bytes;
 use dashmap::DashMap;
-use opendal::Operator;
+use opendal::{Metadata, Operator};
+use sea_orm::ActiveValue::Set;
+use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -66,6 +70,15 @@ struct PendingWriteRecord {
 }
 
 #[derive(Debug, Clone)]
+struct DirectoryIndexSyncTask {
+    user_id: Arc<str>,
+    logical_parent_path: Arc<str>,
+    physical_parent_path: Arc<str>,
+    next_sync_at: i64,
+    retry_count: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct PendingWriteInfo {
     pub physical_path: Arc<str>,
     pub size: u64,
@@ -88,7 +101,11 @@ pub struct WriteCacheManager {
     entries: DashMap<String, Arc<PendingWriteRecord>>,
     dirty_paths: DashMap<String, ()>,
     dirty_dirs: DashMap<String, ()>,
+    index_sync_dirs: DashMap<String, DirectoryIndexSyncTask>,
     primary: Arc<Operator>,
+    db: Arc<DatabaseConnection>,
+    pool_name: Arc<str>,
+    backend_type: Arc<str>,
     read_cache: Option<Arc<ReadCacheManager>>,
 }
 
@@ -102,6 +119,34 @@ fn cache_hash(key: &str) -> String {
 
 fn data_path(root_dir: &Path, key: &str) -> PathBuf {
     root_dir.join(format!("{}.bin", cache_hash(key)))
+}
+
+fn file_name_from_path(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn normalize_entry_path(path: &str) -> &str {
+    if path == "/" {
+        return path;
+    }
+    path.strip_suffix('/').unwrap_or(path)
+}
+
+fn to_vfs_file_info(path: &str, meta: &Metadata) -> VfsFileInfo {
+    VfsFileInfo {
+        name: file_name_from_path(path).into(),
+        path: path.into(),
+        is_dir: meta.is_dir(),
+        size: meta.content_length(),
+        modified: meta
+            .last_modified()
+            .map(|t| std::time::SystemTime::from(t).into()),
+        favorite_color: 0,
+        has_active_share: None,
+        has_active_direct: None,
+        trashed_at: None,
+        original_path: None,
+    }
 }
 
 fn parent_path(path: &str) -> Arc<str> {
@@ -136,6 +181,8 @@ impl WriteCacheManager {
     pub async fn new(
         pool_name: &str,
         primary: Arc<Operator>,
+        db: Arc<DatabaseConnection>,
+        backend_type: String,
         read_cache: Option<Arc<ReadCacheManager>>,
         config: &VfsWriteCacheConfig,
     ) -> anyhow::Result<Arc<Self>> {
@@ -169,7 +216,11 @@ impl WriteCacheManager {
             entries: DashMap::new(),
             dirty_paths: DashMap::new(),
             dirty_dirs: DashMap::new(),
+            index_sync_dirs: DashMap::new(),
             primary,
+            db,
+            pool_name: Arc::from(pool_name),
+            backend_type: Arc::from(backend_type),
             read_cache,
         });
         manager.load_existing_entries().await;
@@ -220,7 +271,7 @@ impl WriteCacheManager {
         {
             self.update_existing_entry(&existing, physical_path, data, modified_at, deadline_at)
                 .await?;
-            self.mark_dirty(physical_path);
+            self.mark_dirty(logical_path, physical_path, user_id);
             let size = existing.inner.lock().await.size;
             return Ok(Some(file_info_from_pending(
                 physical_path,
@@ -263,7 +314,7 @@ impl WriteCacheManager {
             .fetch_add(self.accounted_bytes_for_blob(&*guard), Ordering::SeqCst);
         drop(guard);
         self.entries.insert(physical_path.to_string(), record);
-        self.mark_dirty(physical_path);
+        self.mark_dirty(logical_path, physical_path, user_id);
         Ok(Some(file_info_from_pending(
             physical_path,
             data.len() as u64,
@@ -718,7 +769,7 @@ impl WriteCacheManager {
                 .fetch_add(self.accounted_bytes_for_blob(&*guard), Ordering::SeqCst);
             drop(guard);
             self.entries.insert(meta.physical_path.clone(), record);
-            self.mark_dirty(&meta.physical_path);
+            self.mark_dirty(&meta.logical_path, &meta.physical_path, &meta.user_id);
         }
     }
 
