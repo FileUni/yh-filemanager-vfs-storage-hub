@@ -6,7 +6,7 @@ use crate::vfs::types::{VfsBatchResult, VfsFileInfo, VfsMetadata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
-use opendal::Operator;
+use opendal::{Metadata, Operator};
 use std::sync::Arc;
 
 #[inline]
@@ -27,6 +27,24 @@ fn normalize_entry_path(path: &str) -> &str {
         None => path,
     }
 }
+
+#[inline]
+fn to_vfs_file_info(path: &str, meta: &Metadata) -> VfsFileInfo {
+    VfsFileInfo {
+        name: file_name_from_path(path).into(),
+        path: path.into(),
+        is_dir: meta.is_dir(),
+        size: meta.content_length(),
+        modified: meta
+            .last_modified()
+            .map(|t| std::time::SystemTime::from(t).into()),
+        favorite_color: 0,
+        has_active_share: None,
+        has_active_direct: None,
+        trashed_at: None,
+        original_path: None,
+    }
+}
 /// VFS Storage Pool
 #[derive(Debug, Clone)]
 pub struct VfsPool {
@@ -45,13 +63,47 @@ impl VfsPool {
             sync_guards: Arc::new(crate::vfs::maintenance::SyncGuardManager::new()),
         }
     }
+
+    fn log_backup_fallback(&self, op: &str, path: &str, err: &crate::vfs::error::VfsError) {
+        yh_console_log::yhlog(
+            "warn",
+            &format!(
+                "VFS pool '{}' falling back to backup for {} on '{}' after primary error: {}",
+                self.config.get_name(),
+                op,
+                path,
+                err
+            ),
+        );
+    }
+
+    async fn stat_with_operator(&self, operator: &Operator, path: &str) -> VfsResult<VfsFileInfo> {
+        let meta = operator
+            .stat(path)
+            .await
+            .map_err(crate::vfs::error::VfsError::from)?;
+        Ok(to_vfs_file_info(path, &meta))
+    }
 }
 #[async_trait]
 impl VfsStorage for VfsPool {
     async fn read(&self, path: &str) -> VfsResult<(Bytes, VfsFileInfo)> {
-        let data = self.primary.read(path).await?.to_bytes();
-        let info = self.stat(path).await?;
-        Ok((data, info))
+        match self.primary.read(path).await {
+            Ok(data) => {
+                let info = self.stat_with_operator(self.primary.as_ref(), path).await?;
+                Ok((data.to_bytes(), info))
+            }
+            Err(err) => {
+                let primary_err = crate::vfs::error::VfsError::from(err);
+                let Some(backup) = &self.backup else {
+                    return Err(primary_err);
+                };
+                self.log_backup_fallback("read", path, &primary_err);
+                let data = backup.read(path).await?.to_bytes();
+                let info = self.stat_with_operator(backup.as_ref(), path).await?;
+                Ok((data, info))
+            }
+        }
     }
     async fn write(&self, path: &str, data: Bytes) -> VfsResult<VfsFileInfo> {
         self.primary.write(path, data).await?;
@@ -69,7 +121,18 @@ impl VfsStorage for VfsPool {
         } else {
             path.to_string()
         };
-        let mut lister = self.primary.lister(&list_path).await?;
+        let operator = match self.primary.lister(&list_path).await {
+            Ok(_) => Arc::clone(&self.primary),
+            Err(err) => {
+                let primary_err = crate::vfs::error::VfsError::from(err);
+                let Some(backup) = &self.backup else {
+                    return Err(primary_err);
+                };
+                self.log_backup_fallback("list", &list_path, &primary_err);
+                Arc::clone(backup)
+            }
+        };
+        let mut lister = operator.lister(&list_path).await?;
         let mut result = Vec::new();
         while let Some(entry_res) = lister.next().await {
             let entry = entry_res?;
@@ -80,7 +143,7 @@ impl VfsStorage for VfsPool {
             let (is_dir, size, modified) = if meta.last_modified().is_none()
                 || (meta.is_file() && meta.content_length() == 0)
             {
-                match self.primary.stat(entry.path()).await {
+                match operator.stat(entry.path()).await {
                     Ok(st) => (
                         st.is_dir(),
                         st.content_length(),
@@ -188,7 +251,18 @@ impl VfsStorage for VfsPool {
     }
     async fn list_recursive(&self, path: &str) -> VfsResult<Vec<VfsFileInfo>> {
         use futures::StreamExt;
-        let mut lister = self.primary.lister_with(path).recursive(true).await?;
+        let operator = match self.primary.lister_with(path).recursive(true).await {
+            Ok(_) => Arc::clone(&self.primary),
+            Err(err) => {
+                let primary_err = crate::vfs::error::VfsError::from(err);
+                let Some(backup) = &self.backup else {
+                    return Err(primary_err);
+                };
+                self.log_backup_fallback("list_recursive", path, &primary_err);
+                Arc::clone(backup)
+            }
+        };
+        let mut lister = operator.lister_with(path).recursive(true).await?;
         let mut result = Vec::new();
         while let Some(entry_res) = lister.next().await {
             let entry = entry_res?;
@@ -197,7 +271,7 @@ impl VfsStorage for VfsPool {
             let (is_dir, size, modified) = if meta.last_modified().is_none()
                 || (meta.is_file() && meta.content_length() == 0)
             {
-                match self.primary.stat(entry.path()).await {
+                match operator.stat(entry.path()).await {
                     Ok(st) => (
                         st.is_dir(),
                         st.content_length(),
@@ -253,8 +327,22 @@ impl VfsStorage for VfsPool {
         VfsFileInfo,
     )> {
         use futures::StreamExt;
-        let info = self.stat(path).await?;
-        let reader = self.primary.reader(path).await?;
+        let (reader, info) = match self.primary.reader(path).await {
+            Ok(reader) => (
+                reader,
+                self.stat_with_operator(self.primary.as_ref(), path).await?,
+            ),
+            Err(err) => {
+                let primary_err = crate::vfs::error::VfsError::from(err);
+                let Some(backup) = &self.backup else {
+                    return Err(primary_err);
+                };
+                self.log_backup_fallback("read_stream_range", path, &primary_err);
+                let reader = backup.reader(path).await?;
+                let info = self.stat_with_operator(backup.as_ref(), path).await?;
+                (reader, info)
+            }
+        };
         let stream = reader.into_bytes_stream(range).await?;
         let vfs_stream = stream.map(|res| res.map_err(crate::vfs::error::VfsError::from));
         Ok((Box::pin(vfs_stream), info))
@@ -278,29 +366,35 @@ impl VfsStorage for VfsPool {
         self.stat(path).await
     }
     async fn exists(&self, path: &str) -> VfsResult<bool> {
-        Ok(self.primary.exists(path).await?)
+        match self.primary.exists(path).await {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                if let Some(backup) = &self.backup {
+                    return Ok(backup.exists(path).await?);
+                }
+                Ok(false)
+            }
+            Err(err) => {
+                let primary_err = crate::vfs::error::VfsError::from(err);
+                let Some(backup) = &self.backup else {
+                    return Err(primary_err);
+                };
+                self.log_backup_fallback("exists", path, &primary_err);
+                Ok(backup.exists(path).await?)
+            }
+        }
     }
     async fn stat(&self, path: &str) -> VfsResult<VfsFileInfo> {
-        let meta = self
-            .primary
-            .stat(path)
-            .await
-            .map_err(crate::vfs::error::VfsError::from)?;
-        let file_name = file_name_from_path(path);
-        Ok(VfsFileInfo {
-            name: file_name.into(),
-            path: path.into(),
-            is_dir: meta.is_dir(),
-            size: meta.content_length(),
-            modified: meta
-                .last_modified()
-                .map(|t| std::time::SystemTime::from(t).into()),
-            favorite_color: 0,
-            has_active_share: None,
-            has_active_direct: None,
-            trashed_at: None,
-            original_path: None,
-        })
+        match self.stat_with_operator(self.primary.as_ref(), path).await {
+            Ok(info) => Ok(info),
+            Err(primary_err) => {
+                let Some(backup) = &self.backup else {
+                    return Err(primary_err);
+                };
+                self.log_backup_fallback("stat", path, &primary_err);
+                self.stat_with_operator(backup.as_ref(), path).await
+            }
+        }
     }
     async fn metadata(&self, path: &str) -> VfsResult<VfsMetadata> {
         let info = self.stat(path).await?;
@@ -319,14 +413,22 @@ impl VfsStorage for VfsPool {
         start: u64,
         end: u64,
     ) -> VfsResult<(Bytes, VfsFileInfo)> {
-        let data = self
-            .primary
-            .read_with(path)
-            .range(start..end)
-            .await?
-            .to_bytes();
-        let info = self.stat(path).await?;
-        Ok((data, info))
+        match self.primary.read_with(path).range(start..end).await {
+            Ok(data) => {
+                let info = self.stat_with_operator(self.primary.as_ref(), path).await?;
+                Ok((data.to_bytes(), info))
+            }
+            Err(err) => {
+                let primary_err = crate::vfs::error::VfsError::from(err);
+                let Some(backup) = &self.backup else {
+                    return Err(primary_err);
+                };
+                self.log_backup_fallback("read_range", path, &primary_err);
+                let data = backup.read_with(path).range(start..end).await?.to_bytes();
+                let info = self.stat_with_operator(backup.as_ref(), path).await?;
+                Ok((data, info))
+            }
+        }
     }
     async fn write_at(&self, _path: &str, _offset: u64, _data: Bytes) -> VfsResult<VfsFileInfo> {
         Err(crate::vfs::error::VfsError::Internal(

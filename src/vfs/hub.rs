@@ -43,6 +43,12 @@ impl VfsStorageHub {
         }
         let mut pools = HashMap::with_capacity(pools_cfg.len());
         for pool_cfg in pools_cfg {
+            if pool_cfg.enable_write_cache == Some(true) {
+                return Err(crate::vfs::error::VfsError::Internal(format!(
+                    "Pool '{}' has enable_write_cache=true, but independent write cache is no longer supported",
+                    pool_cfg.get_name()
+                )));
+            }
             let primary_connector_name = yh_config_infra::config_require_str!(
                 pool_cfg.primary_connector,
                 "vfs_storage_hub",
