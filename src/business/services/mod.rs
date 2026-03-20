@@ -9,4 +9,4 @@ pub use file_index_service::FileIndexService;
 pub use shares::ShareService;
 pub use ssh_keys::{SshKeyInfo, SshKeyService};
 pub use types::*;
-pub use user_settings::UserSettingsService;
+pub use user_settings::{S3CredentialLookup, UserSettingsService, UserSettingsUpdatePatch};

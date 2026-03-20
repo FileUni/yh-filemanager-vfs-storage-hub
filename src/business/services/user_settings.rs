@@ -6,6 +6,7 @@ use sea_orm::*;
 #[derive(Debug, Clone, Default)]
 pub struct UserSettingsUpdatePatch {
     pub pool_name: Option<String>,
+    pub base_dir: Option<String>,
     pub storage_quota: Option<i64>,
     pub storage_used: Option<i64>,
     pub thumbnail_disable_text: Option<bool>,
@@ -91,6 +92,9 @@ impl UserSettingsService {
 
         if let Some(pool_name) = patch.pool_name.as_deref() {
             update = update.col_expr(user_settings::Column::PoolName, Expr::value(pool_name));
+        }
+        if let Some(base_dir) = patch.base_dir.as_deref() {
+            update = update.col_expr(user_settings::Column::BaseDir, Expr::value(base_dir));
         }
         if let Some(storage_quota) = patch.storage_quota {
             update = update.col_expr(
