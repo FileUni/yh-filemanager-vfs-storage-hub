@@ -13,8 +13,17 @@ pub struct Model {
     // Operation Data (JSON)
     #[sea_orm(column_type = "Text")]
     pub operation_data: String,
+    // Operation Status
+    pub status: String,
+    // Last Failure Reason
+    #[sea_orm(column_type = "Text", nullable)]
+    pub failure_reason: Option<String>,
     // Creation Time
     pub created_at: DateTimeWithTimeZone,
+    // Last Update Time
+    pub updated_at: DateTimeWithTimeZone,
+    // Completion Time
+    pub completed_at: Option<DateTimeWithTimeZone>,
 }
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
