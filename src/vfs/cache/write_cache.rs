@@ -1,11 +1,9 @@
-use super::read_cache::ReadCacheManager;
-use crate::business::services::{FileIndexService, user_settings::UserSettingsService};
+use super::{CachePathPolicy, read_cache::ReadCacheManager};
 use crate::config::VfsWriteCacheConfig;
 use crate::vfs::{VfsFileInfo, VfsJournalEvent};
 use bytes::Bytes;
 use dashmap::DashMap;
 use opendal::Operator;
-use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -50,6 +48,7 @@ struct PendingWriteMutable {
     size: u64,
     modified_at: i64,
     deadline_at: i64,
+    next_retry_at: i64,
     generation: u64,
     retry_count: u32,
     state: PendingWriteState,
@@ -84,12 +83,12 @@ pub struct WriteCacheManager {
     flush_concurrency: usize,
     flush_interval_ms: u64,
     flush_deadline_secs: u64,
+    policy: CachePathPolicy,
     accounted_bytes: AtomicU64,
     entries: DashMap<String, Arc<PendingWriteRecord>>,
+    dirty_paths: DashMap<String, ()>,
+    dirty_dirs: DashMap<String, ()>,
     primary: Arc<Operator>,
-    db: Arc<DatabaseConnection>,
-    pool_name: Arc<str>,
-    backend_type: Arc<str>,
     read_cache: Option<Arc<ReadCacheManager>>,
 }
 
@@ -137,8 +136,6 @@ impl WriteCacheManager {
     pub async fn new(
         pool_name: &str,
         primary: Arc<Operator>,
-        db: Arc<DatabaseConnection>,
-        backend_type: String,
         read_cache: Option<Arc<ReadCacheManager>>,
         config: &VfsWriteCacheConfig,
     ) -> anyhow::Result<Arc<Self>> {
@@ -164,12 +161,15 @@ impl WriteCacheManager {
             flush_concurrency: config.get_flush_concurrency(),
             flush_interval_ms: config.get_flush_interval_ms(),
             flush_deadline_secs: config.get_flush_deadline_secs(),
+            policy: CachePathPolicy::new(
+                config.is_cache_thumbnail_paths(),
+                &config.get_skip_extensions(),
+            ),
             accounted_bytes: AtomicU64::new(0),
             entries: DashMap::new(),
+            dirty_paths: DashMap::new(),
+            dirty_dirs: DashMap::new(),
             primary,
-            db,
-            pool_name: Arc::from(pool_name),
-            backend_type: Arc::from(backend_type),
             read_cache,
         });
         manager.load_existing_entries().await;
@@ -187,8 +187,9 @@ impl WriteCacheManager {
         self.max_file_size_bytes
     }
 
-    pub fn should_cache(&self, size: usize) -> bool {
+    pub fn should_cache(&self, logical_path: &str, size: usize) -> bool {
         self.enabled
+            && self.policy.allows(logical_path)
             && size > 0
             && (size as u64) <= self.max_file_size_bytes
             && (size as u64) <= self.capacity_bytes
@@ -201,7 +202,7 @@ impl WriteCacheManager {
         physical_path: &str,
         data: Bytes,
     ) -> anyhow::Result<Option<VfsFileInfo>> {
-        if !self.should_cache(data.len()) {
+        if !self.should_cache(logical_path, data.len()) {
             return Ok(None);
         }
         if let Some(read_cache) = &self.read_cache {
@@ -219,6 +220,7 @@ impl WriteCacheManager {
         {
             self.update_existing_entry(&existing, physical_path, data, modified_at, deadline_at)
                 .await?;
+            self.mark_dirty(physical_path);
             let size = existing.inner.lock().await.size;
             return Ok(Some(file_info_from_pending(
                 physical_path,
@@ -248,6 +250,7 @@ impl WriteCacheManager {
                 size: data.len() as u64,
                 modified_at,
                 deadline_at,
+                next_retry_at: modified_at,
                 generation: 1,
                 retry_count: 0,
                 state: PendingWriteState::Pending,
@@ -260,6 +263,7 @@ impl WriteCacheManager {
             .fetch_add(self.accounted_bytes_for_blob(&*guard), Ordering::SeqCst);
         drop(guard);
         self.entries.insert(physical_path.to_string(), record);
+        self.mark_dirty(physical_path);
         Ok(Some(file_info_from_pending(
             physical_path,
             data.len() as u64,
@@ -285,11 +289,14 @@ impl WriteCacheManager {
             .entries
             .get(physical_path)
             .map(|v| Arc::clone(v.value()))?;
-        let inner = entry.inner.lock().await;
-        let data = self.read_blob_bytes(&inner.blob).await.ok()?;
+        let (blob, size, modified_at) = {
+            let inner = entry.inner.lock().await;
+            (inner.blob.clone(), inner.size, inner.modified_at)
+        };
+        let data = self.read_blob_bytes(&blob).await.ok()?;
         Some((
             data,
-            file_info_from_pending(physical_path, inner.size, inner.modified_at),
+            file_info_from_pending(physical_path, size, modified_at),
         ))
     }
 
@@ -312,6 +319,14 @@ impl WriteCacheManager {
         out
     }
 
+    pub fn is_dirty_path(&self, physical_path: &str) -> bool {
+        self.dirty_paths.contains_key(physical_path)
+    }
+
+    pub fn is_dirty_dir(&self, parent_physical_path: &str) -> bool {
+        self.dirty_dirs.contains_key(parent_physical_path)
+    }
+
     pub async fn flush_path(&self, physical_path: &str) -> crate::vfs::VfsResult<()> {
         let Some(entry) = self
             .entries
@@ -320,7 +335,7 @@ impl WriteCacheManager {
         else {
             return Ok(());
         };
-        self.flush_entry(entry).await
+        self.flush_entry(entry, true).await
     }
 
     fn start_worker(self: &Arc<Self>) {
@@ -338,23 +353,33 @@ impl WriteCacheManager {
                     .map(|entry| Arc::clone(entry.value()))
                     .collect();
                 for entry in entries {
+                    if !this.is_due_for_background_flush(&entry).await {
+                        continue;
+                    }
                     let Ok(permit) = Arc::clone(&semaphore).try_acquire_owned() else {
                         break;
                     };
                     let this_clone = Arc::clone(&this);
                     tokio::spawn(async move {
                         let _permit = permit;
-                        let _ = this_clone.flush_entry(entry).await;
+                        let _ = this_clone.flush_entry(entry, false).await;
                     });
                 }
             }
         });
     }
 
-    async fn flush_entry(&self, entry: Arc<PendingWriteRecord>) -> crate::vfs::VfsResult<()> {
+    async fn flush_entry(
+        &self,
+        entry: Arc<PendingWriteRecord>,
+        force: bool,
+    ) -> crate::vfs::VfsResult<()> {
         let (blob, generation, size, modified_at, deadline_at) = {
             let mut inner = entry.inner.lock().await;
             if inner.state == PendingWriteState::Flushing {
+                return Ok(());
+            }
+            if !force && inner.next_retry_at > now_ts() {
                 return Ok(());
             }
             inner.state = PendingWriteState::Flushing;
@@ -382,11 +407,14 @@ impl WriteCacheManager {
             let mut inner = entry.inner.lock().await;
             inner.retry_count = inner.retry_count.saturating_add(1);
             inner.last_error = Some(err.to_string());
+            inner.next_retry_at =
+                now_ts() + self.retry_delay_secs(inner.retry_count, inner.abnormal_logged);
             if now_ts() > deadline_at {
                 let promoted = self.promote_to_abnormal(&entry, &mut inner, &data).await;
                 if promoted && !inner.abnormal_logged {
                     inner.abnormal_logged = true;
                     inner.state = PendingWriteState::Abnormal;
+                    inner.next_retry_at = now_ts() + self.retry_delay_secs(inner.retry_count, true);
                     drop(inner);
                     self.log_abnormal_journal(&entry, &err.to_string()).await;
                     return Err(crate::vfs::VfsError::Internal(err.to_string()));
@@ -426,6 +454,7 @@ impl WriteCacheManager {
             let mut inner = entry.inner.lock().await;
             if inner.generation != generation {
                 inner.state = PendingWriteState::Pending;
+                inner.next_retry_at = now_ts();
                 return Ok(());
             }
             let accounted = self.accounted_bytes_for_blob(&inner);
@@ -442,33 +471,8 @@ impl WriteCacheManager {
                 .put(entry.physical_path.as_ref(), data, info.clone())
                 .await;
         }
-        let delta = info.size as i64 - previous_size;
-        if !entry.logical_path.starts_with("/.thumbs")
-            && !entry.logical_path.starts_with("/.thumbs_cache")
-        {
-            let index_service = FileIndexService::new(Arc::clone(&self.db));
-            let _ = index_service
-                .upsert_file_with_location(
-                    entry.user_id.as_ref(),
-                    entry.logical_path.as_ref(),
-                    &VfsFileInfo {
-                        path: Arc::clone(&entry.logical_path),
-                        ..info.clone()
-                    },
-                    Some(self.pool_name.as_ref()),
-                    Some(self.backend_type.as_ref()),
-                    Some(entry.physical_path.as_ref()),
-                )
-                .await;
-            if delta != 0 {
-                let _ = UserSettingsService::update_storage_used(
-                    self.db.as_ref(),
-                    entry.user_id.as_ref(),
-                    delta,
-                )
-                .await;
-            }
-        }
+        let _ = previous_size;
+        let _ = info;
         Ok(())
     }
 
@@ -502,6 +506,7 @@ impl WriteCacheManager {
         inner.size = data.len() as u64;
         inner.modified_at = modified_at;
         inner.deadline_at = deadline_at;
+        inner.next_retry_at = modified_at;
         inner.state = if inner.abnormal_logged {
             PendingWriteState::Abnormal
         } else {
@@ -696,6 +701,7 @@ impl WriteCacheManager {
                     size: meta.size,
                     modified_at: meta.modified_at,
                     deadline_at: meta.deadline_at,
+                    next_retry_at: now_ts(),
                     generation: meta.generation,
                     retry_count: 0,
                     state: if abnormal {
@@ -712,6 +718,7 @@ impl WriteCacheManager {
                 .fetch_add(self.accounted_bytes_for_blob(&*guard), Ordering::SeqCst);
             drop(guard);
             self.entries.insert(meta.physical_path.clone(), record);
+            self.mark_dirty(&meta.physical_path);
         }
     }
 
@@ -750,5 +757,27 @@ impl WriteCacheManager {
                 })
                 .await;
         }
+    }
+
+    fn mark_dirty(&self, physical_path: &str) {
+        self.dirty_paths.insert(physical_path.to_string(), ());
+        self.dirty_dirs
+            .insert(parent_path(physical_path).to_string(), ());
+    }
+
+    fn retry_delay_secs(&self, retry_count: u32, abnormal_logged: bool) -> i64 {
+        let base = (self.flush_interval_ms / 1000).max(1) as i64;
+        let exp = 1_i64 << retry_count.saturating_sub(1).min(6);
+        let delay = base.saturating_mul(exp);
+        if abnormal_logged {
+            delay.clamp(5, 300)
+        } else {
+            delay.clamp(1, 60)
+        }
+    }
+
+    async fn is_due_for_background_flush(&self, entry: &Arc<PendingWriteRecord>) -> bool {
+        let inner = entry.inner.lock().await;
+        inner.state != PendingWriteState::Flushing && inner.next_retry_at <= now_ts()
     }
 }
