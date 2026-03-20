@@ -28,6 +28,49 @@ pub struct S3CredentialLookup {
     pub secret_key: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct UserSettingsSnapshot {
+    pub user_id: String,
+    pub pool_name: String,
+    pub base_dir: String,
+    pub storage_quota: i64,
+    pub storage_used: i64,
+    pub thumbnail_disable_text: bool,
+    pub thumbnail_disable_markdown: bool,
+    pub thumbnail_disable_pdf: bool,
+    pub thumbnail_disable_image: bool,
+    pub thumbnail_disable_video: bool,
+    pub thumbnail_disable_audio: bool,
+    pub thumbnail_disable_office: bool,
+    pub thumbnail_disable_tex: bool,
+    pub sftp_enable_password: bool,
+    pub s3_access_key: Option<String>,
+    pub s3_secret_key: Option<String>,
+}
+
+impl From<&user_settings::Model> for UserSettingsSnapshot {
+    fn from(model: &user_settings::Model) -> Self {
+        Self {
+            user_id: model.user_id.clone(),
+            pool_name: model.pool_name.clone(),
+            base_dir: model.base_dir.clone(),
+            storage_quota: model.storage_quota,
+            storage_used: model.storage_used,
+            thumbnail_disable_text: model.thumbnail_disable_text,
+            thumbnail_disable_markdown: model.thumbnail_disable_markdown,
+            thumbnail_disable_pdf: model.thumbnail_disable_pdf,
+            thumbnail_disable_image: model.thumbnail_disable_image,
+            thumbnail_disable_video: model.thumbnail_disable_video,
+            thumbnail_disable_audio: model.thumbnail_disable_audio,
+            thumbnail_disable_office: model.thumbnail_disable_office,
+            thumbnail_disable_tex: model.thumbnail_disable_tex,
+            sftp_enable_password: model.sftp_enable_password,
+            s3_access_key: model.s3_access_key.clone(),
+            s3_secret_key: model.s3_secret_key.clone(),
+        }
+    }
+}
+
 pub struct UserSettingsService;
 impl UserSettingsService {
     ///()
