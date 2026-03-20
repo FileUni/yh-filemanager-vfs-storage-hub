@@ -115,7 +115,7 @@ impl ScopedVfsStorageEngine {
                         return;
                     }
                     let _permit = permit;
-                    if let Err(e) = self_clone.sync_index_impl(&path_clone).await {
+                    if let Err(e) = self_clone.sync_index_internal(&path_clone, false).await {
                         yh_console_log::yhlog("error", &format!("Background sync failed: {}", e));
                     }
                     if let Some(last_done) = INDEX_SYNC_LAST_DONE.get() {

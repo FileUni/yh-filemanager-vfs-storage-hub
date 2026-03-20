@@ -1023,52 +1023,13 @@ impl FileIndexService {
         } else {
             parent_path.trim_end_matches('/')
         };
-        if items.is_empty() {
-            // If physical side is empty, clear all index records in this directory
-            file_index::Entity::delete_many()
-                .filter(file_index::Column::UserId.eq(user_id))
-                .filter(file_index::Column::ParentPath.eq(parent_path))
-                .exec(&*self.db)
-                .await?;
-            return Ok(());
-        }
-        // Get timestamp before synchronization starts
-        let sync_start = chrono::Utc::now() - chrono::Duration::seconds(1);
-        let txn = self.db.begin().await?;
-        // Execute Batch Upsert in chunks
+        let (txn, sync_start) = self.begin_directory_sync_txn().await?;
         let chunk_size = chunk_size.max(1);
         for chunk in items.chunks(chunk_size) {
-            file_index::Entity::insert_many(chunk.to_vec())
-                .on_conflict(
-                    sea_orm::sea_query::OnConflict::columns(vec![
-                        file_index::Column::UserId,
-                        file_index::Column::Path,
-                    ])
-                    .update_columns(vec![
-                        file_index::Column::ParentPath,
-                        file_index::Column::Name,
-                        file_index::Column::IsDir,
-                        file_index::Column::Size,
-                        file_index::Column::FileUpdatedAt,
-                        file_index::Column::RowUpdatedAt,
-                    ])
-                    .value(
-                        file_index::Column::RowDeletedAt,
-                        Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
-                    )
-                    .to_owned(),
-                )
-                .exec(&txn)
-                .await?;
+            self.upsert_directory_chunk_txn(&txn, chunk.to_vec()).await?;
         }
-        // Prune stale rows (row_updated_at < sync_start).
-        file_index::Entity::delete_many()
-            .filter(file_index::Column::UserId.eq(user_id))
-            .filter(file_index::Column::ParentPath.eq(parent_path))
-            .filter(file_index::Column::RowUpdatedAt.lt(sync_start))
-            .exec(&txn)
+        self.finish_directory_sync_txn(txn, user_id, parent_path, sync_start)
             .await?;
-        txn.commit().await?;
         Ok(())
     }
     /// Complete directory sync (Upsert + Pruning)
@@ -1082,5 +1043,63 @@ impl FileIndexService {
     ) -> Result<(), DbErr> {
         self.sync_directory_optimized(user_id, parent_path, physical_items, 500)
             .await
+    }
+
+    pub async fn begin_directory_sync_txn(
+        &self,
+    ) -> Result<(DatabaseTransaction, chrono::DateTime<chrono::Utc>), DbErr> {
+        let sync_start = chrono::Utc::now() - chrono::Duration::seconds(1);
+        let txn = self.db.begin().await?;
+        Ok((txn, sync_start))
+    }
+
+    pub async fn upsert_directory_chunk_txn(
+        &self,
+        txn: &DatabaseTransaction,
+        chunk: Vec<file_index::ActiveModel>,
+    ) -> Result<(), DbErr> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        file_index::Entity::insert_many(chunk)
+            .on_conflict(
+                sea_orm::sea_query::OnConflict::columns(vec![
+                    file_index::Column::UserId,
+                    file_index::Column::Path,
+                ])
+                .update_columns(vec![
+                    file_index::Column::ParentPath,
+                    file_index::Column::Name,
+                    file_index::Column::IsDir,
+                    file_index::Column::Size,
+                    file_index::Column::FileUpdatedAt,
+                    file_index::Column::RowUpdatedAt,
+                ])
+                .value(
+                    file_index::Column::RowDeletedAt,
+                    Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
+                )
+                .to_owned(),
+            )
+            .exec(txn)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn finish_directory_sync_txn(
+        &self,
+        txn: DatabaseTransaction,
+        user_id: &str,
+        parent_path: &str,
+        sync_start: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), DbErr> {
+        file_index::Entity::delete_many()
+            .filter(file_index::Column::UserId.eq(user_id))
+            .filter(file_index::Column::ParentPath.eq(parent_path))
+            .filter(file_index::Column::RowUpdatedAt.lt(sync_start))
+            .exec(&txn)
+            .await?;
+        txn.commit().await?;
+        Ok(())
     }
 }
