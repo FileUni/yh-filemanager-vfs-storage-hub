@@ -746,6 +746,199 @@ impl VfsTempFileConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsReadCacheConfig {
+    #[config(
+        desc_zh = "是否启用本地读缓存。默认关闭；关闭时仍需显式填写所有字段以保持配置结构完整。",
+        desc_en = "Enable local read cache. Disabled by default; all fields still need to be explicitly present to keep config structure complete.",
+        example = "false"
+    )]
+    pub enable: Option<bool>,
+    #[config(
+        desc_zh = "读缓存后端类型，可选: memory|local_dir。memory 使用进程内存，local_dir 使用本地目录。默认示例保持关闭。",
+        desc_en = "Read cache backend type. Options: memory|local_dir. memory uses process memory, local_dir uses a local directory. Example remains disabled by default.",
+        example = "memory"
+    )]
+    pub backend: Option<Arc<str>>,
+    #[config(
+        desc_zh = "读缓存本地目录路径。backend=local_dir 时缓存数据会保存在这里；backend=memory 时该字段仍需显式配置以保持结构一致。",
+        desc_en = "Local directory path for read cache. Used when backend=local_dir; still required explicitly when backend=memory to keep config structure consistent.",
+        example = "{APPDATADIR}/cache/vfs-read"
+    )]
+    pub local_dir: Option<Arc<str>>,
+    #[config(
+        desc_zh = "读缓存容量上限（字节）。达到上限后将逐出较旧条目，不会影响源存储数据。",
+        desc_en = "Read cache capacity limit in bytes. Older entries are evicted when the limit is reached without affecting origin data.",
+        example = "268435456"
+    )]
+    pub capacity_bytes: Option<u64>,
+    #[config(
+        desc_zh = "单个允许进入读缓存的最大文件大小（字节）。超过此值直接绕过缓存。",
+        desc_en = "Maximum file size in bytes eligible for read cache. Files larger than this bypass cache directly.",
+        example = "1048576"
+    )]
+    pub max_file_size_bytes: Option<u64>,
+    #[config(
+        desc_zh = "读缓存 TTL（秒）。超过后条目自动失效并回源读取。",
+        desc_en = "Read cache TTL in seconds. Entries expire after this and reads fall back to origin.",
+        example = "1800"
+    )]
+    pub ttl_secs: Option<u64>,
+}
+
+impl VfsReadCacheConfig {
+    pub fn is_enabled(&self) -> bool {
+        yh_config_infra::config_require_clone!(self.enable, "vfs_storage_hub", "read_cache.enable")
+    }
+    pub fn get_backend(&self) -> &str {
+        yh_config_infra::config_require_str!(self.backend, "vfs_storage_hub", "read_cache.backend")
+    }
+    pub fn get_local_dir(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.local_dir,
+            "vfs_storage_hub",
+            "read_cache.local_dir"
+        )
+    }
+    pub fn get_capacity_bytes(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.capacity_bytes,
+            "vfs_storage_hub",
+            "read_cache.capacity_bytes"
+        )
+    }
+    pub fn get_max_file_size_bytes(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.max_file_size_bytes,
+            "vfs_storage_hub",
+            "read_cache.max_file_size_bytes"
+        )
+    }
+    pub fn get_ttl_secs(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.ttl_secs,
+            "vfs_storage_hub",
+            "read_cache.ttl_secs"
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsWriteCacheConfig {
+    #[config(
+        desc_zh = "危险选项。是否启用小文件本地写缓存。启用后，小文件可能先写入本地缓存并立即返回成功，再后台异步写入真实存储；进程崩溃、系统重启、断电、本地缓存损坏或后台回放失败时，已确认成功的文件仍可能丢失。默认关闭。",
+        desc_en = "Dangerous option. Enable local write cache for small files. When enabled, small files may be acknowledged after landing in local cache and flushed to origin asynchronously later; process crash, reboot, power loss, local cache corruption, or replay failure can still lose already acknowledged files. Disabled by default.",
+        example = "false"
+    )]
+    pub enable: Option<bool>,
+    #[config(
+        desc_zh = "写缓存后端类型，可选: memory|local_dir。memory 延迟最低但风险最高；local_dir 使用本地目录，风险相对较低。",
+        desc_en = "Write cache backend type. Options: memory|local_dir. memory has the lowest latency but highest risk; local_dir uses a local directory and is relatively safer.",
+        example = "memory"
+    )]
+    pub backend: Option<Arc<str>>,
+    #[config(
+        desc_zh = "写缓存本地目录路径。backend=local_dir 时待刷盘小文件会先落在这里；backend=memory 时该字段仍需显式配置以保持结构一致。",
+        desc_en = "Local directory path for write cache. Pending small files are first written here when backend=local_dir; still required explicitly when backend=memory to keep config structure consistent.",
+        example = "{APPDATADIR}/cache/vfs-write"
+    )]
+    pub local_dir: Option<Arc<str>>,
+    #[config(
+        desc_zh = "写缓存容量上限（字节）。这是准入上限而不是逐出上限；未刷盘数据不会因为容量达到上限而被自动丢弃。",
+        desc_en = "Write cache capacity limit in bytes. This is an admission limit, not an eviction limit; unflushed data is never dropped automatically just because the limit is reached.",
+        example = "268435456"
+    )]
+    pub capacity_bytes: Option<u64>,
+    #[config(
+        desc_zh = "单个允许进入写缓存的最大文件大小（字节）。超过此值将绕过写缓存并走普通同步写入。",
+        desc_en = "Maximum file size in bytes eligible for write cache. Files larger than this bypass write cache and use the normal synchronous write path.",
+        example = "262144"
+    )]
+    pub max_file_size_bytes: Option<u64>,
+    #[config(
+        desc_zh = "后台刷盘并发数。值越大，对远端存储施加的并发压力越高。",
+        desc_en = "Background flush concurrency. Higher values place more concurrent pressure on the remote storage.",
+        example = "2"
+    )]
+    pub flush_concurrency: Option<usize>,
+    #[config(
+        desc_zh = "后台刷盘轮询间隔（毫秒）。数值越小，待写文件越快尝试刷入真实存储。",
+        desc_en = "Background flush polling interval in milliseconds. Smaller values attempt to flush pending files to origin faster.",
+        example = "20"
+    )]
+    pub flush_interval_ms: Option<u64>,
+    #[config(
+        desc_zh = "异常时间上限（秒）。超过该时间仍未成功刷入真实存储的条目会被提升为异常条目；若 backend=memory，将先落盘到异常目录再从内存逐出，并在 yh-journal-log 留痕。",
+        desc_en = "Abnormal time limit in seconds. Entries not flushed successfully before this deadline are promoted to abnormal items; when backend=memory, they are first spilled into the abnormal directory and then evicted from memory, with an audit record written to yh-journal-log.",
+        example = "300"
+    )]
+    pub flush_deadline_secs: Option<u64>,
+    #[config(
+        desc_zh = "异常本地落盘目录。memory 后端超时后会把未刷盘数据落到这里；local_dir 后端也会把异常条目转移/隔离到这里。",
+        desc_en = "Local spill directory for abnormal entries. Unflushed data from memory backend is spilled here after deadline; local_dir backend also moves or isolates abnormal entries here.",
+        example = "{APPDATADIR}/cache/vfs-write-abnormal"
+    )]
+    pub abnormal_spill_dir: Option<Arc<str>>,
+}
+
+impl VfsWriteCacheConfig {
+    pub fn is_enabled(&self) -> bool {
+        yh_config_infra::config_require_clone!(self.enable, "vfs_storage_hub", "write_cache.enable")
+    }
+    pub fn get_backend(&self) -> &str {
+        yh_config_infra::config_require_str!(self.backend, "vfs_storage_hub", "write_cache.backend")
+    }
+    pub fn get_local_dir(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.local_dir,
+            "vfs_storage_hub",
+            "write_cache.local_dir"
+        )
+    }
+    pub fn get_capacity_bytes(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.capacity_bytes,
+            "vfs_storage_hub",
+            "write_cache.capacity_bytes"
+        )
+    }
+    pub fn get_max_file_size_bytes(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.max_file_size_bytes,
+            "vfs_storage_hub",
+            "write_cache.max_file_size_bytes"
+        )
+    }
+    pub fn get_flush_concurrency(&self) -> usize {
+        yh_config_infra::config_require_clone!(
+            self.flush_concurrency,
+            "vfs_storage_hub",
+            "write_cache.flush_concurrency"
+        )
+    }
+    pub fn get_flush_interval_ms(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.flush_interval_ms,
+            "vfs_storage_hub",
+            "write_cache.flush_interval_ms"
+        )
+    }
+    pub fn get_flush_deadline_secs(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.flush_deadline_secs,
+            "vfs_storage_hub",
+            "write_cache.flush_deadline_secs"
+        )
+    }
+    pub fn get_abnormal_spill_dir(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.abnormal_spill_dir,
+            "vfs_storage_hub",
+            "write_cache.abnormal_spill_dir"
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsBatchOperationConfig {
     #[config(
         desc_zh = "批量操作任务超时时间（秒），如复制/移动大量文件",
@@ -929,6 +1122,13 @@ pub struct VfsStorageHubConfig {
         desc_en = "Temporary file management configuration"
     )]
     pub temp_file: Option<VfsTempFileConfig>,
+    #[config(desc_zh = "本地读缓存配置", desc_en = "Local read cache configuration")]
+    pub read_cache: Option<VfsReadCacheConfig>,
+    #[config(
+        desc_zh = "本地写缓存配置",
+        desc_en = "Local write cache configuration"
+    )]
+    pub write_cache: Option<VfsWriteCacheConfig>,
     #[config(desc_zh = "批量操作配置", desc_en = "Batch operation configuration")]
     pub batch_operation: Option<VfsBatchOperationConfig>,
     #[config(
@@ -977,6 +1177,96 @@ impl VfsStorageHubConfig {
             yh_config_infra::config_collect_gt_zero!(tf.max_age, s, "temp_file.max_age", errors);
         } else {
             errors.push(format!("[{}] temp_file is required (section)", s));
+        }
+        if let Some(rc) = &self.read_cache {
+            yh_config_infra::config_collect_bool!(rc.enable, s, "read_cache.enable", errors);
+            yh_config_infra::config_collect_not_empty!(rc.backend, s, "read_cache.backend", errors);
+            yh_config_infra::config_collect_not_empty!(
+                rc.local_dir,
+                s,
+                "read_cache.local_dir",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                rc.capacity_bytes,
+                s,
+                "read_cache.capacity_bytes",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                rc.max_file_size_bytes,
+                s,
+                "read_cache.max_file_size_bytes",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(rc.ttl_secs, s, "read_cache.ttl_secs", errors);
+            if !matches!(rc.backend.as_deref(), Some("memory") | Some("local_dir")) {
+                errors.push(format!(
+                    "[{}] read_cache.backend must be one of: memory | local_dir",
+                    s
+                ));
+            }
+        } else {
+            errors.push(format!("[{}] read_cache is required (section)", s));
+        }
+        if let Some(wc) = &self.write_cache {
+            yh_config_infra::config_collect_bool!(wc.enable, s, "write_cache.enable", errors);
+            yh_config_infra::config_collect_not_empty!(
+                wc.backend,
+                s,
+                "write_cache.backend",
+                errors
+            );
+            yh_config_infra::config_collect_not_empty!(
+                wc.local_dir,
+                s,
+                "write_cache.local_dir",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                wc.capacity_bytes,
+                s,
+                "write_cache.capacity_bytes",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                wc.max_file_size_bytes,
+                s,
+                "write_cache.max_file_size_bytes",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                wc.flush_concurrency,
+                s,
+                "write_cache.flush_concurrency",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                wc.flush_interval_ms,
+                s,
+                "write_cache.flush_interval_ms",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                wc.flush_deadline_secs,
+                s,
+                "write_cache.flush_deadline_secs",
+                errors
+            );
+            yh_config_infra::config_collect_not_empty!(
+                wc.abnormal_spill_dir,
+                s,
+                "write_cache.abnormal_spill_dir",
+                errors
+            );
+            if !matches!(wc.backend.as_deref(), Some("memory") | Some("local_dir")) {
+                errors.push(format!(
+                    "[{}] write_cache.backend must be one of: memory | local_dir",
+                    s
+                ));
+            }
+        } else {
+            errors.push(format!("[{}] write_cache is required (section)", s));
         }
         if let Some(bo) = &self.batch_operation {
             yh_config_infra::config_collect_gt_zero!(
@@ -1483,6 +1773,12 @@ impl VfsStorageHubConfig {
     }
     pub fn get_temp_file(&self) -> &VfsTempFileConfig {
         yh_config_infra::config_require!(self.temp_file, "vfs_storage_hub", "temp_file")
+    }
+    pub fn get_read_cache(&self) -> &VfsReadCacheConfig {
+        yh_config_infra::config_require!(self.read_cache, "vfs_storage_hub", "read_cache")
+    }
+    pub fn get_write_cache(&self) -> &VfsWriteCacheConfig {
+        yh_config_infra::config_require!(self.write_cache, "vfs_storage_hub", "write_cache")
     }
     pub fn get_batch_operation(&self) -> &VfsBatchOperationConfig {
         yh_config_infra::config_require!(self.batch_operation, "vfs_storage_hub", "batch_operation")
