@@ -7,7 +7,7 @@ use crate::vfs::types::{VfsBatchResult, VfsFileInfo, VfsMetadata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
-use opendal::{Metadata, Operator};
+use opendal::{Entry, Lister, Metadata, Operator};
 use std::sync::Arc;
 
 #[inline]
@@ -59,6 +59,11 @@ fn slice_bytes(data: Bytes, start: u64, end: u64) -> Bytes {
     }
 }
 
+#[inline]
+fn should_refresh_entry_metadata(meta: &Metadata) -> bool {
+    meta.last_modified().is_none()
+}
+
 /// VFS Storage Pool
 #[derive(Clone)]
 pub struct VfsPool {
@@ -107,6 +112,49 @@ impl VfsPool {
             .await
             .map_err(crate::vfs::error::VfsError::from)?;
         Ok(to_vfs_file_info(path, &meta))
+    }
+
+    async fn list_entry_info(&self, operator: &Operator, entry: Entry) -> VfsResult<VfsFileInfo> {
+        let meta = entry.metadata();
+        let path = normalize_entry_path(entry.path());
+        if should_refresh_entry_metadata(&meta) {
+            match operator.stat(entry.path()).await {
+                Ok(stat) => Ok(to_vfs_file_info(path, &stat)),
+                Err(_) => Ok(to_vfs_file_info(path, &meta)),
+            }
+        } else {
+            Ok(to_vfs_file_info(path, &meta))
+        }
+    }
+
+    async fn select_lister(&self, path: &str) -> VfsResult<(Arc<Operator>, Lister)> {
+        match self.primary.lister(path).await {
+            Ok(lister) => Ok((Arc::clone(&self.primary), lister)),
+            Err(err) => {
+                let primary_err = crate::vfs::error::VfsError::from(err);
+                let Some(backup) = &self.backup else {
+                    return Err(primary_err);
+                };
+                self.log_backup_fallback("list", path, &primary_err);
+                let lister = backup.lister(path).await?;
+                Ok((Arc::clone(backup), lister))
+            }
+        }
+    }
+
+    async fn select_recursive_lister(&self, path: &str) -> VfsResult<(Arc<Operator>, Lister)> {
+        match self.primary.lister_with(path).recursive(true).await {
+            Ok(lister) => Ok((Arc::clone(&self.primary), lister)),
+            Err(err) => {
+                let primary_err = crate::vfs::error::VfsError::from(err);
+                let Some(backup) = &self.backup else {
+                    return Err(primary_err);
+                };
+                self.log_backup_fallback("list_recursive", path, &primary_err);
+                let lister = backup.lister_with(path).recursive(true).await?;
+                Ok((Arc::clone(backup), lister))
+            }
+        }
     }
 
     pub fn is_write_cache_enabled(&self) -> bool {
@@ -233,191 +281,75 @@ impl VfsStorage for VfsPool {
         } else {
             path.to_string()
         };
-        let operator = match self.primary.lister(&list_path).await {
-            Ok(_) => Arc::clone(&self.primary),
-            Err(err) => {
-                let primary_err = crate::vfs::error::VfsError::from(err);
-                let Some(backup) = &self.backup else {
-                    return Err(primary_err);
-                };
-                self.log_backup_fallback("list", &list_path, &primary_err);
-                Arc::clone(backup)
-            }
-        };
-        let mut lister = operator.lister(&list_path).await?;
+        let (operator, mut lister) = self.select_lister(&list_path).await?;
         let mut result = Vec::new();
         while let Some(entry_res) = lister.next().await {
-            let entry = entry_res?;
-            // Try to get metadata directly
-            let meta = entry.metadata();
-            // FS stat
-            // Compension: If critical metadata is missing (common in FS backend), do explicit stat
-            let (is_dir, size, modified) = if meta.last_modified().is_none()
-                || (meta.is_file() && meta.content_length() == 0)
-            {
-                match operator.stat(entry.path()).await {
-                    Ok(st) => (
-                        st.is_dir(),
-                        st.content_length(),
-                        st.last_modified()
-                            .map(|t| std::time::SystemTime::from(t).into()),
-                    ),
-                    Err(_) => (
-                        meta.is_dir(),
-                        meta.content_length(),
-                        meta.last_modified()
-                            .map(|t| std::time::SystemTime::from(t).into()),
-                    ),
-                }
-            } else {
-                (
-                    meta.is_dir(),
-                    meta.content_length(),
-                    meta.last_modified()
-                        .map(|t| std::time::SystemTime::from(t).into()),
-                )
-            };
-            let entry_path = normalize_entry_path(entry.path());
-            result.push(VfsFileInfo {
-                name: entry.name().trim_end_matches('/').into(),
-                path: entry_path.into(),
-                is_dir,
-                size,
-                modified,
-                favorite_color: 0,
-                has_active_share: None,
-                has_active_direct: None,
-                trashed_at: None,
-                original_path: None,
-            });
+            result.push(self.list_entry_info(operator.as_ref(), entry_res?).await?);
         }
         Ok(result)
     }
     fn list_stream(&self, path: &str) -> BoxStream<'static, VfsResult<VfsFileInfo>> {
         use futures::StreamExt;
         let primary = Arc::clone(&self.primary);
-        let primary_for_lister = Arc::clone(&primary);
+        let backup = self.backup.as_ref().map(Arc::clone);
+        let pool_name = self.config.get_name().to_string();
         let path_clone = if !path.is_empty() && !path.ends_with('/') {
             format!("{}/", path)
         } else {
             path.to_string()
         };
         Box::pin(
-            futures::stream::once(async move { primary_for_lister.lister(&path_clone).await })
-                .flat_map(move |lister_res| {
-                    let primary_clone = Arc::clone(&primary);
-                    match lister_res {
-                        Ok(lister) => Box::pin(lister.then(move |entry_res| {
-                            let primary_clone2 = Arc::clone(&primary_clone);
-                            async move {
-                                let entry = entry_res.map_err(crate::vfs::error::VfsError::from)?;
-                                let meta = entry.metadata();
-                                let (is_dir, size, modified) = if meta.last_modified().is_none()
-                                    || (meta.is_file() && meta.content_length() == 0)
-                                {
-                                    match primary_clone2.stat(entry.path()).await {
-                                        Ok(st) => (
-                                            st.is_dir(),
-                                            st.content_length(),
-                                            st.last_modified()
-                                                .map(|t| std::time::SystemTime::from(t).into()),
-                                        ),
-                                        Err(_) => (
-                                            meta.is_dir(),
-                                            meta.content_length(),
-                                            meta.last_modified()
-                                                .map(|t| std::time::SystemTime::from(t).into()),
-                                        ),
-                                    }
-                                } else {
-                                    (
-                                        meta.is_dir(),
-                                        meta.content_length(),
-                                        meta.last_modified()
-                                            .map(|t| std::time::SystemTime::from(t).into()),
-                                    )
-                                };
-                                let entry_path = normalize_entry_path(entry.path());
-                                Ok(VfsFileInfo {
-                                    name: entry.name().trim_end_matches('/').into(),
-                                    path: entry_path.into(),
-                                    is_dir,
-                                    size,
-                                    modified,
-                                    favorite_color: 0,
-                                    has_active_share: None,
-                                    has_active_direct: None,
-                                    trashed_at: None,
-                                    original_path: None,
-                                })
-                            }
-                        }))
-                            as BoxStream<'static, VfsResult<VfsFileInfo>>,
-                        Err(e) => Box::pin(futures::stream::once(async move {
-                            Err(crate::vfs::error::VfsError::from(e))
-                        }))
-                            as BoxStream<'static, VfsResult<VfsFileInfo>>,
+            futures::stream::once(async move {
+                match primary.lister(&path_clone).await {
+                    Ok(lister) => Ok((primary, lister)),
+                    Err(err) => {
+                        let primary_err = crate::vfs::error::VfsError::from(err);
+                        let Some(backup) = backup else {
+                            return Err(primary_err);
+                        };
+                        yh_console_log::yhlog(
+                            "warn",
+                            &format!(
+                                "VFS pool '{}' falling back to backup for list_stream on '{}' after primary error: {}",
+                                pool_name, path_clone, primary_err
+                            ),
+                        );
+                        let lister = backup.lister(&path_clone).await?;
+                        Ok((backup, lister))
                     }
-                }),
+                }
+            })
+            .flat_map(move |state| match state {
+                Ok((operator, lister)) => Box::pin(lister.then(move |entry_res| {
+                    let operator = Arc::clone(&operator);
+                    async move {
+                        let entry = entry_res.map_err(crate::vfs::error::VfsError::from)?;
+                        let meta = entry.metadata();
+                        let path = normalize_entry_path(entry.path());
+                        if should_refresh_entry_metadata(&meta) {
+                            match operator.stat(entry.path()).await {
+                                Ok(stat) => Ok(to_vfs_file_info(path, &stat)),
+                                Err(_) => Ok(to_vfs_file_info(path, &meta)),
+                            }
+                        } else {
+                            Ok(to_vfs_file_info(path, &meta))
+                        }
+                    }
+                }))
+                    as BoxStream<'static, VfsResult<VfsFileInfo>>,
+                Err(err) => {
+                    Box::pin(futures::stream::once(async move { Err(err) }))
+                        as BoxStream<'static, VfsResult<VfsFileInfo>>
+                }
+            }),
         )
     }
     async fn list_recursive(&self, path: &str) -> VfsResult<Vec<VfsFileInfo>> {
         use futures::StreamExt;
-        let operator = match self.primary.lister_with(path).recursive(true).await {
-            Ok(_) => Arc::clone(&self.primary),
-            Err(err) => {
-                let primary_err = crate::vfs::error::VfsError::from(err);
-                let Some(backup) = &self.backup else {
-                    return Err(primary_err);
-                };
-                self.log_backup_fallback("list_recursive", path, &primary_err);
-                Arc::clone(backup)
-            }
-        };
-        let mut lister = operator.lister_with(path).recursive(true).await?;
+        let (operator, mut lister) = self.select_recursive_lister(path).await?;
         let mut result = Vec::new();
         while let Some(entry_res) = lister.next().await {
-            let entry = entry_res?;
-            // Same compensation for recursive listing
-            let meta = entry.metadata();
-            let (is_dir, size, modified) = if meta.last_modified().is_none()
-                || (meta.is_file() && meta.content_length() == 0)
-            {
-                match operator.stat(entry.path()).await {
-                    Ok(st) => (
-                        st.is_dir(),
-                        st.content_length(),
-                        st.last_modified()
-                            .map(|t| std::time::SystemTime::from(t).into()),
-                    ),
-                    Err(_) => (
-                        meta.is_dir(),
-                        meta.content_length(),
-                        meta.last_modified()
-                            .map(|t| std::time::SystemTime::from(t).into()),
-                    ),
-                }
-            } else {
-                (
-                    meta.is_dir(),
-                    meta.content_length(),
-                    meta.last_modified()
-                        .map(|t| std::time::SystemTime::from(t).into()),
-                )
-            };
-            let entry_path = normalize_entry_path(entry.path());
-            result.push(VfsFileInfo {
-                name: entry.name().trim_end_matches('/').into(),
-                path: entry_path.into(),
-                is_dir,
-                size,
-                modified,
-                favorite_color: 0,
-                has_active_share: None,
-                has_active_direct: None,
-                trashed_at: None,
-                original_path: None,
-            });
+            result.push(self.list_entry_info(operator.as_ref(), entry_res?).await?);
         }
         Ok(result)
     }
