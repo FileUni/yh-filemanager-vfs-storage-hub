@@ -128,6 +128,84 @@ impl ScopedVfsStorageEngine {
         let path = validated.trim_start_matches('/');
         Ok(format!("{}/{}", self.user_id, path))
     }
+    pub(super) fn should_use_write_cache(&self, logical_path: &str, size: usize) -> bool {
+        if self.is_temp_path(logical_path)
+            || self.is_thumbnail_cache_path(logical_path)
+            || logical_path.starts_with("/.recycle_bin/")
+        {
+            return false;
+        }
+        self.pool
+            .write_cache
+            .as_ref()
+            .is_some_and(|cache| cache.should_cache(size))
+    }
+    pub(super) async fn try_enqueue_write_cache(
+        &self,
+        logical_path: &str,
+        data: Bytes,
+    ) -> VfsResult<Option<VfsFileInfo>> {
+        if !self.should_use_write_cache(logical_path, data.len()) {
+            return Ok(None);
+        }
+        let physical_path = self.get_physical_path(logical_path).await?;
+        let result = match self
+            .pool
+            .enqueue_write_cache(&self.user_id, logical_path, &physical_path, data)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                yh_console_log::yhlog(
+                    "warn",
+                    &format!(
+                        "Write cache enqueue failed for user_id={} path={} err={}",
+                        self.user_id, logical_path, err
+                    ),
+                );
+                return Ok(None);
+            }
+        };
+        if result.is_none() {
+            return Ok(None);
+        }
+        self.cache.invalidate_parent_ls(logical_path).await;
+        self.cache.invalidate("stat", logical_path).await;
+        Ok(result.map(|info| self.translate_file_info(info, false)))
+    }
+    pub(super) async fn flush_pending_write_cache_for_path(
+        &self,
+        logical_path: &str,
+    ) -> VfsResult<()> {
+        if self.is_temp_path(logical_path) {
+            return Ok(());
+        }
+        let physical_path = self.get_physical_path(logical_path).await?;
+        self.pool.flush_write_cache(&physical_path).await
+    }
+    pub(super) async fn pending_stat(&self, logical_path: &str) -> Option<VfsFileInfo> {
+        if self.is_temp_path(logical_path) {
+            return None;
+        }
+        let physical_path = self.get_physical_path(logical_path).await.ok()?;
+        self.pool
+            .pending_stat(&physical_path)
+            .await
+            .map(|info| self.translate_file_info(info, false))
+    }
+    pub(super) async fn pending_children(&self, logical_path: &str) -> VfsResult<Vec<VfsFileInfo>> {
+        if self.is_temp_path(logical_path) {
+            return Ok(Vec::new());
+        }
+        let physical_path = self.get_physical_path(logical_path).await?;
+        Ok(self
+            .pool
+            .pending_children(&physical_path)
+            .await
+            .into_iter()
+            .map(|info| self.translate_file_info(info, false))
+            .collect())
+    }
     fn validate_file_operation_impl(path: &str) -> VfsResult<String> {
         let normalized = if path.starts_with('/') {
             path.to_string()
@@ -374,11 +452,15 @@ impl ScopedVfsStorageEngine {
     ) -> VfsResult<VfsFileInfo> {
         if self.is_temp_path(normalized) {
             let rel = self.get_relative_path(normalized, LOGICAL_TEMP_PREFIX);
-            let mut file = tokio::fs::File::create(
-                self.temp_manager.get_user_temp_dir(&self.user_id).join(rel),
-            )
-            .await
-            .map_err(VfsError::Io)?;
+            let local_path = self.temp_manager.get_user_temp_dir(&self.user_id).join(rel);
+            if let Some(parent) = local_path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(VfsError::Io)?;
+            }
+            let mut file = tokio::fs::File::create(&local_path)
+                .await
+                .map_err(VfsError::Io)?;
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
                 let mut reader = chunk.as_ref();

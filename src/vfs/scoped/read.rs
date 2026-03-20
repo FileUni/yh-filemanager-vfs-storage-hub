@@ -40,8 +40,8 @@ impl ScopedVfsStorageEngine {
 
     pub(super) async fn read_impl(&self, path: &str) -> VfsResult<(Bytes, VfsFileInfo)> {
         let normalized = self.validate_file_operation(path).await?;
-        let info = self.stat_impl(&normalized).await?;
         if self.is_temp_path(&normalized) {
+            let info = self.stat_impl(&normalized).await?;
             let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
             let data =
                 tokio::fs::read(self.temp_manager.get_user_temp_dir(&self.user_id).join(rel))
@@ -49,6 +49,14 @@ impl ScopedVfsStorageEngine {
                     .map_err(VfsError::Io)?;
             Ok((Bytes::from(data), info))
         } else {
+            if let Some(info) = self.pending_stat(&normalized).await {
+                let (data, _) = self
+                    .pool
+                    .read(&self.get_physical_path(&normalized).await?)
+                    .await?;
+                return Ok((data, info));
+            }
+            let info = self.stat_impl(&normalized).await?;
             let data = self
                 .pool
                 .read(&self.get_physical_path(&normalized).await?)
@@ -126,8 +134,8 @@ impl ScopedVfsStorageEngine {
             .list_files(&self.user_id, &normalized)
             .await
             .map_err(|e| VfsError::Internal(e.to_string()))?;
-        if !db_entries.is_empty() {
-            return Ok(db_entries
+        let mut results = if !db_entries.is_empty() {
+            db_entries
                 .into_iter()
                 .map(|e| VfsFileInfo {
                     name: e.name.into(),
@@ -141,40 +149,52 @@ impl ScopedVfsStorageEngine {
                     trashed_at: e.file_trashed_at.map(|t| t.into()),
                     original_path: e.original_path.map(|p| p.into()),
                 })
-                .collect());
-        }
-        let physical = self.get_physical_path(&normalized).await?;
-        let physical_entries = self.pool.list(&physical).await?;
-        let norm_path = if normalized == "/" {
-            "/"
+                .collect()
         } else {
-            normalized.trim_end_matches('/')
+            let physical = self.get_physical_path(&normalized).await?;
+            let physical_entries = self.pool.list(&physical).await?;
+            let norm_path = if normalized == "/" {
+                "/"
+            } else {
+                normalized.trim_end_matches('/')
+            };
+            let norm_path_slash = format!("{}/", norm_path);
+            physical_entries
+                .into_iter()
+                .map(|e| self.translate_file_info(e, false))
+                .filter(|translated| {
+                    if self.is_thumbnail_cache_path(translated.path.as_ref()) {
+                        return false;
+                    }
+                    let trans_path = translated.path.as_ref();
+                    if trans_path == norm_path
+                        || (norm_path != "/" && trans_path == norm_path_slash)
+                    {
+                        return false;
+                    }
+                    let parent = if let Some((p, _)) = trans_path.rsplit_once('/') {
+                        if p.is_empty() { "/" } else { p }
+                    } else {
+                        return false;
+                    };
+                    parent == norm_path
+                })
+                .collect()
         };
-        let norm_path_slash = format!("{}/", norm_path);
-        Ok(physical_entries
-            .into_iter()
-            .map(|e| self.translate_file_info(e, false))
-            .filter(|translated| {
-                // Hide thumbnail cache
-                if self.is_thumbnail_cache_path(translated.path.as_ref()) {
-                    return false;
-                }
-
-                // Filter out the directory itself (some backends include the listing prefix).
-                let trans_path = translated.path.as_ref();
-                if trans_path == norm_path || (norm_path != "/" && trans_path == norm_path_slash) {
-                    return false;
-                }
-
-                // Ensure direct child only.
-                let parent = if let Some((p, _)) = trans_path.rsplit_once('/') {
-                    if p.is_empty() { "/" } else { p }
-                } else {
-                    return false;
-                };
-                parent == norm_path
-            })
-            .collect())
+        let pending_entries = self.pending_children(&normalized).await?;
+        if pending_entries.is_empty() {
+            return Ok(results);
+        }
+        let mut merged = std::collections::HashMap::<String, VfsFileInfo>::new();
+        for entry in results.drain(..) {
+            merged.insert(entry.path.to_string(), entry);
+        }
+        for entry in pending_entries {
+            merged.insert(entry.path.to_string(), entry);
+        }
+        let mut merged_vec: Vec<VfsFileInfo> = merged.into_values().collect();
+        merged_vec.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(merged_vec)
     }
     pub(super) fn list_stream_impl(
         &self,
@@ -216,6 +236,9 @@ impl ScopedVfsStorageEngine {
     }
     pub(super) async fn exists_impl(&self, path: &str) -> VfsResult<bool> {
         let normalized = self.validate_file_operation(path).await?;
+        if self.pending_stat(&normalized).await.is_some() {
+            return Ok(true);
+        }
         if self.is_temp_path(&normalized) {
             let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
             Ok(self
@@ -231,6 +254,9 @@ impl ScopedVfsStorageEngine {
     }
     pub(super) async fn stat_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         let normalized = self.validate_file_operation(path).await?;
+        if let Some(info) = self.pending_stat(&normalized).await {
+            return Ok(info);
+        }
         if let Ok(Some(e)) = self
             .index_service
             .get_file_metadata(&self.user_id, &normalized)
@@ -272,6 +298,17 @@ impl ScopedVfsStorageEngine {
         page_size: i64,
     ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
         let normalized = self.validate_file_operation(parent_path).await?;
+        if !self.pending_children(&normalized).await?.is_empty() {
+            let all = self.list_impl(&normalized).await?;
+            let total = all.len() as i64;
+            let offset = ((page - 1) * page_size).max(0) as usize;
+            let files = all
+                .into_iter()
+                .skip(offset)
+                .take(page_size.max(0) as usize)
+                .collect();
+            return Ok((files, total));
+        }
 
         // Keep behavior consistent with `list_impl`: allow optional index refresh.
         // This helps self-heal when index is missing/outdated.
@@ -321,6 +358,10 @@ impl ScopedVfsStorageEngine {
     ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
         let normalized = self.validate_file_operation(parent_path).await?;
         let params_for_fallback = params.clone();
+        if !self.pending_children(&normalized).await?.is_empty() {
+            let all = self.list_impl(&normalized).await?;
+            return Self::paginate_with_sort_in_memory(all, params_for_fallback);
+        }
 
         // Optional self-heal sync (background or blocking depending on config).
         // If sync returns a fresh listing (mode=2), use it directly.
@@ -510,7 +551,11 @@ impl ScopedVfsStorageEngine {
         VfsFileInfo,
     )> {
         let normalized = self.validate_file_operation(path).await?;
-        let info = self.stat_impl(&normalized).await?;
+        let info = if let Some(info) = self.pending_stat(&normalized).await {
+            info
+        } else {
+            self.stat_impl(&normalized).await?
+        };
         let (stream, _) = self
             .pool
             .read_stream_range(&self.get_physical_path(&normalized).await?, range)
@@ -528,7 +573,11 @@ impl ScopedVfsStorageEngine {
         end: u64,
     ) -> VfsResult<(Bytes, VfsFileInfo)> {
         let normalized = self.validate_file_operation(path).await?;
-        let info = self.stat_impl(&normalized).await?;
+        let info = if let Some(info) = self.pending_stat(&normalized).await {
+            info
+        } else {
+            self.stat_impl(&normalized).await?
+        };
         let data = self
             .pool
             .read_range(&self.get_physical_path(&normalized).await?, start, end)

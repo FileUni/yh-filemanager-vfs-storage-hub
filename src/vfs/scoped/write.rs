@@ -2,7 +2,8 @@ use super::ScopedVfsStorageEngine;
 use crate::vfs::error::{VfsError, VfsResult};
 use crate::vfs::wal::WalOperation;
 use crate::vfs::{LOGICAL_TEMP_PREFIX, VfsFileInfo, VfsStorage};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use futures::StreamExt;
 use futures::stream::BoxStream;
 impl ScopedVfsStorageEngine {
     pub(super) async fn write_impl(&self, path: &str, data: Bytes) -> VfsResult<VfsFileInfo> {
@@ -11,6 +12,13 @@ impl ScopedVfsStorageEngine {
         if self.is_refresh_trigger(&normalized).await {
             return self.stat_impl(&normalized).await;
         }
+        if let Some(info) = self
+            .try_enqueue_write_cache(&normalized, data.clone())
+            .await?
+        {
+            return Ok(info);
+        }
+        self.flush_pending_write_cache_for_path(&normalized).await?;
         // Check quota difference
         let skip_quota = self.is_thumbnail_cache_path(&normalized);
         let mut diff = 0i64;
@@ -89,6 +97,7 @@ impl ScopedVfsStorageEngine {
     pub(super) async fn delete_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
+        self.flush_pending_write_cache_for_path(&normalized).await?;
         let info = self.stat_impl(&normalized).await?;
         // Record size before deletion for quota update
         let size = info.size as i64;
@@ -173,12 +182,10 @@ impl ScopedVfsStorageEngine {
     pub(super) async fn write_stream_impl(
         &self,
         path: &str,
-        stream: BoxStream<'static, VfsResult<Bytes>>,
+        mut stream: BoxStream<'static, VfsResult<Bytes>>,
     ) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
-        self.journal_log("WRITE_STREAM", &normalized, None, true, None)
-            .await;
         if self.is_refresh_trigger(&normalized).await {
             let parent = if let Some(parent_path) = std::path::Path::new(&normalized).parent() {
                 parent_path.to_string_lossy().to_string()
@@ -188,6 +195,49 @@ impl ScopedVfsStorageEngine {
             let _ = self.sync_index_impl(&parent).await?;
             return self.stat_impl(&parent).await;
         }
+        if self.should_use_write_cache(&normalized, 1) {
+            let limit = self.pool.write_cache_max_file_size().unwrap_or(0) as usize;
+            let mut buffer = BytesMut::new();
+            let mut chunks = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let bytes = chunk?;
+                if buffer.len() + bytes.len() > limit {
+                    let prefix_stream = futures::stream::iter(
+                        chunks
+                            .into_iter()
+                            .chain(std::iter::once(bytes))
+                            .map(Ok::<Bytes, VfsError>),
+                    )
+                    .boxed();
+                    let merged_stream = prefix_stream.chain(stream).boxed();
+                    self.journal_log("WRITE_STREAM", &normalized, None, true, None)
+                        .await;
+                    let result = self.write_stream_internal(&normalized, merged_stream).await;
+                    match &result {
+                        Ok(_) => {
+                            self.journal_log("WRITE_STREAM_FINISH", &normalized, None, true, None)
+                                .await
+                        }
+                        Err(e) => {
+                            self.journal_log(
+                                "WRITE_STREAM_FINISH",
+                                &normalized,
+                                None,
+                                false,
+                                Some(e.to_string()),
+                            )
+                            .await
+                        }
+                    }
+                    return result;
+                }
+                buffer.extend_from_slice(&bytes);
+                chunks.push(bytes);
+            }
+            return self.write_impl(&normalized, buffer.freeze()).await;
+        }
+        self.journal_log("WRITE_STREAM", &normalized, None, true, None)
+            .await;
         let result = self.write_stream_internal(&normalized, stream).await;
         match &result {
             Ok(_) => {
@@ -221,6 +271,7 @@ impl ScopedVfsStorageEngine {
         if self.is_temp_path(&normalized) {
             return Err(VfsError::Internal("Not supported for temp".to_string()));
         }
+        self.flush_pending_write_cache_for_path(&normalized).await?;
         let physical_path = self.get_physical_path(&normalized).await?;
         // Get current size to calculate quota difference
         let skip_quota = self.is_thumbnail_cache_path(&normalized);
@@ -355,6 +406,8 @@ impl ScopedVfsStorageEngine {
         self.check_maintenance()?;
         let norm_src = self.validate_file_operation(src).await?;
         let norm_dst = self.validate_file_operation(dst).await?;
+        self.flush_pending_write_cache_for_path(&norm_src).await?;
+        self.flush_pending_write_cache_for_path(&norm_dst).await?;
         let wal_id = self
             .begin_wal(
                 WalOperation::Move {
@@ -469,6 +522,8 @@ impl ScopedVfsStorageEngine {
         self.check_maintenance()?;
         let norm_src = self.validate_file_operation(src).await?;
         let norm_dst = self.validate_file_operation(dst).await?;
+        self.flush_pending_write_cache_for_path(&norm_src).await?;
+        self.flush_pending_write_cache_for_path(&norm_dst).await?;
         // Get source file size for quota check
         let src_info = self.stat_impl(&norm_src).await?;
         let size = src_info.size as i64;

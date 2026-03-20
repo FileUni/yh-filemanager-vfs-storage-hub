@@ -11,6 +11,8 @@ impl ScopedVfsStorageEngine {
                 "Recycle bin operations do not support temp paths".to_string(),
             ));
         }
+        self.flush_pending_write_cache_for_path(src).await?;
+        self.flush_pending_write_cache_for_path(dst).await?;
         self.pool
             .move_file(
                 &self.get_physical_path(src).await?,
