@@ -128,30 +128,64 @@ impl ScopedVfsStorageEngine {
             }
             return Ok(results);
         }
-        let _ = self.execute_sync_decision(&normalized).await?;
-        let db_entries = self
-            .index_service
-            .list_files(&self.user_id, &normalized)
-            .await
-            .map_err(|e| VfsError::Internal(e.to_string()))?;
-        let mut results = if !db_entries.is_empty() {
-            db_entries
-                .into_iter()
-                .map(|e| VfsFileInfo {
-                    name: e.name.into(),
-                    path: e.path.into(),
-                    is_dir: e.is_dir,
-                    size: e.size as u64,
-                    modified: e.file_updated_at.map(|t| t.into()),
-                    favorite_color: e.favorite_color,
-                    has_active_share: None,
-                    has_active_direct: None,
-                    trashed_at: e.file_trashed_at.map(|t| t.into()),
-                    original_path: e.original_path.map(|p| p.into()),
-                })
-                .collect()
+        let physical = self.get_physical_path(&normalized).await?;
+        let use_index = !self.pool.is_dirty_dir(&physical);
+        if use_index {
+            let _ = self.execute_sync_decision(&normalized).await?;
+        }
+        let mut results = if use_index {
+            let db_entries = self
+                .index_service
+                .list_files(&self.user_id, &normalized)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))?;
+            if !db_entries.is_empty() {
+                db_entries
+                    .into_iter()
+                    .map(|e| VfsFileInfo {
+                        name: e.name.into(),
+                        path: e.path.into(),
+                        is_dir: e.is_dir,
+                        size: e.size as u64,
+                        modified: e.file_updated_at.map(|t| t.into()),
+                        favorite_color: e.favorite_color,
+                        has_active_share: None,
+                        has_active_direct: None,
+                        trashed_at: e.file_trashed_at.map(|t| t.into()),
+                        original_path: e.original_path.map(|p| p.into()),
+                    })
+                    .collect()
+            } else {
+                let physical_entries = self.pool.list(&physical).await?;
+                let norm_path = if normalized == "/" {
+                    "/"
+                } else {
+                    normalized.trim_end_matches('/')
+                };
+                let norm_path_slash = format!("{}/", norm_path);
+                physical_entries
+                    .into_iter()
+                    .map(|e| self.translate_file_info(e, false))
+                    .filter(|translated| {
+                        if self.is_thumbnail_cache_path(translated.path.as_ref()) {
+                            return false;
+                        }
+                        let trans_path = translated.path.as_ref();
+                        if trans_path == norm_path
+                            || (norm_path != "/" && trans_path == norm_path_slash)
+                        {
+                            return false;
+                        }
+                        let parent = if let Some((p, _)) = trans_path.rsplit_once('/') {
+                            if p.is_empty() { "/" } else { p }
+                        } else {
+                            return false;
+                        };
+                        parent == norm_path
+                    })
+                    .collect()
+            }
         } else {
-            let physical = self.get_physical_path(&normalized).await?;
             let physical_entries = self.pool.list(&physical).await?;
             let norm_path = if normalized == "/" {
                 "/"
@@ -257,10 +291,12 @@ impl ScopedVfsStorageEngine {
         if let Some(info) = self.pending_stat(&normalized).await {
             return Ok(info);
         }
-        if let Ok(Some(e)) = self
-            .index_service
-            .get_file_metadata(&self.user_id, &normalized)
-            .await
+        let physical = self.get_physical_path(&normalized).await?;
+        if !self.pool.is_dirty_path(&physical)
+            && let Ok(Some(e)) = self
+                .index_service
+                .get_file_metadata(&self.user_id, &normalized)
+                .await
         {
             return Ok(VfsFileInfo {
                 name: e.name.into(),
@@ -275,7 +311,6 @@ impl ScopedVfsStorageEngine {
                 original_path: e.original_path.map(|p| p.into()),
             });
         }
-        let physical = self.get_physical_path(&normalized).await?;
         let meta = self.pool.stat(&physical).await?;
         let info = VfsFileInfo {
             name: file_name_from_path(&normalized).into(),
@@ -298,7 +333,10 @@ impl ScopedVfsStorageEngine {
         page_size: i64,
     ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
         let normalized = self.validate_file_operation(parent_path).await?;
-        if !self.pending_children(&normalized).await?.is_empty() {
+        let physical = self.get_physical_path(&normalized).await?;
+        if !self.pending_children(&normalized).await?.is_empty()
+            || self.pool.is_dirty_dir(&physical)
+        {
             let all = self.list_impl(&normalized).await?;
             let total = all.len() as i64;
             let offset = ((page - 1) * page_size).max(0) as usize;
@@ -358,7 +396,10 @@ impl ScopedVfsStorageEngine {
     ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
         let normalized = self.validate_file_operation(parent_path).await?;
         let params_for_fallback = params.clone();
-        if !self.pending_children(&normalized).await?.is_empty() {
+        let physical = self.get_physical_path(&normalized).await?;
+        if !self.pending_children(&normalized).await?.is_empty()
+            || self.pool.is_dirty_dir(&physical)
+        {
             let all = self.list_impl(&normalized).await?;
             return Self::paginate_with_sort_in_memory(all, params_for_fallback);
         }

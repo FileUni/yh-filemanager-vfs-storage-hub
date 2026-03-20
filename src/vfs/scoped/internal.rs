@@ -138,7 +138,7 @@ impl ScopedVfsStorageEngine {
         self.pool
             .write_cache
             .as_ref()
-            .is_some_and(|cache| cache.should_cache(size))
+            .is_some_and(|cache| cache.should_cache(logical_path, size))
     }
     pub(super) async fn try_enqueue_write_cache(
         &self,
