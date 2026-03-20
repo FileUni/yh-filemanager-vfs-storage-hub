@@ -1,3 +1,4 @@
+use super::CachePathPolicy;
 use crate::config::VfsReadCacheConfig;
 use crate::vfs::VfsFileInfo;
 use bytes::Bytes;
@@ -6,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReadCacheBackend {
@@ -25,7 +26,7 @@ struct ReadCacheEntry {
     key: Arc<str>,
     info: VfsFileInfo,
     size: u64,
-    created_at: i64,
+    last_accessed_at: i64,
     expires_at: i64,
     blob: ReadCacheBlob,
 }
@@ -47,8 +48,11 @@ pub struct ReadCacheManager {
     capacity_bytes: u64,
     max_file_size_bytes: u64,
     ttl_secs: u64,
+    cleanup_interval_secs: u64,
+    policy: CachePathPolicy,
     entries: DashMap<String, ReadCacheEntry>,
     accounted_bytes: AtomicU64,
+    last_cleanup_ts: AtomicI64,
 }
 
 fn now_ts() -> i64 {
@@ -84,8 +88,14 @@ impl ReadCacheManager {
             capacity_bytes: config.get_capacity_bytes(),
             max_file_size_bytes: config.get_max_file_size_bytes(),
             ttl_secs: config.get_ttl_secs(),
+            cleanup_interval_secs: config.get_ttl_secs().saturating_div(4).clamp(1, 60),
+            policy: CachePathPolicy::new(
+                config.is_cache_thumbnail_paths(),
+                &config.get_skip_extensions(),
+            ),
             entries: DashMap::new(),
             accounted_bytes: AtomicU64::new(0),
+            last_cleanup_ts: AtomicI64::new(0),
         });
         manager.load_existing_entries().await;
         Ok(manager)
@@ -95,19 +105,29 @@ impl ReadCacheManager {
         self.enabled
     }
 
-    pub fn should_cache(&self, size: u64) -> bool {
-        self.enabled && size > 0 && size <= self.max_file_size_bytes && size <= self.capacity_bytes
+    pub fn should_cache(&self, path: &str, size: u64) -> bool {
+        self.enabled
+            && self.policy.allows(path)
+            && size > 0
+            && size <= self.max_file_size_bytes
+            && size <= self.capacity_bytes
     }
 
     pub async fn get(&self, key: &str) -> Option<(Bytes, VfsFileInfo)> {
-        if !self.enabled {
+        if !self.enabled || !self.policy.allows(key) {
             return None;
         }
-        let entry = self.entries.get(key).map(|v| v.value().clone())?;
-        if entry.expires_at <= now_ts() {
-            self.remove(key).await;
-            return None;
-        }
+        let now = now_ts();
+        let entry = {
+            let mut entry = self.entries.get_mut(key)?;
+            if entry.expires_at <= now {
+                drop(entry);
+                self.remove(key).await;
+                return None;
+            }
+            entry.last_accessed_at = now;
+            entry.clone()
+        };
         match &entry.blob {
             ReadCacheBlob::Memory(bytes) => Some((bytes.clone(), entry.info.clone())),
             ReadCacheBlob::Disk(path) => match tokio::fs::read(path).await {
@@ -125,11 +145,11 @@ impl ReadCacheManager {
     }
 
     pub async fn put(&self, key: &str, data: Bytes, info: VfsFileInfo) {
-        if !self.should_cache(data.len() as u64) {
+        if !self.should_cache(key, data.len() as u64) {
             return;
         }
         self.remove(key).await;
-        self.cleanup_expired().await;
+        self.cleanup_expired_if_due(false).await;
         if !self.ensure_capacity(data.len() as u64).await {
             return;
         }
@@ -161,7 +181,7 @@ impl ReadCacheManager {
             key: Arc::from(key),
             info,
             size: data.len() as u64,
-            created_at,
+            last_accessed_at: created_at,
             expires_at,
             blob,
         };
@@ -215,20 +235,26 @@ impl ReadCacheManager {
                     key: Arc::from(meta.key.as_str()),
                     info: meta.info,
                     size: meta.size,
-                    created_at: meta.created_at,
+                    last_accessed_at: meta.created_at,
                     expires_at: meta.expires_at,
                     blob: ReadCacheBlob::Disk(data_path),
                 },
             );
         }
-        self.cleanup_expired().await;
+        self.cleanup_expired_if_due(true).await;
     }
 
-    async fn cleanup_expired(&self) {
+    async fn cleanup_expired_if_due(&self, force: bool) {
+        let now = now_ts();
+        let last = self.last_cleanup_ts.load(Ordering::Relaxed);
+        if !force && now.saturating_sub(last) < self.cleanup_interval_secs as i64 {
+            return;
+        }
+        self.last_cleanup_ts.store(now, Ordering::Relaxed);
         let expired_keys: Vec<String> = self
             .entries
             .iter()
-            .filter_map(|entry| (entry.value().expires_at <= now_ts()).then(|| entry.key().clone()))
+            .filter_map(|entry| (entry.value().expires_at <= now).then(|| entry.key().clone()))
             .collect();
         for key in expired_keys {
             self.remove(&key).await;
@@ -236,6 +262,7 @@ impl ReadCacheManager {
     }
 
     async fn ensure_capacity(&self, required: u64) -> bool {
+        self.cleanup_expired_if_due(true).await;
         loop {
             let used = self.accounted_bytes.load(Ordering::SeqCst);
             if used.saturating_add(required) <= self.capacity_bytes {
@@ -244,7 +271,7 @@ impl ReadCacheManager {
             let oldest_key = self
                 .entries
                 .iter()
-                .min_by_key(|entry| entry.value().created_at)
+                .min_by_key(|entry| entry.value().last_accessed_at)
                 .map(|entry| entry.key().clone());
             let Some(key) = oldest_key else {
                 return false;
