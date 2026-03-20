@@ -44,6 +44,17 @@ impl WalStatus {
     pub fn is_active(self) -> bool {
         !matches!(self, WalStatus::Completed)
     }
+
+    pub fn has_physical_done(self) -> bool {
+        matches!(
+            self,
+            WalStatus::PhysicalDone | WalStatus::MetadataDone | WalStatus::Completed
+        )
+    }
+
+    pub fn has_metadata_done(self) -> bool {
+        matches!(self, WalStatus::MetadataDone | WalStatus::Completed)
+    }
 }
 
 /// Write-Ahead Log Operation Types
@@ -64,6 +75,10 @@ pub enum WalOperation {
         old_path: String,
         new_path: String,
     },
+    MoveToTrash {
+        path: String,
+        trash_path: String,
+    },
     CreateDir {
         path: String,
     },
@@ -80,6 +95,7 @@ impl WalOperation {
             WalOperation::Delete { .. } => "DELETE",
             WalOperation::Move { .. } => "MOVE",
             WalOperation::Rename { .. } => "RENAME",
+            WalOperation::MoveToTrash { .. } => "MOVE_TO_TRASH",
             WalOperation::CreateDir { .. } => "CREATE_DIR",
             WalOperation::RestoreTrash { .. } => "RESTORE_TRASH",
         }
@@ -92,6 +108,19 @@ pub struct WalRecoveryResult {
     pub recovered: usize,
     pub failed: usize,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalIssueRecord {
+    pub id: i64,
+    pub user_id: String,
+    pub operation_type: String,
+    pub operation_data: String,
+    pub status: String,
+    pub failure_reason: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
 }
 
 /// Write-Ahead Log Manager
@@ -211,6 +240,34 @@ impl VfsWalManager {
             .one(&*self.db)
             .await?;
         Ok(status.map(|(value,)| WalStatus::parse(&value)))
+    }
+
+    pub async fn list_issue_records(&self, limit: u64) -> Result<Vec<WalIssueRecord>, DbErr> {
+        let rows = entity::Entity::find()
+            .filter(
+                entity::Column::Status
+                    .is_in([WalStatus::Failed.as_str(), WalStatus::Recovering.as_str()]),
+            )
+            .order_by_desc(entity::Column::UpdatedAt)
+            .limit(limit)
+            .all(&*self.db)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| WalIssueRecord {
+                id: row.id,
+                user_id: row.user_id,
+                operation_type: row.operation_type,
+                operation_data: row.operation_data,
+                status: row.status,
+                failure_reason: row.failure_reason,
+                created_at: chrono::DateTime::<chrono::Utc>::from(row.created_at).to_rfc3339(),
+                updated_at: chrono::DateTime::<chrono::Utc>::from(row.updated_at).to_rfc3339(),
+                completed_at: row
+                    .completed_at
+                    .map(|value| chrono::DateTime::<chrono::Utc>::from(value).to_rfc3339()),
+            })
+            .collect())
     }
 
     /// Revoke all WAL journal rows.
@@ -370,18 +427,25 @@ impl VfsWalManager {
             .await?;
 
         let recover_res = match op {
-            WalOperation::Write { path, .. } => self.recover_write(&engine, &path).await,
-            WalOperation::Delete { path } => self.recover_delete(&engine, &path).await,
-            WalOperation::Move { src, dst } => self.recover_move(&engine, &src, &dst).await,
+            WalOperation::Write { path, .. } => self.recover_write(&engine, &path, status).await,
+            WalOperation::Delete { path } => self.recover_delete(&engine, &path, status).await,
+            WalOperation::Move { src, dst } => self.recover_move(&engine, &src, &dst, status).await,
             WalOperation::Rename { old_path, new_path } => {
-                self.recover_move(&engine, &old_path, &new_path).await
+                self.recover_move(&engine, &old_path, &new_path, status)
+                    .await
             }
-            WalOperation::CreateDir { path } => self.recover_create_dir(&engine, &path).await,
+            WalOperation::MoveToTrash { path, trash_path } => {
+                self.recover_move_to_trash(&engine, &path, &trash_path, status)
+                    .await
+            }
+            WalOperation::CreateDir { path } => {
+                self.recover_create_dir(&engine, &path, status).await
+            }
             WalOperation::RestoreTrash {
                 trash_path,
                 original_path,
             } => {
-                self.recover_restore_trash(&engine, &trash_path, &original_path)
+                self.recover_restore_trash(&engine, &trash_path, &original_path, status)
                     .await
             }
         };
@@ -446,6 +510,24 @@ impl VfsWalManager {
         Ok(())
     }
 
+    async fn physical_move_without_wal(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        src: &str,
+        dst: &str,
+    ) -> Result<(), String> {
+        let src_path = Self::to_physical_user_path(engine.user_id.as_ref(), src);
+        let dst_path = Self::to_physical_user_path(engine.user_id.as_ref(), dst);
+        engine
+            .pool
+            .move_file(&src_path, &dst_path)
+            .await
+            .map_err(|e| e.to_string())?;
+        engine.cache.invalidate_parent_ls(src).await;
+        engine.cache.invalidate_parent_ls(dst).await;
+        Ok(())
+    }
+
     async fn sync_index_for_path(
         &self,
         engine: &Arc<ScopedVfsStorageEngine>,
@@ -464,10 +546,25 @@ impl VfsWalManager {
         &self,
         engine: &Arc<ScopedVfsStorageEngine>,
         path: &str,
+        status: WalStatus,
     ) -> Result<(), String> {
         let tmp_path = format!("{}.tmp", path);
         let target_exists = engine.exists(path).await.map_err(|e| e.to_string())?;
         let temp_exists = engine.exists(&tmp_path).await.map_err(|e| e.to_string())?;
+
+        if status.has_metadata_done() {
+            return Ok(());
+        }
+        if status.has_physical_done() {
+            if target_exists {
+                return self.sync_index_for_path(engine, path).await;
+            }
+            return engine
+                .index_service
+                .delete_file(engine.user_id.as_ref(), path)
+                .await
+                .map_err(|e| e.to_string());
+        }
 
         if target_exists {
             if temp_exists {
@@ -491,7 +588,18 @@ impl VfsWalManager {
         &self,
         engine: &Arc<ScopedVfsStorageEngine>,
         path: &str,
+        status: WalStatus,
     ) -> Result<(), String> {
+        if status.has_metadata_done() {
+            return Ok(());
+        }
+        if status.has_physical_done() {
+            return engine
+                .index_service
+                .delete_file(engine.user_id.as_ref(), path)
+                .await
+                .map_err(|e| e.to_string());
+        }
         if engine.exists(path).await.map_err(|e| e.to_string())? {
             let _ = engine.delete(path).await.map_err(|e| e.to_string())?;
             return Ok(());
@@ -508,15 +616,23 @@ impl VfsWalManager {
         engine: &Arc<ScopedVfsStorageEngine>,
         src: &str,
         dst: &str,
+        status: WalStatus,
     ) -> Result<(), String> {
+        if status.has_metadata_done() {
+            return Ok(());
+        }
+        if status.has_physical_done() {
+            return engine
+                .index_service
+                .move_file(engine.user_id.as_ref(), src, dst)
+                .await
+                .map_err(|e| e.to_string());
+        }
         let src_exists = engine.exists(src).await.map_err(|e| e.to_string())?;
         let dst_exists = engine.exists(dst).await.map_err(|e| e.to_string())?;
         match (src_exists, dst_exists) {
             (true, false) => {
-                let _ = engine
-                    .move_file(src, dst)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                self.physical_move_without_wal(engine, src, dst).await?;
                 Ok(())
             }
             (false, true) => engine
@@ -539,7 +655,14 @@ impl VfsWalManager {
         &self,
         engine: &Arc<ScopedVfsStorageEngine>,
         path: &str,
+        status: WalStatus,
     ) -> Result<(), String> {
+        if status.has_metadata_done() {
+            return Ok(());
+        }
+        if status.has_physical_done() {
+            return self.sync_index_for_path(engine, path).await;
+        }
         if !engine.exists(path).await.map_err(|e| e.to_string())? {
             let _ = engine.create_dir(path).await.map_err(|e| e.to_string())?;
             return Ok(());
@@ -547,12 +670,68 @@ impl VfsWalManager {
         self.sync_index_for_path(engine, path).await
     }
 
+    async fn recover_move_to_trash(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        path: &str,
+        trash_path: &str,
+        status: WalStatus,
+    ) -> Result<(), String> {
+        if status.has_metadata_done() {
+            return Ok(());
+        }
+        if status.has_physical_done() {
+            return engine
+                .index_service
+                .trash_file(engine.user_id.as_ref(), path, trash_path)
+                .await
+                .map_err(|e| e.to_string());
+        }
+        let src_exists = engine.exists(path).await.map_err(|e| e.to_string())?;
+        let trash_exists = engine.exists(trash_path).await.map_err(|e| e.to_string())?;
+        match (src_exists, trash_exists) {
+            (true, false) => {
+                self.physical_move_without_wal(engine, path, trash_path)
+                    .await?;
+                engine
+                    .index_service
+                    .trash_file(engine.user_id.as_ref(), path, trash_path)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            (false, true) => engine
+                .index_service
+                .trash_file(engine.user_id.as_ref(), path, trash_path)
+                .await
+                .map_err(|e| e.to_string()),
+            (false, false) => Err(format!(
+                "MOVE_TO_TRASH recovery ambiguous: both source '{}' and trash '{}' are missing",
+                path, trash_path
+            )),
+            (true, true) => Err(format!(
+                "MOVE_TO_TRASH recovery ambiguous: both source '{}' and trash '{}' exist",
+                path, trash_path
+            )),
+        }
+    }
+
     async fn recover_restore_trash(
         &self,
         engine: &Arc<ScopedVfsStorageEngine>,
         trash_path: &str,
         original_path: &str,
+        status: WalStatus,
     ) -> Result<(), String> {
+        if status.has_metadata_done() {
+            return Ok(());
+        }
+        if status.has_physical_done() {
+            return engine
+                .index_service
+                .restore_file(engine.user_id.as_ref(), trash_path, original_path)
+                .await
+                .map_err(|e| e.to_string());
+        }
         let trash_exists = engine.exists(trash_path).await.map_err(|e| e.to_string())?;
         let original_exists = engine
             .exists(original_path)
@@ -560,11 +739,13 @@ impl VfsWalManager {
             .map_err(|e| e.to_string())?;
         match (trash_exists, original_exists) {
             (true, false) => {
-                let _ = engine
-                    .move_file(trash_path, original_path)
+                self.physical_move_without_wal(engine, trash_path, original_path)
+                    .await?;
+                engine
+                    .index_service
+                    .restore_file(engine.user_id.as_ref(), trash_path, original_path)
                     .await
-                    .map_err(|e| e.to_string())?;
-                Ok(())
+                    .map_err(|e| e.to_string())
             }
             (false, true) => engine
                 .index_service
