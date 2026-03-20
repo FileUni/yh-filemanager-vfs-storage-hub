@@ -68,7 +68,7 @@ impl VfsStorageHub {
                 })?;
             let backup = if let Some(backup_name) = &pool_cfg.backup_connector {
                 let backup_name_str: &str = backup_name.as_ref();
-                if backup_name_str.trim().is_empty() {
+                if backup_name_str.trim().is_empty() || backup_name_str == primary_connector_name {
                     None
                 } else {
                     Some(operators.get(backup_name_str).cloned().ok_or_else(|| {
