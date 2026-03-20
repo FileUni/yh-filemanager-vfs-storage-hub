@@ -123,6 +123,14 @@ pub struct WalIssueRecord {
     pub completed_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct WalIssueListResult {
+    pub items: Vec<WalIssueRecord>,
+    pub total: u64,
+    pub page: u64,
+    pub page_size: u64,
+}
+
 /// Write-Ahead Log Manager
 pub struct VfsWalManager {
     db: Arc<DatabaseConnection>,
@@ -252,22 +260,102 @@ impl VfsWalManager {
             .limit(limit)
             .all(&*self.db)
             .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| WalIssueRecord {
-                id: row.id,
-                user_id: row.user_id,
-                operation_type: row.operation_type,
-                operation_data: row.operation_data,
-                status: row.status,
-                failure_reason: row.failure_reason,
-                created_at: chrono::DateTime::<chrono::Utc>::from(row.created_at).to_rfc3339(),
-                updated_at: chrono::DateTime::<chrono::Utc>::from(row.updated_at).to_rfc3339(),
-                completed_at: row
-                    .completed_at
-                    .map(|value| chrono::DateTime::<chrono::Utc>::from(value).to_rfc3339()),
-            })
-            .collect())
+        Ok(rows.into_iter().map(Self::map_issue_record).collect())
+    }
+
+    pub async fn list_issue_records_paginated(
+        &self,
+        page: u64,
+        page_size: u64,
+        status_filter: Option<&str>,
+        user_id_filter: Option<&str>,
+    ) -> Result<WalIssueListResult, DbErr> {
+        let page = page.max(1);
+        let page_size = page_size.max(1);
+        let mut condition = Condition::all();
+
+        if let Some(user_id) = user_id_filter.map(str::trim).filter(|value| !value.is_empty()) {
+            condition = condition.add(entity::Column::UserId.eq(user_id));
+        }
+
+        let normalized_status = status_filter.unwrap_or("all").trim().to_ascii_lowercase();
+        condition = match normalized_status.as_str() {
+            "" | "all" => condition.add(
+                entity::Column::Status
+                    .is_in([WalStatus::Failed.as_str(), WalStatus::Recovering.as_str()]),
+            ),
+            "failed" => condition.add(entity::Column::Status.eq(WalStatus::Failed.as_str())),
+            "recovering" => {
+                condition.add(entity::Column::Status.eq(WalStatus::Recovering.as_str()))
+            }
+            other => condition.add(entity::Column::Status.eq(other)),
+        };
+
+        let paginator = entity::Entity::find()
+            .filter(condition)
+            .order_by_desc(entity::Column::UpdatedAt)
+            .paginate(&*self.db, page_size);
+        let total = paginator.num_items().await?;
+        let rows = paginator.fetch_page((page - 1) as u64).await?;
+
+        Ok(WalIssueListResult {
+            items: rows.into_iter().map(Self::map_issue_record).collect(),
+            total,
+            page,
+            page_size,
+        })
+    }
+
+    pub async fn get_issue_record_by_id(
+        &self,
+        log_id: i64,
+    ) -> Result<Option<WalIssueRecord>, DbErr> {
+        let row = entity::Entity::find_by_id(log_id).one(&*self.db).await?;
+        Ok(row.map(Self::map_issue_record))
+    }
+
+    pub async fn replay_issue(&self, log_id: i64, hub: Arc<VfsStorageHub>) -> Result<(), DbErr> {
+        let row = entity::Entity::find_by_id(log_id)
+            .one(&*self.db)
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound(format!("WAL log {} not found", log_id)))?;
+        let status = WalStatus::parse(&row.status);
+        if !status.is_active() {
+            return Err(DbErr::Custom(format!(
+                "WAL log {} is already completed and cannot be replayed",
+                log_id
+            )));
+        }
+        self.recover_one(&row, &hub).await.map_err(DbErr::Custom)
+    }
+
+    pub async fn mark_issue_handled(&self, log_id: i64, note: Option<&str>) -> Result<(), DbErr> {
+        let row = entity::Entity::find_by_id(log_id)
+            .one(&*self.db)
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound(format!("WAL log {} not found", log_id)))?;
+        let handled_note = note
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("ADMIN_MARKED_HANDLED: {}", value))
+            .unwrap_or_else(|| "ADMIN_MARKED_HANDLED".to_string());
+        let failure_reason = match row.failure_reason.as_deref() {
+            Some(existing) if !existing.is_empty() => Some(format!("{}\n{}", existing, handled_note)),
+            _ => Some(handled_note),
+        };
+        let now = chrono::Utc::now();
+        entity::Entity::update_many()
+            .filter(entity::Column::Id.eq(log_id))
+            .col_expr(
+                entity::Column::Status,
+                Expr::value(WalStatus::Completed.as_str()),
+            )
+            .col_expr(entity::Column::FailureReason, Expr::value(failure_reason))
+            .col_expr(entity::Column::UpdatedAt, Expr::value(now))
+            .col_expr(entity::Column::CompletedAt, Expr::value(Some(now)))
+            .exec(&*self.db)
+            .await?;
+        Ok(())
     }
 
     /// Revoke all WAL journal rows.
@@ -315,6 +403,22 @@ impl VfsWalManager {
             }
         }
         Ok(result)
+    }
+
+    fn map_issue_record(row: entity::Model) -> WalIssueRecord {
+        WalIssueRecord {
+            id: row.id,
+            user_id: row.user_id,
+            operation_type: row.operation_type,
+            operation_data: row.operation_data,
+            status: row.status,
+            failure_reason: row.failure_reason,
+            created_at: chrono::DateTime::<chrono::Utc>::from(row.created_at).to_rfc3339(),
+            updated_at: chrono::DateTime::<chrono::Utc>::from(row.updated_at).to_rfc3339(),
+            completed_at: row
+                .completed_at
+                .map(|value| chrono::DateTime::<chrono::Utc>::from(value).to_rfc3339()),
+        }
     }
 
     async fn ensure_journal_columns(&self) -> Result<(), DbErr> {
