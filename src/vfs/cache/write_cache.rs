@@ -257,7 +257,7 @@ impl WriteCacheManager {
         });
         let guard = record.inner.lock().await;
         self.accounted_bytes
-            .fetch_add(self.accounted_bytes_for_blob(&guard), Ordering::SeqCst);
+            .fetch_add(self.accounted_bytes_for_blob(&*guard), Ordering::SeqCst);
         drop(guard);
         self.entries.insert(physical_path.to_string(), record);
         Ok(Some(file_info_from_pending(
@@ -475,7 +475,7 @@ impl WriteCacheManager {
     async fn can_admit(&self, physical_path: &str, new_size: u64) -> bool {
         let existing_accounted = if let Some(entry) = self.entries.get(physical_path) {
             let guard = entry.value().inner.lock().await;
-            let accounted = self.accounted_bytes_for_blob(&guard);
+            let accounted = self.accounted_bytes_for_blob(&*guard);
             drop(guard);
             accounted
         } else {
@@ -709,7 +709,7 @@ impl WriteCacheManager {
             });
             let guard = record.inner.lock().await;
             self.accounted_bytes
-                .fetch_add(self.accounted_bytes_for_blob(&guard), Ordering::SeqCst);
+                .fetch_add(self.accounted_bytes_for_blob(&*guard), Ordering::SeqCst);
             drop(guard);
             self.entries.insert(meta.physical_path.clone(), record);
         }
