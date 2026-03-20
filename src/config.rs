@@ -777,8 +777,8 @@ pub struct VfsBatchOperationConfig {
     )]
     pub max_concurrent_tasks_throughput: Option<usize>,
     #[config(
-        desc_zh = "WAL（写前日志）最小大小（字节），达到此大小后触发刷盘",
-        desc_en = "WAL (Write-Ahead Log) minimum size (bytes), triggers flush when reached",
+        desc_zh = "WAL（写前日志）记录最小写入大小（字节），仅对普通文件写入生效；小于该值的写入可跳过 WAL，目录/删除/移动等控制操作不受此阈值影响",
+        desc_en = "Minimum write size in bytes for WAL logging. Applies only to regular file writes; writes smaller than this threshold may skip WAL, while delete/move/create-dir control operations are still logged",
         example = "1048576"
     )]
     pub wal_min_size_bytes: Option<u64>,
