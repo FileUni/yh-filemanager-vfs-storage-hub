@@ -18,6 +18,15 @@ static INDEX_SYNC_LAST_DONE: once_cell::sync::OnceCell<DashMap<String, i64>> =
     once_cell::sync::OnceCell::new();
 const INDEX_SYNC_DEBOUNCE_SECS: i64 = 3;
 
+#[inline]
+fn list_stream_page_size() -> u64 {
+    match yh_config_infra::utils::current_hardware_profile() {
+        "low_memory" => 64,
+        "throughput" => 512,
+        _ => 128,
+    }
+}
+
 enum ListStreamSource {
     Materialized(Vec<VfsFileInfo>),
     Indexed { user_id: String, normalized: String },
@@ -305,7 +314,7 @@ impl ScopedVfsStorageEngine {
                 }) => {
                     let index_service = Arc::clone(&index_service);
                     index_service
-                        .list_files_stream(user_id, normalized)
+                        .list_files_stream_with_page_size(user_id, normalized, list_stream_page_size())
                         .map(|res| {
                             res.map(|e| VfsFileInfo {
                                 name: e.name.into(),
