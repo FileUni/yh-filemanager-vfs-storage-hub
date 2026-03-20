@@ -121,16 +121,27 @@ impl FileIndexService {
         user_id: String,
         parent_path: String,
     ) -> impl futures::Stream<Item = Result<file_index::Model, DbErr>> + 'static {
+        self.list_files_stream_with_page_size(user_id, parent_path, 100)
+    }
+
+    pub fn list_files_stream_with_page_size(
+        &self,
+        user_id: String,
+        parent_path: String,
+        page_size: u64,
+    ) -> impl futures::Stream<Item = Result<file_index::Model, DbErr>> + 'static {
         let db = Arc::clone(&self.db);
+        let page_size = page_size.max(1);
         futures::stream::unfold(
             (user_id, parent_path, 1u64, true),
             move |(uid, pp, page, has_more)| {
                 let db = Arc::clone(&db);
+                let page_size = page_size;
                 async move {
                     if !has_more {
                         return None;
                     }
-                    let offset = (page - 1) * 100;
+                    let offset = (page - 1) * page_size;
                     let res = file_index::Entity::find()
                         .filter(file_index::Column::UserId.eq(uid.as_str()))
                         .filter(file_index::Column::ParentPath.eq(pp.as_str()))
@@ -138,14 +149,14 @@ impl FileIndexService {
                         .filter(file_index::Column::FileTrashedAt.is_null())
                         .order_by_desc(file_index::Column::IsDir)
                         .order_by_asc(file_index::Column::Name)
-                        .limit(100)
+                        .limit(page_size)
                         .offset(offset)
                         .all(&*db)
                         .await;
                     match res {
                         Ok(items) => {
                             let count = items.len();
-                            let next_has_more = count == 100;
+                            let next_has_more = count == page_size as usize;
                             let next_state = (uid, pp, page + 1, next_has_more);
                             let results: Vec<Result<file_index::Model, DbErr>> =
                                 items.into_iter().map(Ok).collect();
