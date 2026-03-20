@@ -2,6 +2,7 @@ use super::ScopedVfsStorageEngine;
 use crate::vfs::error::{VfsError, VfsResult};
 use crate::vfs::{LOGICAL_TEMP_PREFIX, VfsFileInfo, VfsMetadata, VfsPaginationParams, VfsStorage};
 use bytes::Bytes;
+use dashmap::DashMap;
 use futures::Stream;
 use futures::stream::BoxStream;
 use std::cmp::Ordering;
@@ -11,6 +12,16 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 static INDEX_SYNC_SEMAPHORE: once_cell::sync::OnceCell<Arc<Semaphore>> =
     once_cell::sync::OnceCell::new();
+static INDEX_SYNC_INFLIGHT: once_cell::sync::OnceCell<DashMap<String, ()>> =
+    once_cell::sync::OnceCell::new();
+static INDEX_SYNC_LAST_DONE: once_cell::sync::OnceCell<DashMap<String, i64>> =
+    once_cell::sync::OnceCell::new();
+const INDEX_SYNC_DEBOUNCE_SECS: i64 = 3;
+
+enum ListStreamSource {
+    Materialized(Vec<VfsFileInfo>),
+    Indexed { user_id: String, normalized: String },
+}
 
 #[inline]
 fn file_name_from_path(path: &str) -> &str {
@@ -74,6 +85,21 @@ impl ScopedVfsStorageEngine {
         let mode = vfs_cfg.get_file_index().get_vfs_sync_index_mode();
         match mode {
             1 => {
+                let sync_key = format!("{}\n{}", self.user_id, normalized_path);
+                let now = chrono::Utc::now().timestamp();
+                let last_done = INDEX_SYNC_LAST_DONE.get_or_init(DashMap::new);
+                if let Some(last) = last_done.get(&sync_key)
+                    && now.saturating_sub(*last.value()) < INDEX_SYNC_DEBOUNCE_SECS
+                {
+                    return Ok(None);
+                }
+                let inflight = INDEX_SYNC_INFLIGHT.get_or_init(DashMap::new);
+                match inflight.entry(sync_key.clone()) {
+                    dashmap::mapref::entry::Entry::Occupied(_) => return Ok(None),
+                    dashmap::mapref::entry::Entry::Vacant(entry) => {
+                        entry.insert(());
+                    }
+                }
                 let self_clone = self.clone_for_async();
                 let path_clone = normalized_path.to_string();
                 tokio::spawn(async move {
@@ -83,11 +109,20 @@ impl ScopedVfsStorageEngine {
                             "error",
                             &format!("Background sync permit acquire failed: {}", err),
                         );
+                        if let Some(inflight) = INDEX_SYNC_INFLIGHT.get() {
+                            inflight.remove(&sync_key);
+                        }
                         return;
                     }
                     let _permit = permit;
                     if let Err(e) = self_clone.sync_index_impl(&path_clone).await {
                         yh_console_log::yhlog("error", &format!("Background sync failed: {}", e));
+                    }
+                    if let Some(last_done) = INDEX_SYNC_LAST_DONE.get() {
+                        last_done.insert(sync_key.clone(), chrono::Utc::now().timestamp());
+                    }
+                    if let Some(inflight) = INDEX_SYNC_INFLIGHT.get() {
+                        inflight.remove(&sync_key);
                     }
                 });
                 Ok(None)
@@ -236,14 +271,60 @@ impl ScopedVfsStorageEngine {
     ) -> BoxStream<'static, VfsResult<VfsFileInfo>> {
         use futures::StreamExt;
         let self_clone = self.clone_for_async();
+        let index_service = Arc::clone(&self.index_service);
         let path_clone = path.to_string();
         Box::pin(
-            futures::stream::once(async move { self_clone.list_impl(&path_clone).await }).flat_map(
-                |res| match res {
-                    Ok(entries) => futures::stream::iter(entries.into_iter().map(Ok)).boxed(),
-                    Err(e) => futures::stream::once(async { Err(e) }).boxed(),
-                },
-            ),
+            futures::stream::once(async move {
+                let normalized = self_clone.validate_file_operation(&path_clone).await?;
+                if self_clone.is_temp_path(&normalized) {
+                    let entries = self_clone.list_impl(&normalized).await?;
+                    return Ok(ListStreamSource::Materialized(entries));
+                }
+                let physical = self_clone.get_physical_path(&normalized).await?;
+                if !self_clone.pending_children(&normalized).await?.is_empty()
+                    || self_clone.pool.is_dirty_dir(&physical)
+                {
+                    let entries = self_clone.list_impl(&normalized).await?;
+                    return Ok(ListStreamSource::Materialized(entries));
+                }
+                if let Some(fresh) = self_clone.execute_sync_decision(&normalized).await? {
+                    return Ok(ListStreamSource::Materialized(fresh));
+                }
+                Ok(ListStreamSource::Indexed {
+                    user_id: self_clone.user_id.to_string(),
+                    normalized,
+                })
+            })
+            .flat_map(move |res| match res {
+                Ok(ListStreamSource::Materialized(entries)) => {
+                    futures::stream::iter(entries.into_iter().map(Ok)).boxed()
+                }
+                Ok(ListStreamSource::Indexed {
+                    user_id,
+                    normalized,
+                }) => {
+                    let index_service = Arc::clone(&index_service);
+                    index_service
+                        .list_files_stream(user_id, normalized)
+                        .map(|res| {
+                            res.map(|e| VfsFileInfo {
+                                name: e.name.into(),
+                                path: e.path.into(),
+                                is_dir: e.is_dir,
+                                size: e.size as u64,
+                                modified: e.file_updated_at.map(|t| t.into()),
+                                favorite_color: e.favorite_color,
+                                has_active_share: None,
+                                has_active_direct: None,
+                                trashed_at: e.file_trashed_at.map(|t| t.into()),
+                                original_path: e.original_path.map(|p| p.into()),
+                            })
+                            .map_err(|e| VfsError::Internal(e.to_string()))
+                        })
+                        .boxed()
+                }
+                Err(e) => futures::stream::once(async { Err(e) }).boxed(),
+            }),
         )
     }
     pub(super) async fn list_recursive_impl(&self, path: &str) -> VfsResult<Vec<VfsFileInfo>> {
