@@ -50,6 +50,39 @@ pub async fn init_vfs_tables(db: &Arc<sea_orm::DatabaseConnection>) -> Result<()
         .col(file_index::Column::FileTrashedAt)
         .if_not_exists()
         .to_owned();
+    let idx_vfs_list_live_sort = Index::create()
+        .name("idx_vfs_list_live_sort")
+        .table(file_index::Entity)
+        .col(file_index::Column::UserId)
+        .col(file_index::Column::ParentPath)
+        .col(file_index::Column::RowDeletedAt)
+        .col(file_index::Column::FileTrashedAt)
+        .col(file_index::Column::IsDir)
+        .col(file_index::Column::Name)
+        .if_not_exists()
+        .to_owned();
+    let idx_vfs_favorites_live_sort = Index::create()
+        .name("idx_vfs_favorites_live_sort")
+        .table(file_index::Entity)
+        .col(file_index::Column::UserId)
+        .col(file_index::Column::FavoriteColor)
+        .col(file_index::Column::RowDeletedAt)
+        .col(file_index::Column::FileTrashedAt)
+        .col(file_index::Column::IsDir)
+        .col(file_index::Column::Name)
+        .if_not_exists()
+        .to_owned();
+    let idx_vfs_trash_live_sort = Index::create()
+        .name("idx_vfs_trash_live_sort")
+        .table(file_index::Entity)
+        .col(file_index::Column::UserId)
+        .col(file_index::Column::ParentPath)
+        .col(file_index::Column::RowDeletedAt)
+        .col(file_index::Column::FileTrashedAt)
+        .col(file_index::Column::IsDir)
+        .col(file_index::Column::Name)
+        .if_not_exists()
+        .to_owned();
     let idx_vfs_path_prefix = Index::create()
         .name("idx_vfs_path_prefix")
         .table(file_index::Entity)
@@ -73,6 +106,10 @@ pub async fn init_vfs_tables(db: &Arc<sea_orm::DatabaseConnection>) -> Result<()
     db.execute(backend.build(&idx_vfs_list)).await?;
     db.execute(backend.build(&idx_vfs_search)).await?;
     db.execute(backend.build(&idx_vfs_recycle)).await?;
+    db.execute(backend.build(&idx_vfs_list_live_sort)).await?;
+    db.execute(backend.build(&idx_vfs_favorites_live_sort))
+        .await?;
+    db.execute(backend.build(&idx_vfs_trash_live_sort)).await?;
     db.execute(backend.build(&idx_vfs_path_prefix)).await?;
     db.execute(backend.build(&uidx_vfs_user_path)).await?;
 
