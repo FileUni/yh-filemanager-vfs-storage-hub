@@ -52,7 +52,10 @@ impl ScopedVfsStorageEngine {
         if let Err(err) = wm.complete_operation(id).await {
             yh_console_log::yhlog(
                 "warn",
-                &format!("VFS WAL complete failed: user_id={} wal_id={} err={}", self.user_id, id, err),
+                &format!(
+                    "VFS WAL complete failed: user_id={} wal_id={} err={}",
+                    self.user_id, id, err
+                ),
             );
         }
     }
@@ -151,7 +154,9 @@ impl ScopedVfsStorageEngine {
             let decoded = percent_encoding::percent_decode_str(&normalized)
                 .decode_utf8()
                 .map_err(|_| {
-                    VfsError::Internal("Security violation: invalid percent encoding in path".to_string())
+                    VfsError::Internal(
+                        "Security violation: invalid percent encoding in path".to_string(),
+                    )
                 })?;
             validate_segments(decoded.as_ref())?;
         }
@@ -384,10 +389,12 @@ impl ScopedVfsStorageEngine {
                     .await,
             )
             .await?;
-        let write_result = self.pool.write_stream(&physical_path, Box::pin(vfs_stream)).await;
+        let write_result = self
+            .pool
+            .write_stream(&physical_path, Box::pin(vfs_stream))
+            .await;
         let _ = tokio::fs::remove_file(&temp_file_path).await;
         write_result?;
-        self.complete_wal(wal_id).await;
         if total_written as i64 - initial_file_size != 0 {
             let _ = self
                 .update_quota(total_written as i64 - initial_file_size)
@@ -396,6 +403,7 @@ impl ScopedVfsStorageEngine {
         let info = self.pool.stat(&physical_path).await?;
         let translated = self.translate_file_info(info, false);
         self.upsert_index_helper(normalized, &translated).await?;
+        self.complete_wal(wal_id).await;
         Ok(translated)
     }
 }
@@ -420,8 +428,7 @@ mod tests {
     #[test]
     fn path_rejects_current_dir_segment() {
         assert!(
-            ScopedVfsStorageEngine::validate_file_operation_impl("/documents/./file.txt")
-                .is_err()
+            ScopedVfsStorageEngine::validate_file_operation_impl("/documents/./file.txt").is_err()
         );
     }
 

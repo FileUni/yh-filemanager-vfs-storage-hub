@@ -229,7 +229,6 @@ impl ScopedVfsStorageEngine {
         let result = self.pool.write(&physical_path, Bytes::from(content)).await;
         match result {
             Ok(info) => {
-                self.complete_wal(wal_id).await;
                 // Update quota
                 if !skip_quota && diff > 0 {
                     let _ = self.update_quota(diff).await;
@@ -238,6 +237,7 @@ impl ScopedVfsStorageEngine {
                     .await;
                 let translated = self.translate_file_info(info, false);
                 self.upsert_index_helper(&normalized, &translated).await?;
+                self.complete_wal(wal_id).await;
                 Ok(translated)
             }
             Err(e) => {
@@ -273,13 +273,13 @@ impl ScopedVfsStorageEngine {
         let result = self.pool.create_dir(&physical_path).await;
         match result {
             Ok(_) => {
-                self.complete_wal(wal_id).await;
                 self.journal_log("MKDIR", &normalized, None, true, None)
                     .await;
                 self.cache.invalidate_parent_ls(&normalized).await;
                 let info = self.pool.stat(&physical_path).await?;
                 let translated = self.translate_file_info(info, false);
                 self.upsert_index_helper(&normalized, &translated).await?;
+                self.complete_wal(wal_id).await;
                 Ok(translated)
             }
             Err(e) => {
