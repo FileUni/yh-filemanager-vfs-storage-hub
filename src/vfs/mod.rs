@@ -5,11 +5,15 @@ pub mod maintenance_mode;
 pub mod traits;
 pub mod types;
 pub use error::{VfsError, VfsResult};
-pub use journal::{VfsJournalEvent, VfsJournalRecorder};
+pub use journal::{
+    VfsJournalEvent, VfsJournalRecorder, get_global_cache_journal_recorder,
+    set_global_cache_journal_recorder,
+};
 pub use maintenance_mode::*;
 pub use traits::VfsStorage;
 pub use types::{VfsBatchError, VfsBatchResult, VfsFileInfo, VfsMetadata, VfsPaginationParams};
 pub mod batch;
+pub mod cache;
 pub mod connector;
 pub mod hub;
 pub mod maintenance;

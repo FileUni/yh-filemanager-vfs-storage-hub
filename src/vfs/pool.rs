@@ -2,6 +2,7 @@
 use crate::config::VfsPoolConfig;
 use crate::vfs::VfsResult;
 use crate::vfs::VfsStorage;
+use crate::vfs::cache::{ReadCacheManager, WriteCacheManager};
 use crate::vfs::types::{VfsBatchResult, VfsFileInfo, VfsMetadata};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -45,22 +46,45 @@ fn to_vfs_file_info(path: &str, meta: &Metadata) -> VfsFileInfo {
         original_path: None,
     }
 }
+
+#[inline]
+fn slice_bytes(data: Bytes, start: u64, end: u64) -> Bytes {
+    let len = data.len() as u64;
+    let bounded_start = start.min(len) as usize;
+    let bounded_end = end.min(len) as usize;
+    if bounded_start >= bounded_end {
+        Bytes::new()
+    } else {
+        data.slice(bounded_start..bounded_end)
+    }
+}
+
 /// VFS Storage Pool
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VfsPool {
     pub primary: Arc<Operator>,
     pub backup: Option<Arc<Operator>>,
     pub config: VfsPoolConfig,
     /// Shared sync guard manager across protocols and users
     pub sync_guards: Arc<crate::vfs::maintenance::SyncGuardManager>,
+    pub read_cache: Option<Arc<ReadCacheManager>>,
+    pub write_cache: Option<Arc<WriteCacheManager>>,
 }
 impl VfsPool {
-    pub fn new(primary: Operator, backup: Option<Operator>, config: VfsPoolConfig) -> Self {
+    pub fn new(
+        primary: Operator,
+        backup: Option<Operator>,
+        config: VfsPoolConfig,
+        read_cache: Option<Arc<ReadCacheManager>>,
+        write_cache: Option<Arc<WriteCacheManager>>,
+    ) -> Self {
         Self {
             primary: Arc::new(primary),
             backup: backup.map(Arc::new),
             config,
             sync_guards: Arc::new(crate::vfs::maintenance::SyncGuardManager::new()),
+            read_cache,
+            write_cache,
         }
     }
 
@@ -84,14 +108,81 @@ impl VfsPool {
             .map_err(crate::vfs::error::VfsError::from)?;
         Ok(to_vfs_file_info(path, &meta))
     }
+
+    pub fn is_write_cache_enabled(&self) -> bool {
+        self.write_cache
+            .as_ref()
+            .is_some_and(|cache| cache.is_enabled())
+    }
+
+    pub fn write_cache_max_file_size(&self) -> Option<u64> {
+        self.write_cache
+            .as_ref()
+            .map(|cache| cache.max_file_size_bytes())
+    }
+
+    pub async fn enqueue_write_cache(
+        &self,
+        user_id: &str,
+        logical_path: &str,
+        physical_path: &str,
+        data: Bytes,
+    ) -> VfsResult<Option<VfsFileInfo>> {
+        let Some(write_cache) = &self.write_cache else {
+            return Ok(None);
+        };
+        write_cache
+            .enqueue(user_id, logical_path, physical_path, data)
+            .await
+            .map_err(|err| crate::vfs::error::VfsError::Internal(err.to_string()))
+    }
+
+    pub async fn flush_write_cache(&self, physical_path: &str) -> VfsResult<()> {
+        let Some(write_cache) = &self.write_cache else {
+            return Ok(());
+        };
+        write_cache.flush_path(physical_path).await
+    }
+
+    pub async fn pending_stat(&self, physical_path: &str) -> Option<VfsFileInfo> {
+        let write_cache = self.write_cache.as_ref()?;
+        write_cache.pending_stat(physical_path).await
+    }
+
+    pub async fn pending_children(&self, parent_physical_path: &str) -> Vec<VfsFileInfo> {
+        let Some(write_cache) = &self.write_cache else {
+            return Vec::new();
+        };
+        write_cache.pending_children(parent_physical_path).await
+    }
+
+    pub async fn invalidate_read_cache(&self, path: &str) {
+        if let Some(read_cache) = &self.read_cache {
+            read_cache.remove(path).await;
+        }
+    }
 }
 #[async_trait]
 impl VfsStorage for VfsPool {
     async fn read(&self, path: &str) -> VfsResult<(Bytes, VfsFileInfo)> {
+        if let Some(write_cache) = &self.write_cache
+            && let Some(hit) = write_cache.pending_read(path).await
+        {
+            return Ok(hit);
+        }
+        if let Some(read_cache) = &self.read_cache
+            && let Some(hit) = read_cache.get(path).await
+        {
+            return Ok(hit);
+        }
         match self.primary.read(path).await {
             Ok(data) => {
                 let info = self.stat_with_operator(self.primary.as_ref(), path).await?;
-                Ok((data.to_bytes(), info))
+                let bytes = data.to_bytes();
+                if let Some(read_cache) = &self.read_cache {
+                    read_cache.put(path, bytes.clone(), info.clone()).await;
+                }
+                Ok((bytes, info))
             }
             Err(err) => {
                 let primary_err = crate::vfs::error::VfsError::from(err);
@@ -106,11 +197,13 @@ impl VfsStorage for VfsPool {
         }
     }
     async fn write(&self, path: &str, data: Bytes) -> VfsResult<VfsFileInfo> {
+        self.invalidate_read_cache(path).await;
         self.primary.write(path, data).await?;
         self.stat(path).await
     }
     async fn delete(&self, path: &str) -> VfsResult<VfsFileInfo> {
         let info = self.stat(path).await?;
+        self.invalidate_read_cache(path).await;
         self.primary.delete(path).await?;
         Ok(info)
     }
@@ -327,6 +420,20 @@ impl VfsStorage for VfsPool {
         VfsFileInfo,
     )> {
         use futures::StreamExt;
+        if let Some(write_cache) = &self.write_cache
+            && let Some((data, info)) = write_cache.pending_read(path).await
+        {
+            let payload = slice_bytes(data, range.start, range.end);
+            let stream = futures::stream::once(async move { Ok(payload) });
+            return Ok((Box::pin(stream), info));
+        }
+        if let Some(read_cache) = &self.read_cache
+            && let Some((data, info)) = read_cache.get(path).await
+        {
+            let payload = slice_bytes(data, range.start, range.end);
+            let stream = futures::stream::once(async move { Ok(payload) });
+            return Ok((Box::pin(stream), info));
+        }
         let (reader, info) = match self.primary.reader(path).await {
             Ok(reader) => (
                 reader,
@@ -353,6 +460,7 @@ impl VfsStorage for VfsPool {
         mut stream: BoxStream<'static, VfsResult<Bytes>>,
     ) -> VfsResult<VfsFileInfo> {
         use futures::StreamExt;
+        self.invalidate_read_cache(path).await;
         // Use temporary file for atomic write
         let temp_path = format!("{}.tmp", path);
         // Write to temporary file
@@ -366,6 +474,11 @@ impl VfsStorage for VfsPool {
         self.stat(path).await
     }
     async fn exists(&self, path: &str) -> VfsResult<bool> {
+        if let Some(write_cache) = &self.write_cache
+            && write_cache.pending_stat(path).await.is_some()
+        {
+            return Ok(true);
+        }
         match self.primary.exists(path).await {
             Ok(true) => Ok(true),
             Ok(false) => {
@@ -385,6 +498,11 @@ impl VfsStorage for VfsPool {
         }
     }
     async fn stat(&self, path: &str) -> VfsResult<VfsFileInfo> {
+        if let Some(write_cache) = &self.write_cache
+            && let Some(info) = write_cache.pending_stat(path).await
+        {
+            return Ok(info);
+        }
         match self.stat_with_operator(self.primary.as_ref(), path).await {
             Ok(info) => Ok(info),
             Err(primary_err) => {
@@ -413,6 +531,16 @@ impl VfsStorage for VfsPool {
         start: u64,
         end: u64,
     ) -> VfsResult<(Bytes, VfsFileInfo)> {
+        if let Some(write_cache) = &self.write_cache
+            && let Some((data, info)) = write_cache.pending_read(path).await
+        {
+            return Ok((slice_bytes(data, start, end), info));
+        }
+        if let Some(read_cache) = &self.read_cache
+            && let Some((data, info)) = read_cache.get(path).await
+        {
+            return Ok((slice_bytes(data, start, end), info));
+        }
         match self.primary.read_with(path).range(start..end).await {
             Ok(data) => {
                 let info = self.stat_with_operator(self.primary.as_ref(), path).await?;
@@ -455,6 +583,7 @@ impl VfsStorage for VfsPool {
         } else {
             format!("{}/", path)
         };
+        self.invalidate_read_cache(&dir_path).await;
         self.primary.create_dir(&dir_path).await?;
         self.stat(&dir_path).await
     }
@@ -464,14 +593,19 @@ impl VfsStorage for VfsPool {
         } else {
             format!("{}/", path)
         };
+        self.invalidate_read_cache(&dir_path).await;
         self.primary.create_dir(&dir_path).await?;
         self.stat(&dir_path).await
     }
     async fn move_file(&self, src: &str, dst: &str) -> VfsResult<VfsFileInfo> {
+        self.invalidate_read_cache(src).await;
+        self.invalidate_read_cache(dst).await;
         self.primary.rename(src, dst).await?;
         self.stat(dst).await
     }
     async fn copy_file(&self, src: &str, dst: &str) -> VfsResult<VfsFileInfo> {
+        self.invalidate_read_cache(src).await;
+        self.invalidate_read_cache(dst).await;
         self.primary.copy(src, dst).await?;
         self.stat(dst).await
     }

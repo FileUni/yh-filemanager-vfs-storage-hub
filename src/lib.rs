@@ -12,6 +12,7 @@ pub use config::{
 pub use utils::temp_file::{get_global_temp_manager, init_global_temp_manager};
 pub use vfs::{
     LOGICAL_TEMP_PREFIX, ScopedVfsStorageEngine, VfsBatchError, VfsBatchResult, VfsError,
-    VfsFileInfo, VfsMetadata, VfsStorage, VfsStorageHub,
+    VfsFileInfo, VfsMetadata, VfsStorage, VfsStorageHub, get_global_cache_journal_recorder,
+    set_global_cache_journal_recorder,
 };
 pub use vfs_manager::VfsManager;

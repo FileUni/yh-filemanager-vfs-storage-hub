@@ -1,5 +1,6 @@
 use crate::config::VfsHubConfigGuard;
 use crate::vfs::VfsResult;
+use crate::vfs::cache::{ReadCacheManager, WriteCacheManager};
 use crate::vfs::pool::VfsPool;
 use once_cell::sync::OnceCell;
 use opendal::Operator;
@@ -42,6 +43,8 @@ impl VfsStorageHub {
             ));
         }
         let mut pools = HashMap::with_capacity(pools_cfg.len());
+        let read_cache_cfg = config.get_read_cache().clone();
+        let write_cache_cfg = config.get_write_cache().clone();
         for pool_cfg in pools_cfg {
             if pool_cfg.enable_write_cache == Some(true) {
                 return Err(crate::vfs::error::VfsError::Internal(format!(
@@ -79,9 +82,50 @@ impl VfsStorageHub {
                 None
             };
             let pool_name = pool_cfg.get_name();
+            let read_cache = if read_cache_cfg.is_enabled() {
+                Some(
+                    ReadCacheManager::new(pool_name, &read_cache_cfg)
+                        .await
+                        .map_err(|err| {
+                            crate::vfs::error::VfsError::Internal(format!(
+                                "Init read cache for pool '{}' failed: {}",
+                                pool_name, err
+                            ))
+                        })?,
+                )
+            } else {
+                None
+            };
+            let write_cache = if write_cache_cfg.is_enabled() {
+                Some(
+                    WriteCacheManager::new(
+                        pool_name,
+                        Arc::new(primary.clone()),
+                        Arc::clone(&db),
+                        primary.info().scheme().to_string(),
+                        read_cache.as_ref().map(Arc::clone),
+                        &write_cache_cfg,
+                    )
+                    .await
+                    .map_err(|err| {
+                        crate::vfs::error::VfsError::Internal(format!(
+                            "Init write cache for pool '{}' failed: {}",
+                            pool_name, err
+                        ))
+                    })?,
+                )
+            } else {
+                None
+            };
             pools.insert(
                 pool_name.to_string(),
-                Arc::new(VfsPool::new(primary, backup, pool_cfg.to_owned())),
+                Arc::new(VfsPool::new(
+                    primary,
+                    backup,
+                    pool_cfg.to_owned(),
+                    read_cache,
+                    write_cache,
+                )),
             );
         }
         Ok(Self {
