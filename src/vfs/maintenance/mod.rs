@@ -7,6 +7,16 @@ use std::sync::Arc;
 use yh_console_log::yhlog;
 pub mod sync_guard;
 pub use sync_guard::SyncGuardManager;
+
+#[inline]
+fn maintenance_batch_size() -> u64 {
+    match yh_config_infra::utils::current_hardware_profile() {
+        "low_memory" => 64,
+        "throughput" => 512,
+        _ => 128,
+    }
+}
+
 pub struct VfsMaintenanceService;
 impl VfsMaintenanceService {
     /// Cleanup all expired temporary files
@@ -167,54 +177,59 @@ impl VfsMaintenanceService {
             return Ok(0);
         }
         let index_service = hub.get_index_service().await?;
-        let expired_items = index_service
-            .find_expired_trash(retention_days)
-            .await
-            .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
-        if expired_items.is_empty() {
-            return Ok(0);
-        }
-        yhlog(
-            "info",
-            &format!(
-                "VFS Maintenance: Found {} expired trash items. Starting physical cleanup...",
-                expired_items.len()
-            ),
-        );
         let mut total_deleted = 0;
-        // Group by user to avoid frequent engine creation
-        let mut user_items: std::collections::HashMap<
-            String,
-            Vec<crate::business::entities::file_index::Model>,
-        > = std::collections::HashMap::new();
-        for mut item in expired_items {
-            let user_id = std::mem::take(&mut item.user_id);
-            user_items.entry(user_id).or_default().push(item);
-        }
-        for (user_id, items) in user_items {
-            if let Ok(engine) = hub
-                .create_scoped_engine(hub.get_db(), &user_id, "100", None)
+        let mut logged_start = false;
+        let batch_size = maintenance_batch_size();
+        loop {
+            let expired_items = index_service
+                .find_expired_trash_batch(retention_days, batch_size)
                 .await
-            {
-                for item in items {
-                    match engine.delete(&item.path).await {
-                        Ok(_) => {
-                            total_deleted += 1;
-                        }
-                        Err(e) => {
-                            yhlog(
-                                "error",
-                                &format!(
-                                    "VFS Maintenance: Failed to physically delete trash item {} for user {}: {}",
-                                    item.path, user_id, e
-                                ),
-                            );
+                .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
+            if expired_items.is_empty() {
+                break;
+            }
+            if !logged_start {
+                yhlog(
+                    "info",
+                    &format!(
+                        "VFS Maintenance: Found expired trash items. Starting batched physical cleanup with batch_size={}...",
+                        batch_size
+                    ),
+                );
+                logged_start = true;
+            }
+            let mut user_items: std::collections::HashMap<
+                String,
+                Vec<crate::business::entities::file_index::Model>,
+            > = std::collections::HashMap::new();
+            for mut item in expired_items {
+                let user_id = std::mem::take(&mut item.user_id);
+                user_items.entry(user_id).or_default().push(item);
+            }
+            for (user_id, items) in user_items {
+                if let Ok(engine) = hub
+                    .create_scoped_engine(hub.get_db(), &user_id, "100", None)
+                    .await
+                {
+                    for item in items {
+                        match engine.delete(&item.path).await {
+                            Ok(_) => {
+                                total_deleted += 1;
+                            }
+                            Err(e) => {
+                                yhlog(
+                                    "error",
+                                    &format!(
+                                        "VFS Maintenance: Failed to physically delete trash item {} for user {}: {}",
+                                        item.path, user_id, e
+                                    ),
+                                );
+                            }
                         }
                     }
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            // Sequential execution
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         if total_deleted > 0 {
             yhlog(
