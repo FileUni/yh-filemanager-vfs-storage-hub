@@ -366,7 +366,10 @@ impl FileIndexService {
             .filter(file_index::Column::RowDeletedAt.is_null())
             .all(&*self.db)
             .await?;
-        Ok(entries.into_iter().map(|entry| (entry.path, entry.id)).collect())
+        Ok(entries
+            .into_iter()
+            .map(|entry| (entry.path, entry.id))
+            .collect())
     }
     pub async fn get_active_shares_for_paths(
         &self,

@@ -56,8 +56,7 @@ mod mobile_fs_guard {
         if !candidate.starts_with(&base) {
             return Err(format!(
                 "fs connector root must be inside app sandbox (under APPDATADIR). Got: '{}' (APPDATADIR='{}')",
-                root,
-                app_data_dir
+                root, app_data_dir
             ));
         }
         Ok(())
@@ -527,11 +526,7 @@ impl VfsFileCompressConfig {
 
         // Cross-field consistency: if 7z format is enabled, exe_7zip_path must be non-empty.
         // Actual executability (PATH / file existence) is checked by config orchestrator preflight.
-        let exe_7z = self
-            .exe_7zip_path
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or("");
+        let exe_7z = self.exe_7zip_path.as_deref().map(str::trim).unwrap_or("");
         let default_fmt = self
             .default_compression_format
             .as_deref()
@@ -1517,7 +1512,8 @@ impl ConfigApp for VfsStorageHubAppConfig {
 
 impl VfsStorageHubAppConfig {
     pub fn validate(&self, errors: &mut Vec<String>) {
-        self.vfs_storage_hub.validate(Self::get_section_name(), errors);
+        self.vfs_storage_hub
+            .validate(Self::get_section_name(), errors);
     }
 }
 

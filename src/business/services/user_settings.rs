@@ -87,8 +87,8 @@ impl UserSettingsService {
     ) -> VfsCommonResult<()> {
         use sea_orm::sea_query::Expr;
 
-        let mut update = user_settings::Entity::update_many()
-            .filter(user_settings::Column::UserId.eq(user_id));
+        let mut update =
+            user_settings::Entity::update_many().filter(user_settings::Column::UserId.eq(user_id));
 
         if let Some(pool_name) = patch.pool_name.as_deref() {
             update = update.col_expr(user_settings::Column::PoolName, Expr::value(pool_name));
@@ -103,7 +103,10 @@ impl UserSettingsService {
             );
         }
         if let Some(storage_used) = patch.storage_used {
-            update = update.col_expr(user_settings::Column::StorageUsed, Expr::value(storage_used));
+            update = update.col_expr(
+                user_settings::Column::StorageUsed,
+                Expr::value(storage_used),
+            );
         }
         if let Some(value) = patch.thumbnail_disable_text {
             update = update.col_expr(
