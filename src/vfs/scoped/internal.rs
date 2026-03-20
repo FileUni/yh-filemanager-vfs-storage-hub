@@ -73,20 +73,6 @@ impl ScopedVfsStorageEngine {
             );
         }
     }
-    pub(super) async fn mark_wal_metadata_done(&self, wal_id: Option<i64>) {
-        let (Some(id), Some(wm)) = (wal_id, &self.wal_manager) else {
-            return;
-        };
-        if let Err(err) = wm.mark_metadata_done(id).await {
-            yh_console_log::yhlog(
-                "warn",
-                &format!(
-                    "VFS WAL metadata_done failed: user_id={} wal_id={} err={}",
-                    self.user_id, id, err
-                ),
-            );
-        }
-    }
     pub(super) async fn fail_wal(&self, wal_id: Option<i64>, reason: &str) {
         let (Some(id), Some(wm)) = (wal_id, &self.wal_manager) else {
             return;
@@ -391,12 +377,21 @@ impl ScopedVfsStorageEngine {
         match self.stat_impl(path).await {
             Ok(info) => info.size as i64,
             Err(err) => {
-                yh_console_log::yhlog(
-                    "warn",
-                    &format!("Failed to stat file size for '{}': {}", path, err),
-                );
+                if !Self::is_not_found_error(&err) {
+                    yh_console_log::yhlog(
+                        "warn",
+                        &format!("Failed to stat file size for '{}': {}", path, err),
+                    );
+                }
                 0
             }
+        }
+    }
+    fn is_not_found_error(err: &VfsError) -> bool {
+        match err {
+            VfsError::NotFound(_) => true,
+            VfsError::OpenDal(inner) => inner.kind() == opendal::ErrorKind::NotFound,
+            _ => false,
         }
     }
     pub(super) fn translate_file_info(&self, info: VfsFileInfo, is_temp: bool) -> VfsFileInfo {
@@ -492,14 +487,31 @@ impl ScopedVfsStorageEngine {
             .await
             .map_err(VfsError::Io)?;
         let mut total_written = 0u64;
+        let skip_quota = self.is_thumbnail_cache_path(normalized);
         let initial_file_size = self.get_file_size(normalized).await;
+        let quota_projection = if skip_quota {
+            None
+        } else {
+            let pending_delta = self.pool.pending_quota_delta(&self.user_id);
+            let settings = UserSettingsService::get_user_settings(&self.db, &self.user_id)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))?;
+            settings.and_then(|settings| {
+                (settings.storage_quota > 0).then_some((
+                    settings.storage_used.saturating_add(pending_delta),
+                    settings.storage_quota,
+                ))
+            })
+        };
         while let Some(chunk) = stream.next().await {
             let data = chunk?;
             total_written += data.len() as u64;
-            // Real-time quota check
             let current_diff = total_written as i64 - initial_file_size;
-            if current_diff > 0 {
-                self.check_quota(current_diff).await?;
+            if let Some((projected_used, quota_limit)) = quota_projection
+                && current_diff > 0
+                && projected_used.saturating_add(current_diff) > quota_limit
+            {
+                return Err(VfsError::QuotaExceeded);
             }
             let mut reader = data.as_ref();
             tokio::io::copy(&mut reader, &mut file)
@@ -553,7 +565,6 @@ impl ScopedVfsStorageEngine {
             .await;
             return Err(err);
         }
-        self.mark_wal_metadata_done(wal_id).await;
         self.complete_wal(wal_id).await;
         Ok(translated)
     }

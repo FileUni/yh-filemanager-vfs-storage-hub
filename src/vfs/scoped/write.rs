@@ -51,7 +51,6 @@ impl ScopedVfsStorageEngine {
                 .await
                 .map_err(VfsError::Io)?;
             self.mark_wal_physical_done(wal_id).await;
-            self.mark_wal_metadata_done(wal_id).await;
             self.stat_impl(path).await
         } else {
             match self
@@ -70,7 +69,6 @@ impl ScopedVfsStorageEngine {
                         .await;
                         return Err(err);
                     }
-                    self.mark_wal_metadata_done(wal_id).await;
                     Ok(translated)
                 }
                 Err(e) => Err(e),
@@ -125,7 +123,6 @@ impl ScopedVfsStorageEngine {
                     .map_err(VfsError::Io)?;
             }
             self.mark_wal_physical_done(wal_id).await;
-            self.mark_wal_metadata_done(wal_id).await;
             self.complete_wal(wal_id).await;
             return Ok(info);
         }
@@ -159,7 +156,6 @@ impl ScopedVfsStorageEngine {
                     }
                 }
                 if metadata_complete {
-                    self.mark_wal_metadata_done(wal_id).await;
                     self.complete_wal(wal_id).await;
                 }
                 self.cache.invalidate_parent_ls(&normalized).await;
@@ -333,7 +329,6 @@ impl ScopedVfsStorageEngine {
                     .await;
                     return Err(err);
                 }
-                self.mark_wal_metadata_done(wal_id).await;
                 self.complete_wal(wal_id).await;
                 Ok(translated)
             }
@@ -365,7 +360,6 @@ impl ScopedVfsStorageEngine {
             .await
             .map_err(VfsError::Io)?;
             self.mark_wal_physical_done(wal_id).await;
-            self.mark_wal_metadata_done(wal_id).await;
             self.complete_wal(wal_id).await;
             return self.stat_impl(path).await;
         }
@@ -390,7 +384,6 @@ impl ScopedVfsStorageEngine {
                     .await;
                     return Err(err);
                 }
-                self.mark_wal_metadata_done(wal_id).await;
                 self.complete_wal(wal_id).await;
                 Ok(translated)
             }
@@ -417,6 +410,7 @@ impl ScopedVfsStorageEngine {
                 self.should_skip_wal_for_path(&norm_src).await,
             )
             .await?;
+        let mut should_complete_wal = false;
         let result = if self.is_temp_path(&norm_src) == self.is_temp_path(&norm_dst) {
             if self.is_temp_path(&norm_src) {
                 let s = self
@@ -429,7 +423,7 @@ impl ScopedVfsStorageEngine {
                     .join(self.get_relative_path(&norm_dst, LOGICAL_TEMP_PREFIX));
                 tokio::fs::rename(s, d).await.map_err(VfsError::Io)?;
                 self.mark_wal_physical_done(wal_id).await;
-                self.mark_wal_metadata_done(wal_id).await;
+                should_complete_wal = true;
                 self.stat_impl(dst).await
             } else {
                 match self
@@ -472,7 +466,7 @@ impl ScopedVfsStorageEngine {
                             }
                         }
                         if metadata_complete {
-                            self.mark_wal_metadata_done(wal_id).await;
+                            should_complete_wal = true;
                         }
                         self.stat_impl(dst).await
                     }
@@ -483,23 +477,13 @@ impl ScopedVfsStorageEngine {
             let (data, _) = self.read_impl(src).await?;
             let info = self.write_impl(dst, data).await?;
             let _ = self.delete_impl(src).await;
+            should_complete_wal = true;
             Ok(info)
         };
         match &result {
             Ok(_) => {
-                if let Some(id) = wal_id {
-                    if let Some(wm) = &self.wal_manager {
-                        let should_complete = match wm.get_operation_status(id).await {
-                            Ok(Some(status)) => {
-                                matches!(status, crate::vfs::wal::WalStatus::MetadataDone)
-                            }
-                            Ok(None) => true,
-                            Err(_) => false,
-                        };
-                        if should_complete {
-                            self.complete_wal(Some(id)).await;
-                        }
-                    }
+                if should_complete_wal {
+                    self.complete_wal(wal_id).await;
                 }
                 self.journal_log("MOVE", &norm_src, Some(&norm_dst), true, None)
                     .await

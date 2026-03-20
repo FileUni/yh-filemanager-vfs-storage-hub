@@ -130,7 +130,6 @@ impl ScopedVfsStorageEngine {
                     .await;
                     return Err(VfsError::Internal(err.to_string()));
                 }
-                self.mark_wal_metadata_done(wal_id).await;
                 self.complete_wal(wal_id).await;
                 self.journal_log("MOVE_TO_TRASH", &normalized, Some(&trash_path), true, None)
                     .await;
@@ -192,7 +191,6 @@ impl ScopedVfsStorageEngine {
                         .await;
                         Err(VfsError::Internal(err.to_string()))
                     } else {
-                        self.mark_wal_metadata_done(wal_id).await;
                         self.complete_wal(wal_id).await;
                         self.journal_log("RESTORE_TRASH", &normalized, Some(&orig), true, None)
                             .await;
@@ -290,6 +288,8 @@ impl ScopedVfsStorageEngine {
                 backend_key: sea_orm::ActiveValue::Set(Some(backend_key)),
                 size: sea_orm::ActiveValue::Set(translated.size as i64),
                 file_updated_at: sea_orm::ActiveValue::Set(translated.modified.map(|dt| dt.into())),
+                favorite_color: sea_orm::ActiveValue::Set(0),
+                row_created_at: sea_orm::ActiveValue::Set(now.into()),
                 row_updated_at: sea_orm::ActiveValue::Set(now.into()),
                 ..Default::default()
             });
@@ -335,12 +335,26 @@ impl ScopedVfsStorageEngine {
         })
     }
     pub(super) async fn batch_remove_impl(&self, paths: &[String]) -> VfsResult<VfsBatchResult> {
+        use futures::StreamExt;
+        let concurrency = crate::config::get_vfs_hub_config()
+            .await
+            .get_batch_operation()
+            .get_effective_max_concurrent_tasks()
+            .max(1);
         let mut result = VfsBatchResult::default();
-        for p in paths {
-            match self.delete_impl(p).await {
-                Ok(_) => result.success.push(p.as_str().into()),
+        let mut stream = futures::stream::iter(paths.iter().cloned().map(|path| {
+            let engine = self.clone_for_async();
+            async move {
+                let result = engine.delete_impl(&path).await;
+                (path, result)
+            }
+        }))
+        .buffer_unordered(concurrency);
+        while let Some((path, op_result)) = stream.next().await {
+            match op_result {
+                Ok(_) => result.success.push(path.into()),
                 Err(e) => result.failed.push(VfsBatchError {
-                    path: p.as_str().into(),
+                    path: path.into(),
                     error: e.to_string().into(),
                 }),
             }
@@ -352,14 +366,30 @@ impl ScopedVfsStorageEngine {
         src_paths: &[String],
         dst_dir: &str,
     ) -> VfsResult<VfsBatchResult> {
+        use futures::StreamExt;
+        let concurrency = crate::config::get_vfs_hub_config()
+            .await
+            .get_batch_operation()
+            .get_effective_max_concurrent_tasks()
+            .max(1);
         let mut result = VfsBatchResult::default();
-        for s in src_paths {
-            let filename = s.split('/').next_back().map_or("", |value| value);
-            let d = format!("{}/{}", dst_dir.trim_end_matches('/'), filename);
-            match self.move_file_impl(s, &d).await {
-                Ok(_) => result.success.push(s.as_str().into()),
+        let dst_dir = dst_dir.to_string();
+        let mut stream = futures::stream::iter(src_paths.iter().cloned().map(|src| {
+            let engine = self.clone_for_async();
+            let dst_dir = dst_dir.clone();
+            async move {
+                let filename = src.split('/').next_back().map_or("", |value| value);
+                let dst = format!("{}/{}", dst_dir.trim_end_matches('/'), filename);
+                let result = engine.move_file_impl(&src, &dst).await;
+                (src, result)
+            }
+        }))
+        .buffer_unordered(concurrency);
+        while let Some((src, op_result)) = stream.next().await {
+            match op_result {
+                Ok(_) => result.success.push(src.into()),
                 Err(e) => result.failed.push(VfsBatchError {
-                    path: s.as_str().into(),
+                    path: src.into(),
                     error: e.to_string().into(),
                 }),
             }

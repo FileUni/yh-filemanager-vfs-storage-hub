@@ -221,11 +221,6 @@ impl VfsWalManager {
             .await
     }
 
-    pub async fn mark_metadata_done(&self, log_id: i64) -> Result<(), DbErr> {
-        self.transition_operation(log_id, WalStatus::MetadataDone, None)
-            .await
-    }
-
     pub async fn fail_operation(&self, log_id: i64, reason: &str) -> Result<(), DbErr> {
         self.transition_operation(log_id, WalStatus::Failed, Some(reason))
             .await
@@ -248,16 +243,6 @@ impl VfsWalManager {
             .exec(&*self.db)
             .await?;
         Ok(())
-    }
-
-    pub async fn get_operation_status(&self, log_id: i64) -> Result<Option<WalStatus>, DbErr> {
-        let status = entity::Entity::find_by_id(log_id)
-            .select_only()
-            .column(entity::Column::Status)
-            .into_tuple::<(String,)>()
-            .one(&*self.db)
-            .await?;
-        Ok(status.map(|(value,)| WalStatus::parse(&value)))
     }
 
     pub async fn list_issue_records(&self, limit: u64) -> Result<Vec<WalIssueRecord>, DbErr> {
