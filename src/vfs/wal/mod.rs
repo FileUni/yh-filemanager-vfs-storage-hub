@@ -131,6 +131,16 @@ pub struct WalIssueListResult {
     pub page_size: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct WalQueryFilters<'a> {
+    pub scope: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub user_id: Option<&'a str>,
+    pub operation_type: Option<&'a str>,
+    pub updated_from: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_to: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Write-Ahead Log Manager
 pub struct VfsWalManager {
     db: Arc<DatabaseConnection>,
@@ -267,32 +277,11 @@ impl VfsWalManager {
         &self,
         page: u64,
         page_size: u64,
-        status_filter: Option<&str>,
-        user_id_filter: Option<&str>,
+        filters: WalQueryFilters<'_>,
     ) -> Result<WalIssueListResult, DbErr> {
         let page = page.max(1);
         let page_size = page_size.max(1);
-        let mut condition = Condition::all();
-
-        if let Some(user_id) = user_id_filter
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            condition = condition.add(entity::Column::UserId.eq(user_id));
-        }
-
-        let normalized_status = status_filter.unwrap_or("all").trim().to_ascii_lowercase();
-        condition = match normalized_status.as_str() {
-            "" | "all" => condition.add(
-                entity::Column::Status
-                    .is_in([WalStatus::Failed.as_str(), WalStatus::Recovering.as_str()]),
-            ),
-            "failed" => condition.add(entity::Column::Status.eq(WalStatus::Failed.as_str())),
-            "recovering" => {
-                condition.add(entity::Column::Status.eq(WalStatus::Recovering.as_str()))
-            }
-            other => condition.add(entity::Column::Status.eq(other)),
-        };
+        let condition = Self::build_filtered_condition(filters);
 
         let paginator = entity::Entity::find()
             .filter(condition)
@@ -307,6 +296,21 @@ impl VfsWalManager {
             page,
             page_size,
         })
+    }
+
+    pub async fn list_issue_records_filtered(
+        &self,
+        filters: WalQueryFilters<'_>,
+        limit: Option<u64>,
+    ) -> Result<Vec<WalIssueRecord>, DbErr> {
+        let mut query = entity::Entity::find()
+            .filter(Self::build_filtered_condition(filters))
+            .order_by_desc(entity::Column::UpdatedAt);
+        if let Some(limit) = limit {
+            query = query.limit(limit);
+        }
+        let rows = query.all(&*self.db).await?;
+        Ok(rows.into_iter().map(Self::map_issue_record).collect())
     }
 
     pub async fn get_issue_record_by_id(
@@ -424,6 +428,60 @@ impl VfsWalManager {
                 .completed_at
                 .map(|value| chrono::DateTime::<chrono::Utc>::from(value).to_rfc3339()),
         }
+    }
+
+    fn build_filtered_condition(filters: WalQueryFilters<'_>) -> Condition {
+        let mut condition = Condition::all();
+
+        if let Some(user_id) = filters
+            .user_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            condition = condition.add(entity::Column::UserId.eq(user_id));
+        }
+
+        if let Some(operation_type) = filters
+            .operation_type
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("all"))
+        {
+            condition = condition.add(entity::Column::OperationType.eq(operation_type));
+        }
+
+        if let Some(updated_from) = filters.updated_from {
+            condition = condition.add(entity::Column::UpdatedAt.gte(updated_from));
+        }
+
+        if let Some(updated_to) = filters.updated_to {
+            condition = condition.add(entity::Column::UpdatedAt.lte(updated_to));
+        }
+
+        let normalized_status = filters.status.unwrap_or("all").trim().to_ascii_lowercase();
+        let normalized_scope = filters
+            .scope
+            .unwrap_or("issues")
+            .trim()
+            .to_ascii_lowercase();
+        if normalized_status.is_empty() || normalized_status == "all" {
+            match normalized_scope.as_str() {
+                "history" => {
+                    condition =
+                        condition.add(entity::Column::Status.eq(WalStatus::Completed.as_str()))
+                }
+                "all" => {}
+                _ => {
+                    condition = condition.add(
+                        entity::Column::Status
+                            .is_in([WalStatus::Failed.as_str(), WalStatus::Recovering.as_str()]),
+                    )
+                }
+            }
+        } else {
+            condition = condition.add(entity::Column::Status.eq(normalized_status));
+        }
+
+        condition
     }
 
     async fn ensure_journal_columns(&self) -> Result<(), DbErr> {
