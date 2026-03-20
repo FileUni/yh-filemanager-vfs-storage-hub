@@ -21,22 +21,16 @@ impl ScopedVfsStorageEngine {
                 self.check_quota(diff).await?;
             }
         }
-        let wal_id = if let Some(wm) = &self.wal_manager
-            && !self.should_skip_wal(&normalized, data.len() as u64).await
-        {
-            Some(
-                wm.log_operation(
-                    &self.user_id,
-                    WalOperation::Write {
-                        path: normalized.to_string(),
-                        size: data.len() as u64,
-                    },
-                )
-                .await?,
+        let wal_id = self
+            .begin_wal(
+                WalOperation::Write {
+                    path: normalized.to_string(),
+                    size: data.len() as u64,
+                },
+                self.should_skip_wal_for_write(&normalized, data.len() as u64)
+                    .await,
             )
-        } else {
-            None
-        };
+            .await?;
         let result = if self.is_temp_path(&normalized) {
             let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
             let local_path = self.temp_manager.get_user_temp_dir(&self.user_id).join(rel);
@@ -63,13 +57,9 @@ impl ScopedVfsStorageEngine {
                 Err(e) => Err(e),
             }
         };
-        if let Some(id) = wal_id
-            && let Some(wm) = &self.wal_manager
-        {
-            let _ = wm.complete_operation(id).await;
-        }
         match &result {
             Ok(_) => {
+                self.complete_wal(wal_id).await;
                 // Update quota
                 if !skip_quota && diff != 0 {
                     let _ = self.update_quota(diff).await;
@@ -91,6 +81,14 @@ impl ScopedVfsStorageEngine {
         // Record size before deletion for quota update
         let size = info.size as i64;
         let skip_quota = self.is_thumbnail_cache_path(&normalized);
+        let wal_id = self
+            .begin_wal(
+                WalOperation::Delete {
+                    path: normalized.to_string(),
+                },
+                self.should_skip_wal_for_path(&normalized).await,
+            )
+            .await?;
         if self.is_temp_path(&normalized) {
             let local_path = self
                 .temp_manager
@@ -105,6 +103,7 @@ impl ScopedVfsStorageEngine {
                     .await
                     .map_err(VfsError::Io)?;
             }
+            self.complete_wal(wal_id).await;
             return Ok(info);
         }
         match self
@@ -113,6 +112,7 @@ impl ScopedVfsStorageEngine {
             .await
         {
             Ok(_) => {
+                self.complete_wal(wal_id).await;
                 let _ = self
                     .index_service
                     .delete_file(&self.user_id, &normalized)
@@ -200,22 +200,16 @@ impl ScopedVfsStorageEngine {
                 self.check_quota(diff).await?;
             }
         }
-        let wal_id = if let Some(wm) = &self.wal_manager
-            && !self.should_skip_wal(&normalized, data.len() as u64).await
-        {
-            Some(
-                wm.log_operation(
-                    &self.user_id,
-                    WalOperation::Write {
-                        path: normalized.to_string(),
-                        size: data.len() as u64,
-                    },
-                )
-                .await?,
+        let wal_id = self
+            .begin_wal(
+                WalOperation::Write {
+                    path: normalized.to_string(),
+                    size: data.len() as u64,
+                },
+                self.should_skip_wal_for_write(&normalized, data.len() as u64)
+                    .await,
             )
-        } else {
-            None
-        };
+            .await?;
         let mut content = match self.pool.read(&physical_path).await {
             Ok((d, _)) => d.to_vec(),
             Err(_) => Vec::new(),
@@ -233,13 +227,9 @@ impl ScopedVfsStorageEngine {
             ));
         }
         let result = self.pool.write(&physical_path, Bytes::from(content)).await;
-        if let Some(id) = wal_id
-            && let Some(wm) = &self.wal_manager
-        {
-            let _ = wm.complete_operation(id).await;
-        }
         match result {
             Ok(info) => {
+                self.complete_wal(wal_id).await;
                 // Update quota
                 if !skip_quota && diff > 0 {
                     let _ = self.update_quota(diff).await;
@@ -260,21 +250,14 @@ impl ScopedVfsStorageEngine {
     pub(super) async fn create_dir_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
-        let wal_id = if let Some(wm) = &self.wal_manager
-            && !self.should_skip_wal(&normalized, 0).await
-        {
-            Some(
-                wm.log_operation(
-                    &self.user_id,
-                    WalOperation::CreateDir {
-                        path: normalized.to_string(),
-                    },
-                )
-                .await?,
+        let wal_id = self
+            .begin_wal(
+                WalOperation::CreateDir {
+                    path: normalized.to_string(),
+                },
+                self.should_skip_wal_for_path(&normalized).await,
             )
-        } else {
-            None
-        };
+            .await?;
         if self.is_temp_path(&normalized) {
             tokio::fs::create_dir_all(
                 self.temp_manager
@@ -283,22 +266,14 @@ impl ScopedVfsStorageEngine {
             )
             .await
             .map_err(VfsError::Io)?;
-            if let Some(id) = wal_id
-                && let Some(wm) = &self.wal_manager
-            {
-                let _ = wm.complete_operation(id).await;
-            }
+            self.complete_wal(wal_id).await;
             return self.stat_impl(path).await;
         }
         let physical_path = self.get_physical_path(&normalized).await?;
         let result = self.pool.create_dir(&physical_path).await;
-        if let Some(id) = wal_id
-            && let Some(wm) = &self.wal_manager
-        {
-            let _ = wm.complete_operation(id).await;
-        }
         match result {
             Ok(_) => {
+                self.complete_wal(wal_id).await;
                 self.journal_log("MKDIR", &normalized, None, true, None)
                     .await;
                 self.cache.invalidate_parent_ls(&normalized).await;
@@ -318,22 +293,15 @@ impl ScopedVfsStorageEngine {
         self.check_maintenance()?;
         let norm_src = self.validate_file_operation(src).await?;
         let norm_dst = self.validate_file_operation(dst).await?;
-        let wal_id = if let Some(wm) = &self.wal_manager
-            && !self.should_skip_wal(&norm_src, 0).await
-        {
-            Some(
-                wm.log_operation(
-                    &self.user_id,
-                    WalOperation::Move {
-                        src: norm_src.to_string(),
-                        dst: norm_dst.to_string(),
-                    },
-                )
-                .await?,
+        let wal_id = self
+            .begin_wal(
+                WalOperation::Move {
+                    src: norm_src.to_string(),
+                    dst: norm_dst.to_string(),
+                },
+                self.should_skip_wal_for_path(&norm_src).await,
             )
-        } else {
-            None
-        };
+            .await?;
         let result = if self.is_temp_path(&norm_src) == self.is_temp_path(&norm_dst) {
             if self.is_temp_path(&norm_src) {
                 let s = self
@@ -377,13 +345,9 @@ impl ScopedVfsStorageEngine {
             let _ = self.delete_impl(src).await;
             Ok(info)
         };
-        if let Some(id) = wal_id
-            && let Some(wm) = &self.wal_manager
-        {
-            let _ = wm.complete_operation(id).await;
-        }
         match &result {
             Ok(_) => {
+                self.complete_wal(wal_id).await;
                 self.journal_log("MOVE", &norm_src, Some(&norm_dst), true, None)
                     .await
             }
