@@ -866,6 +866,110 @@ impl WriteCacheManager {
             });
     }
 
+    async fn sync_directory_index(&self, task: DirectoryIndexSyncTask) -> anyhow::Result<()> {
+        let task_key = format!("{}\n{}", task.user_id, task.logical_parent_path);
+        let entries = self.list_directory_entries(task.physical_parent_path.as_ref()).await?;
+        let now = chrono::Utc::now();
+        let models = entries
+            .into_iter()
+            .filter_map(|info| {
+                let logical_path = self.physical_to_logical_path(task.user_id.as_ref(), info.path.as_ref())?;
+                if !self.policy.allows(&logical_path) {
+                    return None;
+                }
+                Some(file_index::ActiveModel {
+                    id: Set(uuid::Uuid::now_v7().to_string()),
+                    user_id: Set(task.user_id.to_string()),
+                    parent_path: Set(task.logical_parent_path.to_string()),
+                    name: Set(info.name.to_string()),
+                    path: Set(logical_path.clone()),
+                    is_dir: Set(info.is_dir),
+                    storage_id: Set(Some(self.pool_name.to_string())),
+                    backend_type: Set(Some(self.backend_type.to_string())),
+                    backend_key: Set(Some(info.path.to_string())),
+                    size: Set(info.size as i64),
+                    file_updated_at: Set(info.modified.map(|dt| dt.into())),
+                    row_updated_at: Set(now.into()),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let index_service = FileIndexService::new(Arc::clone(&self.db));
+        if let Err(err) = index_service
+            .sync_directory_optimized(task.user_id.as_ref(), task.logical_parent_path.as_ref(), models)
+            .await
+        {
+            self.index_sync_dirs.insert(
+                task_key,
+                DirectoryIndexSyncTask {
+                    next_sync_at: now_ts() + self.retry_delay_secs(task.retry_count.saturating_add(1), false),
+                    retry_count: task.retry_count.saturating_add(1),
+                    ..task
+                },
+            );
+            return Err(err.into());
+        }
+        self.index_sync_dirs.remove(&task_key);
+        self.clear_dirty_markers(task.physical_parent_path.as_ref());
+        Ok(())
+    }
+
+    async fn list_directory_entries(&self, physical_parent_path: &str) -> anyhow::Result<Vec<VfsFileInfo>> {
+        use futures::StreamExt;
+        let list_path = if !physical_parent_path.is_empty() && !physical_parent_path.ends_with('/') {
+            format!("{}/", physical_parent_path)
+        } else {
+            physical_parent_path.to_string()
+        };
+        let mut lister = self.primary.lister(&list_path).await?;
+        let mut result = Vec::new();
+        while let Some(entry_res) = lister.next().await {
+            let entry = entry_res?;
+            let meta = entry.metadata();
+            let entry_path = normalize_entry_path(entry.path()).to_string();
+            let info = if meta.last_modified().is_none() || (meta.is_file() && meta.content_length() == 0)
+            {
+                match self.primary.stat(entry.path()).await {
+                    Ok(stat) => to_vfs_file_info(&entry_path, &stat),
+                    Err(_) => to_vfs_file_info(&entry_path, &meta),
+                }
+            } else {
+                to_vfs_file_info(&entry_path, &meta)
+            };
+            result.push(info);
+        }
+        Ok(result)
+    }
+
+    fn physical_to_logical_path(&self, user_id: &str, physical_path: &str) -> Option<String> {
+        if physical_path == user_id {
+            return Some("/".to_string());
+        }
+        let prefix = format!("{}/", user_id);
+        let stripped = physical_path.strip_prefix(&prefix)?;
+        Some(format!("/{}", stripped.trim_start_matches('/')).trim_end_matches('/').to_string())
+    }
+
+    fn clear_dirty_markers(&self, physical_parent_path: &str) {
+        self.dirty_dirs.remove(physical_parent_path);
+        let keys: Vec<String> = self
+            .dirty_paths
+            .iter()
+            .filter_map(|entry| {
+                let path = entry.key();
+                let parent = Path::new(path)
+                    .parent()
+                    .map(|v| v.to_string_lossy().to_string())
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| "/".to_string());
+                (parent == physical_parent_path).then(|| path.clone())
+            })
+            .collect();
+        for key in keys {
+            self.dirty_paths.remove(&key);
+        }
+    }
+
     fn retry_delay_secs(&self, retry_count: u32, abnormal_logged: bool) -> i64 {
         let base = (self.flush_interval_ms / 1000).max(1) as i64;
         let exp = 1_i64 << retry_count.saturating_sub(1).min(6);
