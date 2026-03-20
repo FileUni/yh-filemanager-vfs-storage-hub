@@ -969,11 +969,16 @@ impl WriteCacheManager {
             })
             .collect();
         let index_service = FileIndexService::new(Arc::clone(&self.db));
+        let chunk_size = crate::config::get_vfs_hub_config()
+            .await
+            .get_file_index()
+            .get_effective_max_files_per_refresh() as usize;
         if let Err(err) = index_service
             .sync_directory_optimized(
                 task.user_id.as_ref(),
                 task.logical_parent_path.as_ref(),
                 models,
+                chunk_size,
             )
             .await
         {

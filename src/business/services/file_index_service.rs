@@ -1016,6 +1016,7 @@ impl FileIndexService {
         user_id: &str,
         parent_path: &str,
         items: Vec<file_index::ActiveModel>,
+        chunk_size: usize,
     ) -> Result<(), DbErr> {
         let parent_path = if parent_path == "/" {
             "/"
@@ -1035,7 +1036,8 @@ impl FileIndexService {
         let sync_start = chrono::Utc::now() - chrono::Duration::seconds(1);
         let txn = self.db.begin().await?;
         // Execute Batch Upsert in chunks
-        for chunk in items.chunks(500) {
+        let chunk_size = chunk_size.max(1);
+        for chunk in items.chunks(chunk_size) {
             file_index::Entity::insert_many(chunk.to_vec())
                 .on_conflict(
                     sea_orm::sea_query::OnConflict::columns(vec![
@@ -1078,7 +1080,7 @@ impl FileIndexService {
         parent_path: &str,
         physical_items: Vec<file_index::ActiveModel>,
     ) -> Result<(), DbErr> {
-        self.sync_directory_optimized(user_id, parent_path, physical_items)
+        self.sync_directory_optimized(user_id, parent_path, physical_items, 500)
             .await
     }
 }

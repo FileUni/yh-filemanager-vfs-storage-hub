@@ -95,11 +95,7 @@ impl ScopedVfsStorageEngine {
         let info = self.stat_impl(&normalized).await?;
         let timestamp = chrono::Utc::now().timestamp();
         let trash_path = format!("/.recycle_bin/{}_{}", timestamp, info.name);
-        if !self.exists_impl("/.recycle_bin").await.unwrap_or(false) {
-            self.pool
-                .create_dir_all(&self.get_physical_path("/.recycle_bin").await?)
-                .await?;
-        }
+        self.ensure_recycle_bin_initialized().await?;
         let wal_id = self
             .begin_wal(
                 crate::vfs::wal::WalOperation::MoveToTrash {
@@ -248,8 +244,13 @@ impl ScopedVfsStorageEngine {
         // Prepare batch upsert.
         let mut active_models = Vec::with_capacity(p_entries.len());
         let now = chrono::Utc::now();
+        let chunk_size = crate::config::get_vfs_hub_config()
+            .await
+            .get_file_index()
+            .get_effective_max_files_per_refresh() as usize;
         let storage_id = self.pool.config.get_name().to_string();
         let backend_type = self.pool.get_backend_type();
+        let mut translated_entries = Vec::with_capacity(p_entries.len());
         let norm_path = if normalized == "/" {
             "/"
         } else {
@@ -257,6 +258,7 @@ impl ScopedVfsStorageEngine {
         };
         let norm_path_slash = format!("{}/", norm_path);
         for e in p_entries {
+            let backend_key = e.path.to_string();
             let translated = self.translate_file_info(e, false);
             if self.is_thumbnail_cache_path(translated.path.as_ref()) {
                 continue;
@@ -275,7 +277,7 @@ impl ScopedVfsStorageEngine {
             if parent != norm_path {
                 continue;
             }
-            let backend_key = self.get_physical_path(trans_path).await?;
+            translated_entries.push(translated.clone());
             active_models.push(crate::business::entities::file_index::ActiveModel {
                 id: sea_orm::ActiveValue::Set(uuid::Uuid::now_v7().to_string()),
                 user_id: sea_orm::ActiveValue::Set(self.user_id.to_string()),
@@ -296,32 +298,13 @@ impl ScopedVfsStorageEngine {
         }
         // Sync.
         self.index_service
-            .sync_directory_optimized(&self.user_id, &normalized, active_models)
+            .sync_directory_optimized(&self.user_id, &normalized, active_models, chunk_size)
             .await
             .map_err(|e| VfsError::Internal(e.to_string()))?;
         // Invalidate cache.
         self.cache.invalidate("ls", &normalized).await;
-        // Re-fetch merged list from DB.
-        let merged_entries = self
-            .index_service
-            .list_files(&self.user_id, &normalized)
-            .await
-            .map_err(|e| VfsError::Internal(e.to_string()))?;
-        Ok(merged_entries
-            .into_iter()
-            .map(|e| VfsFileInfo {
-                name: e.name.into(),
-                path: e.path.into(),
-                is_dir: e.is_dir,
-                size: e.size as u64,
-                modified: e.file_updated_at.map(|t| t.into()),
-                favorite_color: e.favorite_color,
-                has_active_share: None,
-                has_active_direct: None,
-                trashed_at: e.file_trashed_at.map(|t| t.into()),
-                original_path: e.original_path.map(|p| p.into()),
-            })
-            .collect())
+        translated_entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(translated_entries)
     }
     pub(super) fn get_recursive_size_impl(&self, path: &str) -> BoxFuture<'static, VfsResult<i64>> {
         let service = Arc::clone(&self.index_service);
