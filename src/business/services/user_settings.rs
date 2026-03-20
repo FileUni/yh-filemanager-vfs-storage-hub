@@ -2,6 +2,31 @@ use super::super::entities::user_settings;
 use super::VfsCommonResult;
 use chrono::Utc;
 use sea_orm::*;
+
+#[derive(Debug, Clone, Default)]
+pub struct UserSettingsUpdatePatch {
+    pub pool_name: Option<String>,
+    pub storage_quota: Option<i64>,
+    pub storage_used: Option<i64>,
+    pub thumbnail_disable_text: Option<bool>,
+    pub thumbnail_disable_markdown: Option<bool>,
+    pub thumbnail_disable_pdf: Option<bool>,
+    pub thumbnail_disable_image: Option<bool>,
+    pub thumbnail_disable_video: Option<bool>,
+    pub thumbnail_disable_audio: Option<bool>,
+    pub thumbnail_disable_office: Option<bool>,
+    pub thumbnail_disable_tex: Option<bool>,
+    pub sftp_enable_password: Option<bool>,
+    pub s3_access_key: Option<Option<String>>,
+    pub s3_secret_key: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct S3CredentialLookup {
+    pub user_id: String,
+    pub secret_key: Option<String>,
+}
+
 pub struct UserSettingsService;
 impl UserSettingsService {
     ///()
@@ -53,6 +78,99 @@ impl UserSettingsService {
     ) -> VfsCommonResult<Option<user_settings::Model>> {
         let settings = user_settings::Entity::find_by_id(user_id).one(db).await?;
         Ok(settings)
+    }
+    pub async fn update_user_settings_patch(
+        db: &DatabaseConnection,
+        user_id: &str,
+        patch: &UserSettingsUpdatePatch,
+    ) -> VfsCommonResult<()> {
+        use sea_orm::sea_query::Expr;
+
+        let mut update = user_settings::Entity::update_many()
+            .filter(user_settings::Column::UserId.eq(user_id));
+
+        if let Some(pool_name) = patch.pool_name.as_deref() {
+            update = update.col_expr(user_settings::Column::PoolName, Expr::value(pool_name));
+        }
+        if let Some(storage_quota) = patch.storage_quota {
+            update = update.col_expr(
+                user_settings::Column::StorageQuota,
+                Expr::value(storage_quota),
+            );
+        }
+        if let Some(storage_used) = patch.storage_used {
+            update = update.col_expr(user_settings::Column::StorageUsed, Expr::value(storage_used));
+        }
+        if let Some(value) = patch.thumbnail_disable_text {
+            update = update.col_expr(
+                user_settings::Column::ThumbnailDisableText,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = patch.thumbnail_disable_markdown {
+            update = update.col_expr(
+                user_settings::Column::ThumbnailDisableMarkdown,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = patch.thumbnail_disable_pdf {
+            update = update.col_expr(
+                user_settings::Column::ThumbnailDisablePdf,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = patch.thumbnail_disable_image {
+            update = update.col_expr(
+                user_settings::Column::ThumbnailDisableImage,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = patch.thumbnail_disable_video {
+            update = update.col_expr(
+                user_settings::Column::ThumbnailDisableVideo,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = patch.thumbnail_disable_audio {
+            update = update.col_expr(
+                user_settings::Column::ThumbnailDisableAudio,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = patch.thumbnail_disable_office {
+            update = update.col_expr(
+                user_settings::Column::ThumbnailDisableOffice,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = patch.thumbnail_disable_tex {
+            update = update.col_expr(
+                user_settings::Column::ThumbnailDisableTex,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = patch.sftp_enable_password {
+            update = update.col_expr(
+                user_settings::Column::SftpEnablePassword,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = &patch.s3_access_key {
+            update = update.col_expr(
+                user_settings::Column::S3AccessKey,
+                Expr::value(value.as_deref()),
+            );
+        }
+        if let Some(value) = &patch.s3_secret_key {
+            update = update.col_expr(
+                user_settings::Column::S3SecretKey,
+                Expr::value(value.as_deref()),
+            );
+        }
+
+        update = update.col_expr(user_settings::Column::UpdatedAt, Expr::value(Utc::now()));
+        update.exec(db).await?;
+        Ok(())
     }
     pub async fn update_storage_quota(
         db: &DatabaseConnection,
@@ -116,6 +234,26 @@ impl UserSettingsService {
             .await?;
         Ok(())
     }
+    pub async fn find_s3_credentials_by_access_key(
+        db: &DatabaseConnection,
+        access_key: &str,
+    ) -> VfsCommonResult<Option<S3CredentialLookup>> {
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QuerySelect};
+
+        let row = user_settings::Entity::find()
+            .select_only()
+            .column(user_settings::Column::UserId)
+            .column(user_settings::Column::S3SecretKey)
+            .filter(user_settings::Column::S3AccessKey.eq(access_key))
+            .into_tuple::<(String, Option<String>)>()
+            .one(db)
+            .await?;
+
+        Ok(row.map(|(user_id, secret_key)| S3CredentialLookup {
+            user_id,
+            secret_key,
+        }))
+    }
     /// Regenerate S3 keys
     pub async fn regenerate_s3_keys(
         db: &DatabaseConnection,
@@ -136,22 +274,12 @@ impl UserSettingsService {
             .one(db)
             .await?
             .ok_or_else(|| sea_orm::DbErr::RecordNotFound("User settings not found".to_string()))?;
-        user_settings::Entity::update_many()
-            .col_expr(
-                user_settings::Column::S3AccessKey,
-                sea_orm::sea_query::Expr::value(Some(access_key.as_str())),
-            )
-            .col_expr(
-                user_settings::Column::S3SecretKey,
-                sea_orm::sea_query::Expr::value(Some(secret_key.as_str())),
-            )
-            .col_expr(
-                user_settings::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(Utc::now()),
-            )
-            .filter(user_settings::Column::UserId.eq(settings.user_id.as_str()))
-            .exec(db)
-            .await?;
+        let patch = UserSettingsUpdatePatch {
+            s3_access_key: Some(Some(access_key.clone())),
+            s3_secret_key: Some(Some(secret_key.clone())),
+            ..Default::default()
+        };
+        Self::update_user_settings_patch(db, settings.user_id.as_str(), &patch).await?;
         Ok((access_key, secret_key))
     }
 }
