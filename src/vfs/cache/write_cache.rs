@@ -953,7 +953,7 @@ impl WriteCacheManager {
             .list_directory_entries(task.physical_parent_path.as_ref())
             .await?;
         let now = chrono::Utc::now();
-        let models = entries
+        let models: Vec<file_index::ActiveModel> = entries
             .into_iter()
             .filter_map(|info| {
                 let logical_path =
@@ -985,6 +985,8 @@ impl WriteCacheManager {
             .await
             .get_file_index()
             .get_effective_max_files_per_refresh() as usize;
+        let rows = models.len() as u64;
+        let chunk_count = rows.div_ceil(chunk_size.max(1) as u64);
         if let Err(err) = index_service
             .sync_directory_optimized(
                 task.user_id.as_ref(),
@@ -994,6 +996,7 @@ impl WriteCacheManager {
             )
             .await
         {
+            global_vfs_metrics().record_index_sync_failed();
             if !self.index_sync_dirs.contains_key(&task_key) {
                 self.index_sync_dirs.insert(
                     task_key,
@@ -1007,6 +1010,7 @@ impl WriteCacheManager {
             }
             return Err(err.into());
         }
+        global_vfs_metrics().record_index_sync_completed(rows, chunk_count);
         if !self.index_sync_dirs.contains_key(&task_key) {
             self.clear_dirty_markers(task.physical_parent_path.as_ref());
         }
@@ -1025,6 +1029,7 @@ impl WriteCacheManager {
             UserSettingsService::update_storage_used(&self.db, task.user_id.as_ref(), task.delta)
                 .await
         {
+            global_vfs_metrics().record_quota_sync_failed();
             self.quota_sync_users
                 .entry(user_key)
                 .and_modify(|current| {
@@ -1042,6 +1047,7 @@ impl WriteCacheManager {
                 });
             return Err(err.into());
         }
+        global_vfs_metrics().record_quota_sync_success();
         Ok(())
     }
 

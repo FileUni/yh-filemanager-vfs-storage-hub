@@ -1,7 +1,7 @@
 use super::CachePathPolicy;
 use crate::config::VfsReadCacheConfig;
-use crate::vfs::global_vfs_metrics;
 use crate::vfs::VfsFileInfo;
+use crate::vfs::global_vfs_metrics;
 use bytes::Bytes;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
