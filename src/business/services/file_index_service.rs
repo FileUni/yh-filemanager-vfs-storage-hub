@@ -171,6 +171,141 @@ impl FileIndexService {
         )
         .flatten()
     }
+    pub fn search_files_stream_with_page_size(
+        &self,
+        user_id: String,
+        query: String,
+        page_size: u64,
+    ) -> impl futures::Stream<Item = Result<file_index::Model, DbErr>> + 'static {
+        let db = Arc::clone(&self.db);
+        let page_size = page_size.max(1);
+        futures::stream::unfold(
+            (user_id, query, 1u64, true),
+            move |(uid, kw, page, has_more)| {
+                let db = Arc::clone(&db);
+                let page_size = page_size;
+                async move {
+                    if !has_more {
+                        return None;
+                    }
+                    let offset = (page - 1) * page_size;
+                    let res = file_index::Entity::find()
+                        .filter(file_index::Column::UserId.eq(uid.as_str()))
+                        .filter(file_index::Column::Name.contains(kw.as_str()))
+                        .filter(file_index::Column::RowDeletedAt.is_null())
+                        .filter(file_index::Column::FileTrashedAt.is_null())
+                        .order_by_desc(file_index::Column::IsDir)
+                        .order_by_asc(file_index::Column::Name)
+                        .limit(page_size)
+                        .offset(offset)
+                        .all(&*db)
+                        .await;
+                    match res {
+                        Ok(items) => {
+                            let next_has_more = items.len() == page_size as usize;
+                            let next_state = (uid, kw, page + 1, next_has_more);
+                            let results: Vec<Result<file_index::Model, DbErr>> =
+                                items.into_iter().map(Ok).collect();
+                            Some((futures::stream::iter(results), next_state))
+                        }
+                        Err(e) => {
+                            Some((futures::stream::iter(vec![Err(e)]), (uid, kw, page, false)))
+                        }
+                    }
+                }
+            },
+        )
+        .flatten()
+    }
+    pub fn list_favorites_stream_with_page_size(
+        &self,
+        user_id: String,
+        color_filter: Option<i32>,
+        page_size: u64,
+    ) -> impl futures::Stream<Item = Result<file_index::Model, DbErr>> + 'static {
+        let db = Arc::clone(&self.db);
+        let page_size = page_size.max(1);
+        futures::stream::unfold(
+            (user_id, color_filter, 1u64, true),
+            move |(uid, color, page, has_more)| {
+                let db = Arc::clone(&db);
+                let page_size = page_size;
+                async move {
+                    if !has_more {
+                        return None;
+                    }
+                    let offset = (page - 1) * page_size;
+                    let mut query = file_index::Entity::find()
+                        .filter(file_index::Column::UserId.eq(uid.as_str()))
+                        .filter(file_index::Column::FavoriteColor.gt(0))
+                        .filter(file_index::Column::FileTrashedAt.is_null())
+                        .filter(file_index::Column::RowDeletedAt.is_null())
+                        .order_by_desc(file_index::Column::IsDir)
+                        .order_by_asc(file_index::Column::Name)
+                        .limit(page_size)
+                        .offset(offset);
+                    if let Some(color) = color {
+                        query = query.filter(file_index::Column::FavoriteColor.eq(color));
+                    }
+                    let res = query.all(&*db).await;
+                    match res {
+                        Ok(items) => {
+                            let next_has_more = items.len() == page_size as usize;
+                            let next_state = (uid, color, page + 1, next_has_more);
+                            let results: Vec<Result<file_index::Model, DbErr>> =
+                                items.into_iter().map(Ok).collect();
+                            Some((futures::stream::iter(results), next_state))
+                        }
+                        Err(e) => Some((
+                            futures::stream::iter(vec![Err(e)]),
+                            (uid, color, page, false),
+                        )),
+                    }
+                }
+            },
+        )
+        .flatten()
+    }
+    pub fn list_trash_stream_with_page_size(
+        &self,
+        user_id: String,
+        page_size: u64,
+    ) -> impl futures::Stream<Item = Result<file_index::Model, DbErr>> + 'static {
+        let db = Arc::clone(&self.db);
+        let page_size = page_size.max(1);
+        futures::stream::unfold((user_id, 1u64, true), move |(uid, page, has_more)| {
+            let db = Arc::clone(&db);
+            let page_size = page_size;
+            async move {
+                if !has_more {
+                    return None;
+                }
+                let offset = (page - 1) * page_size;
+                let res = file_index::Entity::find()
+                    .filter(file_index::Column::UserId.eq(uid.as_str()))
+                    .filter(file_index::Column::FileTrashedAt.is_not_null())
+                    .filter(file_index::Column::ParentPath.eq("/.recycle_bin"))
+                    .filter(file_index::Column::RowDeletedAt.is_null())
+                    .order_by_desc(file_index::Column::IsDir)
+                    .order_by_desc(file_index::Column::FileTrashedAt)
+                    .limit(page_size)
+                    .offset(offset)
+                    .all(&*db)
+                    .await;
+                match res {
+                    Ok(items) => {
+                        let next_has_more = items.len() == page_size as usize;
+                        let next_state = (uid, page + 1, next_has_more);
+                        let results: Vec<Result<file_index::Model, DbErr>> =
+                            items.into_iter().map(Ok).collect();
+                        Some((futures::stream::iter(results), next_state))
+                    }
+                    Err(e) => Some((futures::stream::iter(vec![Err(e)]), (uid, page, false))),
+                }
+            }
+        })
+        .flatten()
+    }
     /// Count files in directory
     pub async fn count_files(&self, user_id: &str, parent_path: &str) -> Result<i64, DbErr> {
         let count = file_index::Entity::find()
@@ -310,13 +445,14 @@ impl FileIndexService {
         user_id: &str,
         query: &str,
     ) -> Result<Vec<file_index::Model>, DbErr> {
-        file_index::Entity::find()
-            .filter(file_index::Column::UserId.eq(user_id))
-            .filter(file_index::Column::Name.contains(query))
-            .filter(file_index::Column::RowDeletedAt.is_null())
-            .filter(file_index::Column::FileTrashedAt.is_null())
-            .all(&*self.db)
-            .await
+        let mut out = Vec::new();
+        let stream =
+            self.search_files_stream_with_page_size(user_id.to_string(), query.to_string(), 100);
+        futures::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            out.push(item?);
+        }
+        Ok(out)
     }
     /// Count search results
     pub async fn count_search_files(&self, user_id: &str, query: &str) -> Result<i64, DbErr> {
@@ -338,18 +474,27 @@ impl FileIndexService {
         page_size: i64,
     ) -> Result<(Vec<file_index::Model>, i64), DbErr> {
         let offset = (page - 1) * page_size;
-        let files = file_index::Entity::find()
+        let page_size_u64 = page_size.max(1) as u64;
+        let mut files = file_index::Entity::find()
             .filter(file_index::Column::UserId.eq(user_id))
             .filter(file_index::Column::Name.contains(query))
             .filter(file_index::Column::RowDeletedAt.is_null())
             .filter(file_index::Column::FileTrashedAt.is_null())
             .order_by_desc(file_index::Column::IsDir) // Folders first
             .order_by_asc(file_index::Column::Name)
-            .limit(page_size as u64)
+            .limit(page_size_u64 + 1)
             .offset(offset as u64)
             .all(&*self.db)
             .await?;
-        let total = self.count_search_files(user_id, query).await?;
+        let has_more = files.len() > page_size_u64 as usize;
+        if has_more {
+            files.truncate(page_size_u64 as usize);
+        }
+        let total = if !has_more {
+            offset + files.len() as i64
+        } else {
+            self.count_search_files(user_id, query).await?
+        };
         Ok((files, total))
     }
     /// Get file metadata (Stat)
@@ -674,15 +819,14 @@ impl FileIndexService {
         user_id: &str,
         color_filter: Option<i32>,
     ) -> Result<Vec<file_index::Model>, DbErr> {
-        let mut query = file_index::Entity::find()
-            .filter(file_index::Column::UserId.eq(user_id))
-            .filter(file_index::Column::FavoriteColor.gt(0))
-            .filter(file_index::Column::FileTrashedAt.is_null()) // Only show non-trashed items
-            .filter(file_index::Column::RowDeletedAt.is_null());
-        if let Some(color) = color_filter {
-            query = query.filter(file_index::Column::FavoriteColor.eq(color));
+        let mut out = Vec::new();
+        let stream =
+            self.list_favorites_stream_with_page_size(user_id.to_string(), color_filter, 100);
+        futures::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            out.push(item?);
         }
-        query.all(&*self.db).await
+        Ok(out)
     }
     /// List favorite items (paginated, with sorting and search)
     #[allow(clippy::manual_unwrap_or)]
@@ -693,6 +837,7 @@ impl FileIndexService {
         color_filter: Option<i32>,
     ) -> Result<(Vec<file_index::Model>, i64), DbErr> {
         let offset = (params.page - 1) * params.page_size;
+        let page_size_u64 = params.page_size.max(1) as u64;
         let mut query = file_index::Entity::find()
             .filter(file_index::Column::UserId.eq(user_id))
             .filter(file_index::Column::FavoriteColor.gt(0))
@@ -734,14 +879,21 @@ impl FileIndexService {
         } else {
             query.order_by_asc(sort_col)
         };
-        let files = query
-            .limit(params.page_size as u64)
+        let mut files = query
+            .limit(page_size_u64 + 1)
             .offset(offset as u64)
             .all(&*self.db)
             .await?;
-        let total = self
-            .count_favorites_with_filter(user_id, params.keyword, color_filter)
-            .await?;
+        let has_more = files.len() > page_size_u64 as usize;
+        if has_more {
+            files.truncate(page_size_u64 as usize);
+        }
+        let total = if !has_more {
+            offset + files.len() as i64
+        } else {
+            self.count_favorites_with_filter(user_id, params.keyword, color_filter)
+                .await?
+        };
         Ok((files, total))
     }
     /// Count favorite items (with search and color filter)
@@ -776,13 +928,13 @@ impl FileIndexService {
     }
     /// List files in trash (top-level only)
     pub async fn list_trash(&self, user_id: &str) -> Result<Vec<file_index::Model>, DbErr> {
-        file_index::Entity::find()
-            .filter(file_index::Column::UserId.eq(user_id))
-            .filter(file_index::Column::FileTrashedAt.is_not_null())
-            .filter(file_index::Column::ParentPath.eq("/.recycle_bin"))
-            .filter(file_index::Column::RowDeletedAt.is_null())
-            .all(&*self.db)
-            .await
+        let mut out = Vec::new();
+        let stream = self.list_trash_stream_with_page_size(user_id.to_string(), 100);
+        futures::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            out.push(item?);
+        }
+        Ok(out)
     }
     /// Count trash files
     pub async fn count_trash_files(&self, user_id: &str) -> Result<i64, DbErr> {
@@ -803,18 +955,27 @@ impl FileIndexService {
         page_size: i64,
     ) -> Result<(Vec<file_index::Model>, i64), DbErr> {
         let offset = (page - 1) * page_size;
-        let files = file_index::Entity::find()
+        let page_size_u64 = page_size.max(1) as u64;
+        let mut files = file_index::Entity::find()
             .filter(file_index::Column::UserId.eq(user_id))
             .filter(file_index::Column::FileTrashedAt.is_not_null())
             .filter(file_index::Column::ParentPath.eq("/.recycle_bin"))
             .filter(file_index::Column::RowDeletedAt.is_null())
             .order_by_desc(file_index::Column::IsDir) // Folders first
             .order_by_desc(file_index::Column::FileTrashedAt)
-            .limit(page_size as u64)
+            .limit(page_size_u64 + 1)
             .offset(offset as u64)
             .all(&*self.db)
             .await?;
-        let total = self.count_trash_files(user_id).await?;
+        let has_more = files.len() > page_size_u64 as usize;
+        if has_more {
+            files.truncate(page_size_u64 as usize);
+        }
+        let total = if !has_more {
+            offset + files.len() as i64
+        } else {
+            self.count_trash_files(user_id).await?
+        };
         Ok((files, total))
     }
     /// List files in trash (paginated, with sorting and search)
@@ -825,6 +986,7 @@ impl FileIndexService {
         params: VfsPaginationParams<'_>,
     ) -> Result<(Vec<file_index::Model>, i64), DbErr> {
         let offset = (params.page - 1) * params.page_size;
+        let page_size_u64 = params.page_size.max(1) as u64;
         let mut query = file_index::Entity::find()
             .filter(file_index::Column::UserId.eq(user_id))
             .filter(file_index::Column::FileTrashedAt.is_not_null())
@@ -862,14 +1024,21 @@ impl FileIndexService {
         } else {
             query.order_by_asc(sort_col)
         };
-        let files = query
-            .limit(params.page_size as u64)
+        let mut files = query
+            .limit(page_size_u64 + 1)
             .offset(offset as u64)
             .all(&*self.db)
             .await?;
-        let total = self
-            .count_trash_files_with_filter(user_id, params.keyword)
-            .await?;
+        let has_more = files.len() > page_size_u64 as usize;
+        if has_more {
+            files.truncate(page_size_u64 as usize);
+        }
+        let total = if !has_more {
+            offset + files.len() as i64
+        } else {
+            self.count_trash_files_with_filter(user_id, params.keyword)
+                .await?
+        };
         Ok((files, total))
     }
     /// Count trash files (with search filter)
