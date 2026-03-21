@@ -1,6 +1,9 @@
 use super::ScopedVfsStorageEngine;
 use crate::vfs::error::{VfsError, VfsResult};
-use crate::vfs::{LOGICAL_TEMP_PREFIX, VfsFileInfo, VfsMetadata, VfsPaginationParams, VfsStorage};
+use crate::vfs::{
+    LOGICAL_TEMP_PREFIX, VfsFileInfo, VfsMetadata, VfsPaginationParams, VfsStorage,
+    global_vfs_metrics,
+};
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures::Stream;
@@ -100,15 +103,20 @@ impl ScopedVfsStorageEngine {
                 if let Some(last) = last_done.get(&sync_key)
                     && now.saturating_sub(*last.value()) < INDEX_SYNC_DEBOUNCE_SECS
                 {
+                    global_vfs_metrics().record_index_sync_skipped_debounce();
                     return Ok(None);
                 }
                 let inflight = INDEX_SYNC_INFLIGHT.get_or_init(DashMap::new);
                 match inflight.entry(sync_key.clone()) {
-                    dashmap::mapref::entry::Entry::Occupied(_) => return Ok(None),
+                    dashmap::mapref::entry::Entry::Occupied(_) => {
+                        global_vfs_metrics().record_index_sync_skipped_inflight();
+                        return Ok(None);
+                    }
                     dashmap::mapref::entry::Entry::Vacant(entry) => {
                         entry.insert(());
                     }
                 }
+                global_vfs_metrics().record_index_sync_spawned();
                 let self_clone = self.clone_for_async();
                 let path_clone = normalized_path.to_string();
                 tokio::spawn(async move {
@@ -125,6 +133,7 @@ impl ScopedVfsStorageEngine {
                     }
                     let _permit = permit;
                     if let Err(e) = self_clone.sync_index_internal(&path_clone, false).await {
+                        global_vfs_metrics().record_index_sync_failed();
                         yh_console_log::yhlog("error", &format!("Background sync failed: {}", e));
                     }
                     if let Some(last_done) = INDEX_SYNC_LAST_DONE.get() {
@@ -314,7 +323,11 @@ impl ScopedVfsStorageEngine {
                 }) => {
                     let index_service = Arc::clone(&index_service);
                     index_service
-                        .list_files_stream_with_page_size(user_id, normalized, list_stream_page_size())
+                        .list_files_stream_with_page_size(
+                            user_id,
+                            normalized,
+                            list_stream_page_size(),
+                        )
                         .map(|res| {
                             res.map(|e| VfsFileInfo {
                                 name: e.name.into(),

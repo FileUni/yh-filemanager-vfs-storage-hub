@@ -1,9 +1,19 @@
 use super::ScopedVfsStorageEngine;
 use crate::vfs::error::{VfsError, VfsResult};
 use crate::vfs::types::VfsBatchError;
-use crate::vfs::{VfsBatchResult, VfsFileInfo, VfsStorage};
+use crate::vfs::{VfsBatchResult, VfsFileInfo, VfsStorage, global_vfs_metrics};
 use futures::future::BoxFuture;
 use std::sync::Arc;
+
+#[inline]
+fn favorites_page_size() -> u64 {
+    match yh_config_infra::utils::current_hardware_profile() {
+        "low_memory" => 64,
+        "throughput" => 512,
+        _ => 128,
+    }
+}
+
 impl ScopedVfsStorageEngine {
     pub(super) async fn sync_index_internal(
         &self,
@@ -35,6 +45,8 @@ impl ScopedVfsStorageEngine {
             .map_err(|e| VfsError::Internal(e.to_string()))?;
         let mut active_models = Vec::with_capacity(chunk_size.max(1));
         let mut translated_entries = collect_entries.then(Vec::new);
+        let mut synced_entry_count = 0_u64;
+        let mut flushed_chunks = 0_u64;
 
         for e in p_entries {
             let backend_key = e.path.to_string();
@@ -57,6 +69,7 @@ impl ScopedVfsStorageEngine {
             if let Some(entries) = translated_entries.as_mut() {
                 entries.push(translated.clone());
             }
+            synced_entry_count += 1;
             active_models.push(crate::business::entities::file_index::ActiveModel {
                 id: sea_orm::ActiveValue::Set(uuid::Uuid::now_v7().to_string()),
                 user_id: sea_orm::ActiveValue::Set(self.user_id.to_string()),
@@ -79,16 +92,21 @@ impl ScopedVfsStorageEngine {
                     .upsert_directory_chunk_txn(&txn, std::mem::take(&mut active_models))
                     .await
                     .map_err(|e| VfsError::Internal(e.to_string()))?;
+                flushed_chunks += 1;
             }
         }
         self.index_service
             .upsert_directory_chunk_txn(&txn, active_models)
             .await
             .map_err(|e| VfsError::Internal(e.to_string()))?;
+        if synced_entry_count > 0 {
+            flushed_chunks += 1;
+        }
         self.index_service
             .finish_directory_sync_txn(txn, &self.user_id, &normalized, sync_start)
             .await
             .map_err(|e| VfsError::Internal(e.to_string()))?;
+        global_vfs_metrics().record_index_sync_completed(synced_entry_count, flushed_chunks);
         self.cache.invalidate("ls", &normalized).await;
         if let Some(mut entries) = translated_entries {
             entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -128,11 +146,16 @@ impl ScopedVfsStorageEngine {
         &self,
         color_filter: Option<i32>,
     ) -> VfsResult<Vec<VfsFileInfo>> {
-        let list = self
-            .index_service
-            .list_favorites(&self.user_id, color_filter)
-            .await
-            .map_err(|e| VfsError::Internal(e.to_string()))?;
+        let stream = self.index_service.list_favorites_stream_with_page_size(
+            self.user_id.to_string(),
+            color_filter,
+            favorites_page_size(),
+        );
+        let mut list = Vec::new();
+        futures::pin_mut!(stream);
+        while let Some(item) = futures::StreamExt::next(&mut stream).await {
+            list.push(item.map_err(|e| VfsError::Internal(e.to_string()))?);
+        }
         Ok(list
             .into_iter()
             .map(|e| VfsFileInfo {
