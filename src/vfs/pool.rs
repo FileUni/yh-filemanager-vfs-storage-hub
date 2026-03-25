@@ -60,6 +60,13 @@ fn slice_bytes(data: Bytes, start: u64, end: u64) -> Bytes {
 }
 
 #[inline]
+fn clamp_read_range(range: std::ops::Range<u64>, size: u64) -> std::ops::Range<u64> {
+    let start = range.start.min(size);
+    let end = range.end.min(size);
+    start..end.max(start)
+}
+
+#[inline]
 fn should_refresh_entry_metadata(meta: &Metadata) -> bool {
     meta.last_modified().is_none()
 }
@@ -401,7 +408,9 @@ impl VfsStorage for VfsPool {
                 (reader, info)
             }
         };
-        let stream = reader.into_bytes_stream(range).await?;
+        let stream = reader
+            .into_bytes_stream(clamp_read_range(range, info.size))
+            .await?;
         let vfs_stream = stream.map(|res| res.map_err(crate::vfs::error::VfsError::from));
         Ok((Box::pin(vfs_stream), info))
     }
@@ -492,9 +501,11 @@ impl VfsStorage for VfsPool {
         {
             return Ok((slice_bytes(data, start, end), info));
         }
-        match self.primary.read_with(path).range(start..end).await {
-            Ok(data) => {
-                let info = self.stat_with_operator(self.primary.as_ref(), path).await?;
+        let primary_info = self.stat_with_operator(self.primary.as_ref(), path).await;
+        match primary_info {
+            Ok(info) => {
+                let range = clamp_read_range(start..end, info.size);
+                let data = self.primary.read_with(path).range(range).await?;
                 Ok((data.to_bytes(), info))
             }
             Err(err) => {
@@ -503,8 +514,9 @@ impl VfsStorage for VfsPool {
                     return Err(primary_err);
                 };
                 self.log_backup_fallback("read_range", path, &primary_err);
-                let data = backup.read_with(path).range(start..end).await?.to_bytes();
                 let info = self.stat_with_operator(backup.as_ref(), path).await?;
+                let range = clamp_read_range(start..end, info.size);
+                let data = backup.read_with(path).range(range).await?.to_bytes();
                 Ok((data, info))
             }
         }
