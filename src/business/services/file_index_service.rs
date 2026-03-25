@@ -17,6 +17,23 @@ impl FileIndexService {
         &self,
         entry: file_index::ActiveModel,
     ) -> Result<file_index::Model, DbErr> {
+        let user_id = match &entry.user_id {
+            ActiveValue::Set(value) | ActiveValue::Unchanged(value) => value.clone(),
+            ActiveValue::NotSet => {
+                return Err(DbErr::Custom(
+                    "user_id is required for file index upsert".to_string(),
+                ));
+            }
+        };
+        let path = match &entry.path {
+            ActiveValue::Set(value) | ActiveValue::Unchanged(value) => value.clone(),
+            ActiveValue::NotSet => {
+                return Err(DbErr::Custom(
+                    "path is required for file index upsert".to_string(),
+                ));
+            }
+        };
+
         file_index::Entity::insert(entry)
             .on_conflict(
                 sea_orm::sea_query::OnConflict::columns(vec![
@@ -50,8 +67,15 @@ impl FileIndexService {
                 .value(file_index::Column::OriginalPath, Option::<String>::None)
                 .to_owned(),
             )
-            .exec_with_returning(&*self.db)
-            .await
+            .exec(&*self.db)
+            .await?;
+
+        file_index::Entity::find()
+            .filter(file_index::Column::UserId.eq(user_id))
+            .filter(file_index::Column::Path.eq(path))
+            .one(&*self.db)
+            .await?
+            .ok_or_else(|| DbErr::RecordNotFound("Failed to find inserted item".to_string()))
     }
     /// High-level wrapper: upsert file index
     pub async fn upsert_file(
