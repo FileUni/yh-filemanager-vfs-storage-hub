@@ -1,5 +1,6 @@
 pub mod db_init;
 pub mod file_index_service;
+pub mod nextcloud;
 pub mod shares;
 pub mod ssh_keys;
 pub mod types;
