@@ -110,11 +110,7 @@ fn stable_hash_u64(bytes: &[u8]) -> u64 {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
-    if hash == 0 {
-        1
-    } else {
-        hash
-    }
+    if hash == 0 { 1 } else { hash }
 }
 
 #[cfg(test)]

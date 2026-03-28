@@ -64,7 +64,9 @@ pub struct ShareQueryOptions {
     pub enable_direct: Option<bool>,
 }
 impl ShareService {
-    pub fn fallback_file_from_share_snapshot(share: &file_share::Model) -> Option<file_index::Model> {
+    pub fn fallback_file_from_share_snapshot(
+        share: &file_share::Model,
+    ) -> Option<file_index::Model> {
         let path = share.snapshot_path.clone()?;
         let name = share.snapshot_name.clone().unwrap_or_else(|| {
             std::path::Path::new(&path)
