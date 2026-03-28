@@ -13,6 +13,9 @@ opendal = { version = "0.55.0", default-features = false, features = [
     "services-fs",
     "services-s3",
     "services-webdav",
+    "services-dropbox",
+    "services-onedrive",
+    "services-gdrive",
     "services-memory"
 ] }
 reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls-webpki-roots-no-provider"] }

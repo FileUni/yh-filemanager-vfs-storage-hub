@@ -72,14 +72,14 @@ pub struct VfsConnectorConfig {
     )]
     pub name: Option<Arc<str>>,
     #[config(
-        desc_zh = "存储后端驱动类型，可选项: fs(本地文件系统)|android_saf(Android SAF 授权目录)|ios_scoped_fs(iOS 安全作用域目录)|s3(AWS S3兼容)|webdav(WebDAV)|ftp|sftp，默认fs，生产环境推荐s3",
-        desc_en = "Storage backend driver type, options: fs(local filesystem)|android_saf(Android SAF granted directory)|ios_scoped_fs(iOS security-scoped directory)|s3(AWS S3 compatible)|webdav|ftp|sftp, default fs, recommend s3 for production",
+        desc_zh = "存储后端驱动类型，可选项: fs(本地文件系统)|memory(内存)|android_saf(Android SAF 授权目录)|ios_scoped_fs(iOS 安全作用域目录)|s3(AWS S3兼容)|webdav(WebDAV)|dropbox(Dropbox)|onedrive(OneDrive Personal)|gdrive(Google Drive)，默认fs",
+        desc_en = "Storage backend driver type, options: fs(local filesystem)|memory(in-memory)|android_saf(Android SAF granted directory)|ios_scoped_fs(iOS security-scoped directory)|s3(AWS S3 compatible)|webdav|dropbox|onedrive(OneDrive Personal)|gdrive(Google Drive), default fs",
         example = "fs"
     )]
     pub driver: Option<Arc<str>>,
     #[config(
-        desc_zh = "存储根定位：fs=目录路径；s3=根前缀；android_saf=SAF tree uri(content://...)；ios_scoped_fs=bookmark_b64:<BASE64>",
-        desc_en = "Storage root locator: fs=directory path; s3=root prefix; android_saf=SAF tree uri (content://...); ios_scoped_fs=bookmark_b64:<BASE64>",
+        desc_zh = "存储根定位：fs=目录路径；s3/webdav/dropbox/onedrive/gdrive=工作根目录；android_saf=SAF tree uri(content://...)；ios_scoped_fs=bookmark_b64:<BASE64>",
+        desc_en = "Storage root locator: fs=directory path; s3/webdav/dropbox/onedrive/gdrive=working root directory; android_saf=SAF tree uri (content://...); ios_scoped_fs=bookmark_b64:<BASE64>",
         example = "{APPDATADIR}/vfs"
     )]
     pub root: Option<Arc<str>>,
@@ -173,6 +173,24 @@ pub struct VfsPolicyConfig {
         example = "10737418240"
     )]
     pub default_quota: Option<i64>,
+    #[config(
+        desc_zh = "此角色用户允许创建的私有远程挂载数量上限；0 表示不允许自助挂载",
+        desc_en = "Maximum number of private remote mounts allowed for users of this role; 0 disables self-service mounts",
+        example = "3"
+    )]
+    pub max_private_mounts: Option<usize>,
+    #[config(
+        desc_zh = "此角色用户允许设置的最小同步频率（分钟）；用户不能设置得更低",
+        desc_en = "Minimum sync interval in minutes allowed for users of this role; users cannot choose a lower value",
+        example = "5"
+    )]
+    pub min_mount_sync_interval_minutes: Option<u64>,
+    #[config(
+        desc_zh = "此角色用户单次远程挂载同步任务允许的最长执行时间（秒）",
+        desc_en = "Maximum execution time in seconds for a single remote mount sync task for users of this role",
+        example = "900"
+    )]
+    pub max_mount_sync_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
@@ -1887,6 +1905,34 @@ impl VfsStorageHubConfig {
                     )),
                     None => errors.push(format!(
                         "[{}] policies[{}].default_quota is required (number >= 0)",
+                        s, i
+                    )),
+                }
+                if poly.max_private_mounts.is_none() {
+                    errors.push(format!(
+                        "[{}] policies[{}].max_private_mounts is required (number >= 0)",
+                        s, i
+                    ));
+                }
+                match poly.min_mount_sync_interval_minutes {
+                    Some(v) if v > 0 => {}
+                    Some(_) => errors.push(format!(
+                        "[{}] policies[{}].min_mount_sync_interval_minutes must be > 0",
+                        s, i
+                    )),
+                    None => errors.push(format!(
+                        "[{}] policies[{}].min_mount_sync_interval_minutes is required (number > 0)",
+                        s, i
+                    )),
+                }
+                match poly.max_mount_sync_timeout_secs {
+                    Some(v) if v > 0 => {}
+                    Some(_) => errors.push(format!(
+                        "[{}] policies[{}].max_mount_sync_timeout_secs must be > 0",
+                        s, i
+                    )),
+                    None => errors.push(format!(
+                        "[{}] policies[{}].max_mount_sync_timeout_secs is required (number > 0)",
                         s, i
                     )),
                 }
