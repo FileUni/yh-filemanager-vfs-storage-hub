@@ -273,7 +273,7 @@ impl VfsWalManager {
             .order_by_desc(entity::Column::UpdatedAt)
             .paginate(&*self.db, page_size);
         let total = paginator.num_items().await?;
-        let rows = paginator.fetch_page((page - 1) as u64).await?;
+        let rows = paginator.fetch_page(page - 1).await?;
 
         Ok(WalIssueListResult {
             items: rows.into_iter().map(Self::map_issue_record).collect(),

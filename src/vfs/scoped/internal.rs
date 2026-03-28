@@ -308,15 +308,15 @@ impl ScopedVfsStorageEngine {
         let settings = UserSettingsService::get_user_settings(&self.db, &self.user_id)
             .await
             .map_err(|e| VfsError::Internal(e.to_string()))?;
-        if let Some(settings) = settings {
-            if settings.storage_quota > 0 {
-                let projected = settings
-                    .storage_used
-                    .saturating_add(pending_delta)
-                    .saturating_add(additional_size);
-                if projected > settings.storage_quota {
-                    return Err(VfsError::QuotaExceeded);
-                }
+        if let Some(settings) = settings
+            && settings.storage_quota > 0
+        {
+            let projected = settings
+                .storage_used
+                .saturating_add(pending_delta)
+                .saturating_add(additional_size);
+            if projected > settings.storage_quota {
+                return Err(VfsError::QuotaExceeded);
             }
         }
         Ok(())

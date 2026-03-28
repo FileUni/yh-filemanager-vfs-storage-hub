@@ -178,7 +178,7 @@ impl VfsBatchExecutor {
                     }
                 }
                 processed += 1;
-                if processed % 5 == 0 || processed == total {
+                if processed.is_multiple_of(5) || processed == total {
                     update_progress(
                         &task_handler,
                         task_id,
@@ -293,7 +293,7 @@ impl VfsBatchExecutor {
                     }
                 }
                 processed += 1;
-                if processed % 5 == 0 || processed == total {
+                if processed.is_multiple_of(5) || processed == total {
                     update_progress(
                         &task_handler,
                         task_id,
@@ -406,7 +406,7 @@ impl VfsBatchExecutor {
                     }
                 }
                 processed += 1;
-                if processed % 5 == 0 || processed == total {
+                if processed.is_multiple_of(5) || processed == total {
                     update_progress(
                         &task_handler,
                         task_id,

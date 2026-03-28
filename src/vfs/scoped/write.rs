@@ -134,26 +134,25 @@ impl ScopedVfsStorageEngine {
             Ok(_) => {
                 self.mark_wal_physical_done(wal_id).await;
                 let mut metadata_complete = true;
-                if !skip_quota {
-                    if let Err(err) = self
+                if !skip_quota
+                    && let Err(err) = self
                         .index_service
                         .delete_file(&self.user_id, &normalized)
                         .await
-                    {
-                        metadata_complete = false;
-                        self.fail_wal(
-                            wal_id,
-                            &format!("DELETE metadata sync failed for {}: {}", normalized, err),
-                        )
-                        .await;
-                        yh_console_log::yhlog(
-                            "warn",
-                            &format!(
-                                "VFS delete metadata sync failed for user_id={} path={} err={}",
-                                self.user_id, normalized, err
-                            ),
-                        );
-                    }
+                {
+                    metadata_complete = false;
+                    self.fail_wal(
+                        wal_id,
+                        &format!("DELETE metadata sync failed for {}: {}", normalized, err),
+                    )
+                    .await;
+                    yh_console_log::yhlog(
+                        "warn",
+                        &format!(
+                            "VFS delete metadata sync failed for user_id={} path={} err={}",
+                            self.user_id, normalized, err
+                        ),
+                    );
                 }
                 if metadata_complete {
                     self.complete_wal(wal_id).await;
@@ -441,29 +440,27 @@ impl ScopedVfsStorageEngine {
                         self.cache.invalidate_parent_ls(&norm_dst).await;
                         if !self.is_thumbnail_cache_path(&norm_src)
                             && !self.is_thumbnail_cache_path(&norm_dst)
-                        {
-                            if let Err(err) = self
+                            && let Err(err) = self
                                 .index_service
                                 .move_file(&self.user_id, &norm_src, &norm_dst)
                                 .await
-                            {
-                                metadata_complete = false;
-                                self.fail_wal(
-                                    wal_id,
-                                    &format!(
-                                        "MOVE metadata sync failed for {} -> {}: {}",
-                                        norm_src, norm_dst, err
-                                    ),
-                                )
-                                .await;
-                                yh_console_log::yhlog(
-                                    "warn",
-                                    &format!(
-                                        "VFS move metadata sync failed for user_id={} src={} dst={} err={}",
-                                        self.user_id, norm_src, norm_dst, err
-                                    ),
-                                );
-                            }
+                        {
+                            metadata_complete = false;
+                            self.fail_wal(
+                                wal_id,
+                                &format!(
+                                    "MOVE metadata sync failed for {} -> {}: {}",
+                                    norm_src, norm_dst, err
+                                ),
+                            )
+                            .await;
+                            yh_console_log::yhlog(
+                                "warn",
+                                &format!(
+                                    "VFS move metadata sync failed for user_id={} src={} dst={} err={}",
+                                    self.user_id, norm_src, norm_dst, err
+                                ),
+                            );
                         }
                         if metadata_complete {
                             should_complete_wal = true;

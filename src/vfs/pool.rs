@@ -124,13 +124,13 @@ impl VfsPool {
     async fn list_entry_info(&self, operator: &Operator, entry: Entry) -> VfsResult<VfsFileInfo> {
         let meta = entry.metadata();
         let path = normalize_entry_path(entry.path());
-        if should_refresh_entry_metadata(&meta) {
+        if should_refresh_entry_metadata(meta) {
             match operator.stat(entry.path()).await {
                 Ok(stat) => Ok(to_vfs_file_info(path, &stat)),
-                Err(_) => Ok(to_vfs_file_info(path, &meta)),
+                Err(_) => Ok(to_vfs_file_info(path, meta)),
             }
         } else {
-            Ok(to_vfs_file_info(path, &meta))
+            Ok(to_vfs_file_info(path, meta))
         }
     }
 
@@ -333,13 +333,13 @@ impl VfsStorage for VfsPool {
                         let entry = entry_res.map_err(crate::vfs::error::VfsError::from)?;
                         let meta = entry.metadata();
                         let path = normalize_entry_path(entry.path());
-                        if should_refresh_entry_metadata(&meta) {
+                        if should_refresh_entry_metadata(meta) {
                             match operator.stat(entry.path()).await {
                                 Ok(stat) => Ok(to_vfs_file_info(path, &stat)),
-                                Err(_) => Ok(to_vfs_file_info(path, &meta)),
+                                Err(_) => Ok(to_vfs_file_info(path, meta)),
                             }
                         } else {
-                            Ok(to_vfs_file_info(path, &meta))
+                            Ok(to_vfs_file_info(path, meta))
                         }
                     }
                 }))

@@ -374,7 +374,7 @@ impl ScopedVfsStorageEngine {
             .get_effective_max_concurrent_tasks()
             .max(1);
         let mut result = VfsBatchResult::default();
-        let mut stream = futures::stream::iter(paths.iter().cloned().map(|path| {
+        let mut stream = futures::stream::iter(paths.iter().map(std::borrow::ToOwned::to_owned).map(|path| {
             let engine = self.clone_for_async();
             async move {
                 let result = engine.delete_impl(&path).await;
@@ -406,7 +406,7 @@ impl ScopedVfsStorageEngine {
             .max(1);
         let mut result = VfsBatchResult::default();
         let dst_dir = dst_dir.to_string();
-        let mut stream = futures::stream::iter(src_paths.iter().cloned().map(|src| {
+        let mut stream = futures::stream::iter(src_paths.iter().map(std::borrow::ToOwned::to_owned).map(|src| {
             let engine = self.clone_for_async();
             let dst_dir = dst_dir.clone();
             async move {

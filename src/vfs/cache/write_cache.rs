@@ -294,13 +294,16 @@ impl WriteCacheManager {
         }
         let blob = self
             .store_blob(
-                physical_path,
-                user_id,
-                logical_path,
-                modified_at,
-                deadline_at,
-                1,
-                false,
+                &PendingWriteDiskMeta {
+                    user_id: user_id.to_string(),
+                    logical_path: logical_path.to_string(),
+                    physical_path: physical_path.to_string(),
+                    size: data.len() as u64,
+                    modified_at,
+                    deadline_at,
+                    generation: 1,
+                    abnormal: false,
+                },
                 &data,
             )
             .await?;
@@ -324,7 +327,7 @@ impl WriteCacheManager {
         });
         let guard = record.inner.lock().await;
         self.accounted_bytes
-            .fetch_add(self.accounted_bytes_for_blob(&*guard), Ordering::SeqCst);
+            .fetch_add(self.accounted_bytes_for_blob(&guard), Ordering::SeqCst);
         drop(guard);
         self.entries.insert(physical_path.to_string(), record);
         self.mark_dirty(logical_path, physical_path, user_id);
@@ -589,7 +592,7 @@ impl WriteCacheManager {
     async fn can_admit(&self, physical_path: &str, new_size: u64) -> bool {
         let existing_accounted = if let Some(entry) = self.entries.get(physical_path) {
             let guard = entry.value().inner.lock().await;
-            let accounted = self.accounted_bytes_for_blob(&*guard);
+            let accounted = self.accounted_bytes_for_blob(&guard);
             drop(guard);
             accounted
         } else {
@@ -648,13 +651,16 @@ impl WriteCacheManager {
             (WriteCacheBackend::LocalDir, PendingWriteBlob::Memory(_)) => {
                 let blob = self
                     .store_blob(
-                        physical_path,
-                        entry.user_id.as_ref(),
-                        entry.logical_path.as_ref(),
-                        modified_at,
-                        deadline_at,
-                        inner.generation,
-                        false,
+                        &PendingWriteDiskMeta {
+                            user_id: entry.user_id.to_string(),
+                            logical_path: entry.logical_path.to_string(),
+                            physical_path: physical_path.to_string(),
+                            size: data.len() as u64,
+                            modified_at,
+                            deadline_at,
+                            generation: inner.generation,
+                            abnormal: false,
+                        },
                         &data,
                     )
                     .await?;
@@ -674,40 +680,21 @@ impl WriteCacheManager {
 
     async fn store_blob(
         &self,
-        physical_path: &str,
-        user_id: &str,
-        logical_path: &str,
-        modified_at: i64,
-        deadline_at: i64,
-        generation: u64,
-        abnormal: bool,
+        meta: &PendingWriteDiskMeta,
         data: &Bytes,
     ) -> anyhow::Result<PendingWriteBlob> {
         match self.backend {
-            WriteCacheBackend::Memory if !abnormal => Ok(PendingWriteBlob::Memory(data.clone())),
+            WriteCacheBackend::Memory if !meta.abnormal => Ok(PendingWriteBlob::Memory(data.clone())),
             _ => {
-                let base_dir = if abnormal {
+                let base_dir = if meta.abnormal {
                     &self.abnormal_dir
                 } else {
                     &self.queue_dir
                 };
                 tokio::fs::create_dir_all(base_dir).await?;
-                let file_path = data_path(base_dir, physical_path);
+                let file_path = data_path(base_dir, &meta.physical_path);
                 tokio::fs::write(&file_path, data).await?;
-                self.write_disk_meta(
-                    &file_path,
-                    &PendingWriteDiskMeta {
-                        user_id: user_id.to_string(),
-                        logical_path: logical_path.to_string(),
-                        physical_path: physical_path.to_string(),
-                        size: data.len() as u64,
-                        modified_at,
-                        deadline_at,
-                        generation,
-                        abnormal,
-                    },
-                )
-                .await?;
+                self.write_disk_meta(&file_path, meta).await?;
                 Ok(PendingWriteBlob::Disk(file_path))
             }
         }
@@ -825,7 +812,7 @@ impl WriteCacheManager {
             });
             let guard = record.inner.lock().await;
             self.accounted_bytes
-                .fetch_add(self.accounted_bytes_for_blob(&*guard), Ordering::SeqCst);
+                .fetch_add(self.accounted_bytes_for_blob(&guard), Ordering::SeqCst);
             drop(guard);
             self.entries.insert(meta.physical_path.clone(), record);
             self.mark_dirty(&meta.logical_path, &meta.physical_path, &meta.user_id);
@@ -1073,10 +1060,10 @@ impl WriteCacheManager {
             {
                 match self.primary.stat(entry.path()).await {
                     Ok(stat) => to_vfs_file_info(&entry_path, &stat),
-                    Err(_) => to_vfs_file_info(&entry_path, &meta),
+                    Err(_) => to_vfs_file_info(&entry_path, meta),
                 }
             } else {
-                to_vfs_file_info(&entry_path, &meta)
+                to_vfs_file_info(&entry_path, meta)
             };
             result.push(info);
         }
