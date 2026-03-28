@@ -1170,6 +1170,314 @@ impl VfsMaintenanceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsThumbnailToolConfig {
+    #[config(
+        desc_zh = "libvips 可执行命令或绝对路径。默认建议使用命令名 \"vips\"（依赖系统 PATH）；Windows 常见路径：C:/Program Files/vips-dev/bin/vips.exe，Linux 常见路径：/usr/bin/vips",
+        desc_en = "libvips executable command or absolute path. Default recommended value is command name \"vips\" (resolved via system PATH); common Windows path: C:/Program Files/vips-dev/bin/vips.exe, common Linux path: /usr/bin/vips",
+        example = "vips"
+    )]
+    pub vips_path: Option<String>,
+    #[config(
+        desc_zh = "ImageMagick 可执行命令或绝对路径。默认建议使用命令名 \"convert\"（依赖系统 PATH）；Windows 常见路径：C:/Program Files/ImageMagick-7.*/magick.exe（新版本常用 magick 子命令），Linux 常见路径：/usr/bin/convert",
+        desc_en = "ImageMagick executable command or absolute path. Default recommended value is command name \"convert\" (resolved via system PATH); common Windows path: C:/Program Files/ImageMagick-7.*/magick.exe (new versions commonly use magick subcommand), common Linux path: /usr/bin/convert",
+        example = "convert"
+    )]
+    pub imagemagick_path: Option<String>,
+    #[config(
+        desc_zh = "FFmpeg 可执行命令或绝对路径。默认建议使用命令名 \"ffmpeg\"（依赖系统 PATH）；Windows 常见路径：C:/ffmpeg/bin/ffmpeg.exe，Linux 常见路径：/usr/bin/ffmpeg",
+        desc_en = "FFmpeg executable command or absolute path. Default recommended value is command name \"ffmpeg\" (resolved via system PATH); common Windows path: C:/ffmpeg/bin/ffmpeg.exe, common Linux path: /usr/bin/ffmpeg",
+        example = "ffmpeg"
+    )]
+    pub ffmpeg_path: Option<String>,
+    #[config(
+        desc_zh = "LibreOffice 可执行命令或绝对路径（用于 Office 文档缩略图）。默认建议使用命令名 \"soffice\"（依赖系统 PATH）；Windows 常见路径：C:/Program Files/LibreOffice/program/soffice.exe，Linux 常见路径：/usr/bin/soffice",
+        desc_en = "LibreOffice executable command or absolute path (for Office thumbnails). Default recommended value is command name \"soffice\" (resolved via system PATH); common Windows path: C:/Program Files/LibreOffice/program/soffice.exe, common Linux path: /usr/bin/soffice",
+        example = "soffice"
+    )]
+    pub libreoffice_path: Option<String>,
+}
+
+impl VfsThumbnailToolConfig {
+    pub fn get_vips_path(&self) -> &str {
+        yh_config_infra::config_require_str!(self.vips_path, "vfs_storage_hub", "thumbnail.tools.vips_path")
+    }
+    pub fn get_ffmpeg_path(&self) -> &str {
+        yh_config_infra::config_require_str!(self.ffmpeg_path, "vfs_storage_hub", "thumbnail.tools.ffmpeg_path")
+    }
+    pub fn get_libreoffice_path(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.libreoffice_path,
+            "vfs_storage_hub",
+            "thumbnail.tools.libreoffice_path"
+        )
+    }
+    pub fn get_imagemagick_path(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.imagemagick_path,
+            "vfs_storage_hub",
+            "thumbnail.tools.imagemagick_path"
+        )
+    }
+
+    pub fn to_runtime_config(
+        &self,
+    ) -> crate::business::services::ThumbnailRuntimeToolConfig {
+        crate::business::services::ThumbnailRuntimeToolConfig {
+            vips_path: self.get_vips_path().to_string(),
+            imagemagick_path: self.get_imagemagick_path().to_string(),
+            ffmpeg_path: self.get_ffmpeg_path().to_string(),
+            libreoffice_path: self.get_libreoffice_path().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsThumbnailImageConfig {
+    #[config(desc_zh = "是否启用图片缩略图", desc_en = "Enable image thumbnails", example = "true")]
+    pub enabled: Option<bool>,
+    #[config(
+        desc_zh = "小于此大小（MB）的图片直接返回原图，不再单独生成缩略图",
+        desc_en = "Return the original image directly when it is smaller than this size (MB)",
+        example = "1"
+    )]
+    pub small_skip_mb: Option<u64>,
+    #[config(
+        desc_zh = "大于此大小（MB）的图片跳过缩略图生成",
+        desc_en = "Skip image thumbnail generation for files larger than this size (MB)",
+        example = "100"
+    )]
+    pub max_size_mb: Option<u64>,
+    #[config(
+        desc_zh = "当 backend=external 时，ImageMagick 允许处理的最大文件大小（MB，0表示不限制）",
+        desc_en = "Max file size allowed for ImageMagick when backend=external (MB, 0 means no limit)",
+        example = "20"
+    )]
+    pub imagemagick_max_mb: Option<u64>,
+    #[config(desc_zh = "生成超时时间（秒）", desc_en = "Generation timeout (seconds)", example = "10")]
+    pub timeout_secs: Option<u64>,
+    #[config(
+        desc_zh = "图片缩略图后端，可选 builtin|external；builtin 为纯 Rust 内置实现，external 为 libvips/ImageMagick",
+        desc_en = "Image thumbnail backend, supported values: builtin|external. builtin uses the pure Rust pipeline, external uses libvips/ImageMagick",
+        example = "builtin"
+    )]
+    pub backend: Option<String>,
+}
+
+impl VfsThumbnailImageConfig {
+    pub fn is_enabled(&self) -> bool {
+        yh_config_infra::config_require_clone!(self.enabled, "vfs_storage_hub", "thumbnail.image.enabled")
+    }
+    pub fn get_max_size_mb(&self) -> u64 {
+        yh_config_infra::config_require_clone!(self.max_size_mb, "vfs_storage_hub", "thumbnail.image.max_size_mb")
+    }
+    pub fn get_imagemagick_max_mb(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.imagemagick_max_mb,
+            "vfs_storage_hub",
+            "thumbnail.image.imagemagick_max_mb"
+        )
+    }
+    pub fn get_timeout_secs(&self) -> u64 {
+        yh_config_infra::config_require_clone!(self.timeout_secs, "vfs_storage_hub", "thumbnail.image.timeout_secs")
+    }
+    pub fn get_small_skip_mb(&self) -> u64 {
+        yh_config_infra::config_require_clone!(self.small_skip_mb, "vfs_storage_hub", "thumbnail.image.small_skip_mb")
+    }
+    pub fn get_backend(&self) -> &str {
+        yh_config_infra::config_require_str!(self.backend, "vfs_storage_hub", "thumbnail.image.backend")
+    }
+
+    pub fn to_runtime_config(
+        &self,
+    ) -> crate::business::services::ThumbnailRuntimeImageConfig {
+        crate::business::services::ThumbnailRuntimeImageConfig {
+            enabled: self.is_enabled(),
+            small_skip_mb: self.get_small_skip_mb(),
+            max_size_mb: self.get_max_size_mb(),
+            imagemagick_max_mb: self.get_imagemagick_max_mb(),
+            timeout_secs: self.get_timeout_secs(),
+            backend: self.get_backend().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsThumbnailTypeConfig {
+    #[config(desc_zh = "是否启用此类文件的缩略图", desc_en = "Enable thumbnails for this type", example = "true")]
+    pub enabled: Option<bool>,
+    #[config(
+        desc_zh = "小于此大小（MB）的文件跳过缩略图生成",
+        desc_en = "Skip thumbnail generation for files smaller than this (MB)",
+        example = "1"
+    )]
+    pub small_skip_mb: Option<u64>,
+    #[config(
+        desc_zh = "大于此大小（MB）的文件跳过缩略图生成",
+        desc_en = "Skip thumbnail generation for files larger than this (MB)",
+        example = "100"
+    )]
+    pub max_size_mb: Option<u64>,
+    #[config(
+        desc_zh = "ImageMagick最大允许处理的文件大小（MB，0表示不限制）",
+        desc_en = "Max file size allowed for ImageMagick (MB, 0 means no limit)",
+        example = "20"
+    )]
+    pub imagemagick_max_mb: Option<u64>,
+    #[config(desc_zh = "生成超时时间（秒）", desc_en = "Generation timeout (seconds)", example = "10")]
+    pub timeout_secs: Option<u64>,
+    #[config(desc_zh = "视频截取时间（秒）", desc_en = "Video seek position (seconds)", example = "3")]
+    pub seek_seconds: Option<u64>,
+    #[config(
+        desc_zh = "视频截取比例（0.0-1.0，优先于seek_seconds）",
+        desc_en = "Video seek ratio (0.0-1.0, overrides seek_seconds)",
+        example = "0.3"
+    )]
+    pub seek_ratio: Option<f64>,
+    #[config(desc_zh = "文本预览最大提取字符数", desc_en = "Max characters to extract for text preview", example = "1000")]
+    pub max_chars: Option<u64>,
+}
+
+impl VfsThumbnailTypeConfig {
+    pub fn is_enabled(&self) -> bool {
+        yh_config_infra::config_require_clone!(self.enabled, "vfs_storage_hub", "thumbnail.type.enabled")
+    }
+    pub fn get_max_size_mb(&self) -> u64 {
+        yh_config_infra::config_require_clone!(self.max_size_mb, "vfs_storage_hub", "thumbnail.type.max_size_mb")
+    }
+    pub fn get_imagemagick_max_mb(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.imagemagick_max_mb,
+            "vfs_storage_hub",
+            "thumbnail.type.imagemagick_max_mb"
+        )
+    }
+    pub fn get_timeout_secs(&self) -> u64 {
+        yh_config_infra::config_require_clone!(self.timeout_secs, "vfs_storage_hub", "thumbnail.type.timeout_secs")
+    }
+    pub fn get_small_skip_mb(&self) -> u64 {
+        yh_config_infra::config_require_clone!(self.small_skip_mb, "vfs_storage_hub", "thumbnail.type.small_skip_mb")
+    }
+    pub fn get_seek_ratio(&self) -> f32 {
+        yh_config_infra::config_require_clone!(self.seek_ratio, "vfs_storage_hub", "thumbnail.type.seek_ratio") as f32
+    }
+    pub fn get_seek_seconds(&self) -> u64 {
+        yh_config_infra::config_require_clone!(self.seek_seconds, "vfs_storage_hub", "thumbnail.type.seek_seconds")
+    }
+    pub fn get_max_chars(&self) -> u64 {
+        yh_config_infra::config_require_clone!(self.max_chars, "vfs_storage_hub", "thumbnail.type.max_chars")
+    }
+
+    pub fn to_runtime_config(
+        &self,
+    ) -> crate::business::services::ThumbnailRuntimeTypeConfig {
+        crate::business::services::ThumbnailRuntimeTypeConfig {
+            enabled: self.is_enabled(),
+            small_skip_mb: self.get_small_skip_mb(),
+            max_size_mb: self.get_max_size_mb(),
+            imagemagick_max_mb: self.get_imagemagick_max_mb(),
+            timeout_secs: self.get_timeout_secs(),
+            seek_seconds: self.seek_seconds,
+            seek_ratio: self.seek_ratio,
+            max_chars: self.max_chars,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsThumbnailConfig {
+    #[config(desc_zh = "是否启用缩略图生成服务", desc_en = "Enable thumbnail generation service", example = "true")]
+    pub enabled: Option<bool>,
+    #[config(
+        desc_zh = "缓存模式: dir(目录内 .thumbs)|global(集中缓存目录)|none(不缓存)",
+        desc_en = "Cache mode",
+        example = "dir"
+    )]
+    pub cache_mode: Option<String>,
+    #[config(
+        desc_zh = "缩略图缓存目录路径",
+        desc_en = "Thumbnail cache directory path",
+        example = "{RUNTIMEDIR}/cache/thumbnails"
+    )]
+    pub cache_dir: Option<String>,
+    #[config(desc_zh = "缩略图尺寸（像素）", desc_en = "Thumbnail size (pixels)", example = "256")]
+    pub thumb_size_px: Option<u32>,
+    #[config(desc_zh = "输出格式: jpg|png|webp", desc_en = "Output format", example = "jpg")]
+    pub thumb_format: Option<String>,
+    #[config(desc_zh = "输出质量（1-100）", desc_en = "Output quality (1-100)", example = "85")]
+    pub thumb_quality: Option<u8>,
+    #[config(desc_zh = "外部工具路径配置", desc_en = "External tools path configuration")]
+    pub tools: Option<VfsThumbnailToolConfig>,
+    #[config(desc_zh = "图片缩略图配置", desc_en = "Image thumbnail configuration")]
+    pub image: Option<VfsThumbnailImageConfig>,
+    #[config(desc_zh = "视频缩略图配置", desc_en = "Video thumbnail configuration")]
+    pub video: Option<VfsThumbnailTypeConfig>,
+    #[config(desc_zh = "PDF缩略图配置", desc_en = "PDF thumbnail configuration")]
+    pub pdf: Option<VfsThumbnailTypeConfig>,
+    #[config(desc_zh = "Office文档缩略图配置", desc_en = "Office thumbnail configuration")]
+    pub office: Option<VfsThumbnailTypeConfig>,
+    #[config(desc_zh = "文本文件缩略图配置", desc_en = "Text thumbnail configuration")]
+    pub text: Option<VfsThumbnailTypeConfig>,
+}
+
+impl VfsThumbnailConfig {
+    pub fn is_enabled(&self) -> bool {
+        yh_config_infra::config_require_clone!(self.enabled, "vfs_storage_hub", "thumbnail.enabled")
+    }
+    pub fn get_tools(&self) -> &VfsThumbnailToolConfig {
+        yh_config_infra::config_require_ref!(self.tools, "vfs_storage_hub", "thumbnail.tools")
+    }
+    pub fn get_image(&self) -> &VfsThumbnailImageConfig {
+        yh_config_infra::config_require_ref!(self.image, "vfs_storage_hub", "thumbnail.image")
+    }
+    pub fn get_video(&self) -> &VfsThumbnailTypeConfig {
+        yh_config_infra::config_require_ref!(self.video, "vfs_storage_hub", "thumbnail.video")
+    }
+    pub fn get_pdf(&self) -> &VfsThumbnailTypeConfig {
+        yh_config_infra::config_require_ref!(self.pdf, "vfs_storage_hub", "thumbnail.pdf")
+    }
+    pub fn get_office(&self) -> &VfsThumbnailTypeConfig {
+        yh_config_infra::config_require_ref!(self.office, "vfs_storage_hub", "thumbnail.office")
+    }
+    pub fn get_text(&self) -> &VfsThumbnailTypeConfig {
+        yh_config_infra::config_require_ref!(self.text, "vfs_storage_hub", "thumbnail.text")
+    }
+    pub fn get_thumb_size_px(&self) -> u32 {
+        yh_config_infra::config_require_clone!(self.thumb_size_px, "vfs_storage_hub", "thumbnail.thumb_size_px")
+    }
+    pub fn get_thumb_quality(&self) -> u8 {
+        yh_config_infra::config_require_clone!(self.thumb_quality, "vfs_storage_hub", "thumbnail.thumb_quality")
+    }
+    pub fn get_cache_dir(&self) -> &str {
+        yh_config_infra::config_require_str!(self.cache_dir, "vfs_storage_hub", "thumbnail.cache_dir")
+    }
+    pub fn get_cache_mode(&self) -> &str {
+        yh_config_infra::config_require_str!(self.cache_mode, "vfs_storage_hub", "thumbnail.cache_mode")
+    }
+    pub fn get_thumb_format(&self) -> &str {
+        yh_config_infra::config_require_str!(self.thumb_format, "vfs_storage_hub", "thumbnail.thumb_format")
+    }
+
+    pub fn to_runtime_config(
+        &self,
+    ) -> crate::business::services::ThumbnailRuntimeConfig {
+        crate::business::services::ThumbnailRuntimeConfig {
+            enabled: self.is_enabled(),
+            cache_mode: self.get_cache_mode().to_string(),
+            cache_dir: self.get_cache_dir().to_string(),
+            thumb_size_px: self.get_thumb_size_px(),
+            thumb_format: self.get_thumb_format().to_string(),
+            thumb_quality: self.get_thumb_quality(),
+            tools: self.get_tools().to_runtime_config(),
+            image: self.get_image().to_runtime_config(),
+            video: self.get_video().to_runtime_config(),
+            pdf: self.get_pdf().to_runtime_config(),
+            office: self.get_office().to_runtime_config(),
+            text: self.get_text().to_runtime_config(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsStorageHubConfig {
     #[config(
         desc_zh = "启用WebDAV协议服务。低性能设备建议设为false，仅保留HTTP API",
@@ -1248,6 +1556,8 @@ pub struct VfsStorageHubConfig {
     pub file_share: Option<VfsFileShareConfig>,
     #[config(desc_zh = "文件索引配置", desc_en = "File index configuration")]
     pub file_index: Option<VfsFileIndexConfig>,
+    #[config(desc_zh = "缩略图配置", desc_en = "Thumbnail configuration")]
+    pub thumbnail: Option<VfsThumbnailConfig>,
     #[config(desc_zh = "维护任务配置", desc_en = "Maintenance task configuration")]
     pub maintenance: Option<VfsMaintenanceConfig>,
 }
