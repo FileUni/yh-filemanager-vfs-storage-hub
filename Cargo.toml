@@ -35,10 +35,15 @@ uuid = { version = "1.19.0", features = ["v7", "serde"] }
 dashmap = "6.1.0"
 base64 = "0.22.1"
 sha2 = "0.10.9"
+hex = "0.4.3"
 rand = "0.8"
 percent-encoding = "2.3.1"
 tokio-util = { version = "0.7.13", features = ["io"] }
 yh-rust-crypto = { path = "../yh-rust-crypto" }
+mime_guess = "2.0.5"
+image = { version = "0.25.9", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+kamadak-exif = "0.6.1"
+resvg = { version = "0.45.0", default-features = true }
 
 # Compression and decompression native support
 flate2 = { version = "1.1", features = ["rust_backend"] }
@@ -63,3 +68,8 @@ ndk-context = "0.1.1"
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = { version = "0.6.2", default-features = false, features = ["std"] }
 objc2-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = ["AVAsset", "AVAssetImageGenerator", "objc2-core-graphics", "objc2-core-media"] }
+objc2-core-foundation = { version = "0.3.2", features = ["CFCGTypes"] }
+objc2-core-graphics = { version = "0.3.2", features = ["CGImage"] }
+objc2-core-media = { version = "0.3.2", features = ["CMTime"] }
+objc2-ui-kit = { version = "0.3.2", features = ["UIImage", "objc2-core-foundation"] }
