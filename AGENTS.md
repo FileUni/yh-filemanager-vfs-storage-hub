@@ -76,7 +76,7 @@ src/
 
 - `VfsStorage` is the stable contract; protocol crates should prefer it over direct table access.
 - WAL, quota, temp scratch, index write-through and path isolation are internal VFS responsibilities.
-- Thumbnail generation may live outside this crate, but thumbnail storage policy and hidden-path governance must follow VFS rules.
+- Thumbnail generation, cache policy and hidden-path governance now live in VFS business services; upper layers should only call the shared VFS thumbnail service instead of reimplementing generators.
 - `src/vfs/cache/read_cache.rs`: read cache is acceleration only; use TTL plus access-biased eviction, and control thumbnail/extension bypass through policy instead of scattered `if` branches.
 - `src/vfs/cache/write_cache.rs`: write cache is admission-only write-back; hot path stays DB-light, same-path mutations must force flush first, and successful flushes are reconciled by directory-batched index sync plus user-batched quota sync instead of per-file DB writes.
 - Deadline-exceeded pending writes spill to local abnormal storage before journal audit; pending bytes must never be capacity-evicted, and config examples for read/write cache must stay `enable = false`.

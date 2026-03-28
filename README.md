@@ -148,12 +148,12 @@ This document is the sole detailed documentation for `crates/yh-filemanager-vfs-
 
 ### 3.15 Thumbnail Mechanism and Garbage Control
 
-- This module doesn't implement thumbnail "generator".
-- Implemented Governance Strategy:
- - Identifies thumbnail cache paths (`/.thumbs`, `/.thumbs_cache`).
- - Thumbnail cache paths default skip quota, skip index, can skip WAL.
- - User settings table has multi-format disable switch fields (`thumbnail_disable_*`), but no specific generation logic consumption found in this crate.
-- This is "governance/isolation strategy implemented, thumbnail production chain not landed in this module".
+- Implemented Generator and Governance Strategy:
+  - Shared thumbnail generation lives in `src/business/services/thumbnail.rs` and is reused by API and Nextcloud preview entry points.
+  - Identifies thumbnail cache paths (`/.thumbs`, `/.thumbs_cache`).
+  - Thumbnail cache paths default skip quota, skip index, can skip WAL.
+  - User settings table multi-format disable switch fields (`thumbnail_disable_*`) are consumed directly by the shared VFS thumbnail service.
+  - API / WebDAV / Nextcloud layers should treat thumbnail generation as a VFS capability, not as their own private pipeline.
 
 ## 4. Core Algorithm Descriptions
 
