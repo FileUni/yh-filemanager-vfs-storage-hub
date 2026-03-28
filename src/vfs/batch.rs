@@ -1,6 +1,6 @@
 //! Batch operation executor (progress/logging/timeout).
+use crate::vfs::VfsStorage;
 use crate::vfs::task::{BatchOperationLog, VfsTaskHandler};
-use crate::vfs::{ScopedVfsStorageEngine, VfsStorage};
 use futures::StreamExt;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -60,7 +60,7 @@ async fn batch_concurrency() -> usize {
 }
 
 async fn prepare_copy_like_targets(
-    engine: &Arc<ScopedVfsStorageEngine>,
+    storage: &Arc<dyn VfsStorage>,
     src_paths: &[String],
     dst_dir: &str,
 ) -> Vec<(String, String)> {
@@ -69,7 +69,7 @@ async fn prepare_copy_like_targets(
     for src in src_paths {
         let filename = file_name_from_path(src);
         let base_dst = format!("{}/{}", dst_dir.trim_end_matches('/'), filename);
-        let candidate = engine.get_unique_path(&base_dst).await.unwrap_or(base_dst);
+        let candidate = storage.get_unique_path(&base_dst).await.unwrap_or(base_dst);
         let dst = reserve_batch_destination(candidate, &mut reserved);
         plans.push((src.clone(), dst));
     }
@@ -101,7 +101,7 @@ pub struct VfsBatchExecutor;
 impl VfsBatchExecutor {
     /// Execute batch move task
     pub async fn execute_move(
-        engine: Arc<ScopedVfsStorageEngine>,
+        storage: Arc<dyn VfsStorage>,
         task_handler: Arc<dyn VfsTaskHandler>,
         task_id: Uuid,
         src_paths: Vec<String>,
@@ -114,16 +114,16 @@ impl VfsBatchExecutor {
             let mut failed_count = 0usize;
             let total = src_paths.len();
             let concurrency = batch_concurrency().await;
-            let plans = prepare_copy_like_targets(&engine, &src_paths, &dst_dir).await;
+            let plans = prepare_copy_like_targets(&storage, &src_paths, &dst_dir).await;
             let mut stream = futures::stream::iter(plans.into_iter().map(|(src, dst)| {
-                let engine = Arc::clone(&engine);
+                let storage = Arc::clone(&storage);
                 let task_handler = Arc::clone(&task_handler);
                 async move {
                     if task_handler.is_cancelled(task_id) {
                         return (src, dst, 0_i64, Ok::<Option<()>, String>(None));
                     }
                     let start_time = Instant::now();
-                    let result = engine.move_file(&src, &dst).await;
+                    let result = storage.move_file(&src, &dst).await;
                     let execution_time = start_time.elapsed().as_millis() as i64;
                     match result {
                         Ok(_) => (src, dst, execution_time, Ok(Some(()))),
@@ -216,7 +216,7 @@ impl VfsBatchExecutor {
 
     /// Execute batch copy task
     pub async fn execute_copy(
-        engine: Arc<ScopedVfsStorageEngine>,
+        storage: Arc<dyn VfsStorage>,
         task_handler: Arc<dyn VfsTaskHandler>,
         task_id: Uuid,
         src_paths: Vec<String>,
@@ -229,16 +229,16 @@ impl VfsBatchExecutor {
             let mut failed_count = 0usize;
             let total = src_paths.len();
             let concurrency = batch_concurrency().await;
-            let plans = prepare_copy_like_targets(&engine, &src_paths, &dst_dir).await;
+            let plans = prepare_copy_like_targets(&storage, &src_paths, &dst_dir).await;
             let mut stream = futures::stream::iter(plans.into_iter().map(|(src, dst)| {
-                let engine = Arc::clone(&engine);
+                let storage = Arc::clone(&storage);
                 let task_handler = Arc::clone(&task_handler);
                 async move {
                     if task_handler.is_cancelled(task_id) {
                         return (src, dst, 0_i64, Ok::<Option<()>, String>(None));
                     }
                     let start_time = Instant::now();
-                    let result = engine.copy_file(&src, &dst).await;
+                    let result = storage.copy_file(&src, &dst).await;
                     let execution_time = start_time.elapsed().as_millis() as i64;
                     match result {
                         Ok(_) => (src, dst, execution_time, Ok(Some(()))),
@@ -331,7 +331,7 @@ impl VfsBatchExecutor {
 
     /// Execute batch delete task
     pub async fn execute_delete(
-        engine: Arc<ScopedVfsStorageEngine>,
+        storage: Arc<dyn VfsStorage>,
         task_handler: Arc<dyn VfsTaskHandler>,
         task_id: Uuid,
         paths: Vec<String>,
@@ -344,14 +344,14 @@ impl VfsBatchExecutor {
             let total = paths.len();
             let concurrency = batch_concurrency().await;
             let mut stream = futures::stream::iter(paths.into_iter().map(|path| {
-                let engine = Arc::clone(&engine);
+                let storage = Arc::clone(&storage);
                 let task_handler = Arc::clone(&task_handler);
                 async move {
                     if task_handler.is_cancelled(task_id) {
                         return (path, 0_i64, Ok::<Option<()>, String>(None));
                     }
                     let start_time = Instant::now();
-                    let result = engine.move_to_trash(&path).await;
+                    let result = storage.move_to_trash(&path).await;
                     let execution_time = start_time.elapsed().as_millis() as i64;
                     match result {
                         Ok(_) => (path, execution_time, Ok(Some(()))),

@@ -11,9 +11,10 @@ pub use config::{
 };
 pub use utils::temp_file::{get_global_temp_manager, init_global_temp_manager};
 pub use vfs::{
-    LOGICAL_TEMP_PREFIX, ScopedVfsStorageEngine, VfsBatchError, VfsBatchResult, VfsError,
-    VfsFileInfo, VfsMetadata, VfsMetricsSnapshot, VfsStorage, VfsStorageHub,
+    LOGICAL_TEMP_PREFIX, MountRuntime, MountedUserStorage, ScopedVfsStorageEngine, VfsBatchError,
+    VfsBatchResult, VfsError, VfsFileInfo, VfsMetadata, VfsMetricsSnapshot, VfsStorage,
+    VfsStorageHub, build_remote_storage, build_user_storage_with_mounts,
     get_global_cache_journal_recorder, global_vfs_metrics, set_global_cache_journal_recorder,
-    snapshot_global_vfs_metrics,
+    snapshot_global_vfs_metrics, sync_remote_mount_once,
 };
 pub use vfs_manager::VfsManager;

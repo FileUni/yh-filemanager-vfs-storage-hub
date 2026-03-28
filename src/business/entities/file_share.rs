@@ -17,6 +17,15 @@ pub struct Model {
     pub can_upload: bool,
     pub can_update_no_create: bool,
     pub can_delete: bool,
+    pub note: Option<String>,
+    pub label: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub attributes: Option<String>,
+    pub hide_download: bool,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub snapshot_path: Option<String>,
+    pub snapshot_name: Option<String>,
+    pub snapshot_is_dir: Option<bool>,
     pub is_deleted: bool,
     pub created_at: DateTimeWithTimeZone,
 }

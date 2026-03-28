@@ -19,6 +19,7 @@ pub mod cache;
 pub mod connector;
 pub mod hub;
 pub mod maintenance;
+pub mod mounted;
 pub mod pool;
 pub mod scoped;
 pub mod task;
@@ -30,6 +31,10 @@ pub mod android_saf;
 #[cfg(target_os = "ios")]
 pub mod ios_scoped_fs;
 pub use hub::VfsStorageHub;
+pub use mounted::{
+    MountRuntime, MountedUserStorage, build_remote_storage, build_user_storage_with_mounts,
+    sync_remote_mount_once,
+};
 pub use pool::VfsPool;
 pub use scoped::ScopedVfsStorageEngine;
 /// Logical temp file path prefix

@@ -46,17 +46,17 @@ mod mobile_fs_guard {
         Ok(out)
     }
 
-    pub fn validate_fs_root_under_app_data_dir(root: &str) -> Result<(), String> {
-        let app_data_dir = yh_config_infra::utils::get_app_data_dir()
-            .ok_or_else(|| "{APPDATADIR} is not initialized".to_string())?;
+    pub fn validate_fs_root_under_runtime_dir(root: &str) -> Result<(), String> {
+        let runtime_dir = yh_config_infra::utils::get_runtime_dir()
+            .ok_or_else(|| "{RUNTIMEDIR} is not initialized".to_string())?;
 
-        let base = normalize_absolute_path(Path::new(app_data_dir.as_ref()))?;
+        let base = normalize_absolute_path(Path::new(runtime_dir.as_ref()))?;
         let candidate = normalize_absolute_path(Path::new(root))?;
 
         if !candidate.starts_with(&base) {
             return Err(format!(
-                "fs connector root must be inside app sandbox (under APPDATADIR). Got: '{}' (APPDATADIR='{}')",
-                root, app_data_dir
+                "fs connector root must be inside app sandbox (under RUNTIMEDIR). Got: '{}' (RUNTIMEDIR='{}')",
+                root, runtime_dir
             ));
         }
         Ok(())
@@ -80,7 +80,7 @@ pub struct VfsConnectorConfig {
     #[config(
         desc_zh = "存储根定位：fs=目录路径；s3/webdav/dropbox/onedrive/gdrive=工作根目录；android_saf=SAF tree uri(content://...)；ios_scoped_fs=bookmark_b64:<BASE64>",
         desc_en = "Storage root locator: fs=directory path; s3/webdav/dropbox/onedrive/gdrive=working root directory; android_saf=SAF tree uri (content://...); ios_scoped_fs=bookmark_b64:<BASE64>",
-        example = "{APPDATADIR}/vfs"
+        example = "{RUNTIMEDIR}/vfs"
     )]
     pub root: Option<Arc<str>>,
     #[config(
@@ -781,7 +781,7 @@ pub struct VfsTempFileConfig {
     #[config(
         desc_zh = "临时文件存储目录，用于存储上传分片和临时处理文件",
         desc_en = "Temporary file storage directory for storing upload chunks and temporary processing files",
-        example = "{APPDATADIR}/tmp/vfs"
+        example = "{RUNTIMEDIR}/tmp/vfs"
     )]
     pub dir: Option<Arc<str>>,
     #[config(
@@ -818,7 +818,7 @@ pub struct VfsReadCacheConfig {
     #[config(
         desc_zh = "读缓存本地目录路径。backend=local_dir 时缓存数据会保存在这里；backend=memory 时该字段仍需显式配置以保持结构一致。",
         desc_en = "Local directory path for read cache. Used when backend=local_dir; still required explicitly when backend=memory to keep config structure consistent.",
-        example = "{APPDATADIR}/cache/vfs-read"
+        example = "{RUNTIMEDIR}/cache/vfs-read"
     )]
     pub local_dir: Option<Arc<str>>,
     #[config(
@@ -921,7 +921,7 @@ pub struct VfsWriteCacheConfig {
     #[config(
         desc_zh = "写缓存本地目录路径。backend=local_dir 时待刷盘小文件会先落在这里；backend=memory 时该字段仍需显式配置以保持结构一致。",
         desc_en = "Local directory path for write cache. Pending small files are first written here when backend=local_dir; still required explicitly when backend=memory to keep config structure consistent.",
-        example = "{APPDATADIR}/cache/vfs-write"
+        example = "{RUNTIMEDIR}/cache/vfs-write"
     )]
     pub local_dir: Option<Arc<str>>,
     #[config(
@@ -969,7 +969,7 @@ pub struct VfsWriteCacheConfig {
     #[config(
         desc_zh = "异常本地落盘目录。memory 后端超时后会把未刷盘数据落到这里；local_dir 后端也会把异常条目转移/隔离到这里。",
         desc_en = "Local spill directory for abnormal entries. Unflushed data from memory backend is spilled here after deadline; local_dir backend also moves or isolates abnormal entries here.",
-        example = "{APPDATADIR}/cache/vfs-write-abnormal"
+        example = "{RUNTIMEDIR}/cache/vfs-write-abnormal"
     )]
     pub abnormal_spill_dir: Option<Arc<str>>,
 }
@@ -1204,7 +1204,7 @@ pub struct VfsStorageHubConfig {
     #[config(
         desc_zh = "存储连接器配置列表，定义所有可用的存储后端",
         desc_en = "Storage connector configuration list, defines all available storage backends",
-        example = "[{ name = \"local-fs\", driver = \"fs\", root = \"{APPDATADIR}/vfs\", enable = true, options = {} }]"
+        example = "[{ name = \"local-fs\", driver = \"fs\", root = \"{RUNTIMEDIR}/vfs\", enable = true, options = {} }]"
     )]
     pub connectors: Option<Vec<VfsConnectorConfig>>,
     #[config(
@@ -1762,7 +1762,7 @@ impl VfsStorageHubConfig {
                     if matches!(conn.enable, Some(true)) && conn.driver.as_deref() == Some("fs") {
                         if let Some(root) = conn.root.as_deref() {
                             if let Err(e) =
-                                mobile_fs_guard::validate_fs_root_under_app_data_dir(root)
+                                mobile_fs_guard::validate_fs_root_under_runtime_dir(root)
                             {
                                 errors.push(format!("[{}] connectors[{}].root: {}", s, i, e));
                             }

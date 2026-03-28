@@ -25,6 +25,10 @@ pub struct CreateShareParams<'a> {
     pub expire_days: Option<u64>,
     pub max_downloads: Option<i64>,
     pub permissions: SharePermissions,
+    pub note: Option<String>,
+    pub label: Option<String>,
+    pub attributes: Option<String>,
+    pub hide_download: bool,
 }
 
 #[derive(Debug)]
@@ -35,6 +39,10 @@ pub struct UpdateShareParams<'a> {
     pub expire_days: Option<Option<u64>>,
     pub max_downloads: Option<Option<i64>>,
     pub permissions: UpdateSharePermissions,
+    pub note: Option<Option<String>>,
+    pub label: Option<Option<String>>,
+    pub attributes: Option<Option<String>>,
+    pub hide_download: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -56,6 +64,45 @@ pub struct ShareQueryOptions {
     pub enable_direct: Option<bool>,
 }
 impl ShareService {
+    fn fallback_file_from_share_snapshot(share: &file_share::Model) -> Option<file_index::Model> {
+        let path = share.snapshot_path.clone()?;
+        let name = share.snapshot_name.clone().unwrap_or_else(|| {
+            std::path::Path::new(&path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("file")
+                .to_string()
+        });
+        let parent_path = std::path::Path::new(&path)
+            .parent()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("/")
+            .to_string();
+        Some(file_index::Model {
+            id: share.file_index_id.clone(),
+            user_id: share.user_id.clone(),
+            parent_path,
+            name,
+            path,
+            is_dir: share.snapshot_is_dir.unwrap_or(false),
+            storage_id: None,
+            backend_type: None,
+            backend_key: None,
+            size: 0,
+            etag: None,
+            file_created_at: None,
+            file_updated_at: None,
+            file_trashed_at: None,
+            row_created_at: share.created_at,
+            row_updated_at: share.created_at,
+            row_deleted_at: None,
+            favorite_color: 0,
+            original_path: None,
+            remark: None,
+        })
+    }
+
     fn hash_password(password: &str) -> VfsCommonResult<String> {
         let mut rng = rand::thread_rng();
         let salt = SaltString::generate(&mut rng);
@@ -86,6 +133,11 @@ impl ShareService {
         } else {
             None
         };
+        let snapshot = file_index::Entity::find()
+            .filter(file_index::Column::UserId.eq(params.user_id))
+            .filter(file_index::Column::Id.eq(params.file_index_id))
+            .one(db)
+            .await?;
         let model = file_share::ActiveModel {
             id: Set(id),
             file_index_id: Set(params.file_index_id.to_string()),
@@ -99,6 +151,13 @@ impl ShareService {
             can_upload: Set(params.permissions.can_upload),
             can_update_no_create: Set(params.permissions.can_update_no_create),
             can_delete: Set(params.permissions.can_delete),
+            note: Set(params.note),
+            label: Set(params.label),
+            attributes: Set(params.attributes),
+            hide_download: Set(params.hide_download),
+            snapshot_path: Set(snapshot.as_ref().map(|file| file.path.clone())),
+            snapshot_name: Set(snapshot.as_ref().map(|file| file.name.clone())),
+            snapshot_is_dir: Set(snapshot.as_ref().map(|file| file.is_dir)),
             is_deleted: Set(false),
             created_at: Set(Utc::now().into()),
         };
@@ -151,6 +210,18 @@ impl ShareService {
         }
         if let Some(v) = params.permissions.can_delete {
             share.can_delete = Set(v);
+        }
+        if let Some(note) = params.note {
+            share.note = Set(note);
+        }
+        if let Some(label) = params.label {
+            share.label = Set(label);
+        }
+        if let Some(attributes) = params.attributes {
+            share.attributes = Set(attributes);
+        }
+        if let Some(hide_download) = params.hide_download {
+            share.hide_download = Set(hide_download);
         }
         Ok(share.update(db).await?)
     }
@@ -248,7 +319,16 @@ impl ShareService {
         let paginator = query.paginate(db, options.page_size);
         let total = paginator.num_items().await?;
         let items = paginator.fetch_page(options.page.saturating_sub(1)).await?;
-        Ok((items, total))
+        Ok((
+            items
+                .into_iter()
+                .map(|(share, file)| {
+                    let file = file.or_else(|| Self::fallback_file_from_share_snapshot(&share));
+                    (share, file)
+                })
+                .collect(),
+            total,
+        ))
     }
     pub async fn get_share(
         db: &DatabaseConnection,
@@ -258,7 +338,11 @@ impl ShareService {
             .find_also_related(file_index::Entity)
             .filter(file_share::Column::IsDeleted.eq(false))
             .one(db)
-            .await?)
+            .await?
+            .map(|(share, file)| {
+                let file = file.or_else(|| Self::fallback_file_from_share_snapshot(&share));
+                (share, file)
+            }))
     }
     pub async fn increment_view_count(db: &DatabaseConnection, id: &str) -> VfsCommonResult<()> {
         file_share::Entity::update_many()

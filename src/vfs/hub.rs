@@ -292,6 +292,22 @@ impl VfsStorageHub {
         )
         .await
     }
+    pub async fn create_user_storage(
+        self: &Arc<Self>,
+        db: Arc<sea_orm::DatabaseConnection>,
+        user_id: &str,
+        role_id: &str,
+        journal_recorder: Option<Arc<dyn crate::vfs::VfsJournalRecorder>>,
+    ) -> VfsResult<Arc<dyn crate::vfs::VfsStorage>> {
+        crate::vfs::mounted::build_user_storage_with_mounts(
+            db,
+            Arc::clone(self),
+            user_id,
+            role_id,
+            journal_recorder,
+        )
+        .await
+    }
     /// Create engine directly with a specific pool name (zero DB hits)
     pub async fn create_scoped_engine_with_pool(
         self: &Arc<Self>,

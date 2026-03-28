@@ -1,10 +1,12 @@
 pub mod file_index;
 pub mod file_share;
+pub mod remote_mount;
 pub mod shares;
 pub mod ssh_keys;
 pub mod user_settings;
 pub use file_index::Entity as FileIndex;
 pub use file_share::Entity as FileShare;
+pub use remote_mount::Entity as RemoteMount;
 pub use shares::Entity as Shares;
 pub use ssh_keys::Entity as SshKeys;
 pub use user_settings::Entity as UserSettings;
