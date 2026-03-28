@@ -24,7 +24,7 @@ pub use shares::ShareService;
 pub use ssh_keys::{SshKeyInfo, SshKeyService};
 pub use thumbnail::ThumbnailClearScope;
 pub use thumbnail_runtime::{
-    LatexThumbnailRuntimeConfig, ThumbnailRuntimeConfig, ThumbnailRuntimeImageConfig,
+    LatexPreviewRuntimeConfig, ThumbnailRuntimeConfig, ThumbnailRuntimeImageConfig,
     ThumbnailRuntimeToolConfig, ThumbnailRuntimeTypeConfig, ThumbnailServiceContext,
 };
 pub use types::*;

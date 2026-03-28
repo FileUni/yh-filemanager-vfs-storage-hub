@@ -178,7 +178,7 @@ impl ThumbnailRuntimeConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct LatexThumbnailRuntimeConfig {
+pub struct LatexPreviewRuntimeConfig {
     pub enable_latexmk: bool,
     pub latexmk_path: String,
     pub latexmk_timeout_secs: u64,
@@ -187,7 +187,7 @@ pub struct LatexThumbnailRuntimeConfig {
     pub allow_shell_escape: bool,
 }
 
-impl LatexThumbnailRuntimeConfig {
+impl LatexPreviewRuntimeConfig {
     pub fn is_enable_latexmk(&self) -> bool {
         self.enable_latexmk
     }
@@ -218,7 +218,7 @@ pub struct ThumbnailServiceContext {
     pub db: Arc<DatabaseConnection>,
     pub storage_hub: Arc<VfsStorageHub>,
     pub thumbnail: ThumbnailRuntimeConfig,
-    pub latex: LatexThumbnailRuntimeConfig,
+    pub latex: LatexPreviewRuntimeConfig,
 }
 
 impl ThumbnailServiceContext {
@@ -226,7 +226,7 @@ impl ThumbnailServiceContext {
         db: Arc<DatabaseConnection>,
         storage_hub: Arc<VfsStorageHub>,
         thumbnail: ThumbnailRuntimeConfig,
-        latex: LatexThumbnailRuntimeConfig,
+        latex: LatexPreviewRuntimeConfig,
     ) -> Self {
         Self {
             db,

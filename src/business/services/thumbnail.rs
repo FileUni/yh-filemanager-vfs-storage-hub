@@ -12,7 +12,7 @@ use yh_console_log::yhlog;
 use super::UserSettingsSnapshot;
 use super::thumbnail_image_backend::render_image_thumbnail;
 use super::thumbnail_runtime::{
-    LatexThumbnailRuntimeConfig, ThumbnailRuntimeConfig, ThumbnailRuntimeTypeConfig,
+    LatexPreviewRuntimeConfig, ThumbnailRuntimeConfig, ThumbnailRuntimeTypeConfig,
     ThumbnailServiceContext, guess_mime_type, normalize_logical_path,
 };
 use super::thumbnail_video_backend::render_video_thumbnail;
@@ -363,7 +363,7 @@ fn detect_kind(ext: &str) -> Option<ThumbnailKind> {
 }
 fn is_kind_enabled(
     cfg: &ThumbnailRuntimeConfig,
-    latex_cfg: &LatexThumbnailRuntimeConfig,
+    latex_cfg: &LatexPreviewRuntimeConfig,
     kind: ThumbnailKind,
 ) -> Result<bool> {
     let enabled = match kind {
@@ -462,7 +462,7 @@ fn thumbnail_content_type(format: &str) -> String {
 }
 fn max_size_bytes(
     cfg: &ThumbnailRuntimeConfig,
-    latex_cfg: &LatexThumbnailRuntimeConfig,
+    latex_cfg: &LatexPreviewRuntimeConfig,
     kind: ThumbnailKind,
 ) -> Result<u64> {
     let mb = match kind {
@@ -582,7 +582,7 @@ async fn render_pdf_thumbnail(
     Ok(false)
 }
 async fn render_latex_thumbnail(
-    latex_cfg: &LatexThumbnailRuntimeConfig,
+    latex_cfg: &LatexPreviewRuntimeConfig,
     pdf_cfg: &ThumbnailRuntimeTypeConfig,
     cfg: &ThumbnailRuntimeConfig,
     input: &Path,

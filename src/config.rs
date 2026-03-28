@@ -1199,10 +1199,18 @@ pub struct VfsThumbnailToolConfig {
 
 impl VfsThumbnailToolConfig {
     pub fn get_vips_path(&self) -> &str {
-        yh_config_infra::config_require_str!(self.vips_path, "vfs_storage_hub", "thumbnail.tools.vips_path")
+        yh_config_infra::config_require_str!(
+            self.vips_path,
+            "vfs_storage_hub",
+            "thumbnail.tools.vips_path"
+        )
     }
     pub fn get_ffmpeg_path(&self) -> &str {
-        yh_config_infra::config_require_str!(self.ffmpeg_path, "vfs_storage_hub", "thumbnail.tools.ffmpeg_path")
+        yh_config_infra::config_require_str!(
+            self.ffmpeg_path,
+            "vfs_storage_hub",
+            "thumbnail.tools.ffmpeg_path"
+        )
     }
     pub fn get_libreoffice_path(&self) -> &str {
         yh_config_infra::config_require_str!(
@@ -1219,9 +1227,7 @@ impl VfsThumbnailToolConfig {
         )
     }
 
-    pub fn to_runtime_config(
-        &self,
-    ) -> crate::business::services::ThumbnailRuntimeToolConfig {
+    pub fn to_runtime_config(&self) -> crate::business::services::ThumbnailRuntimeToolConfig {
         crate::business::services::ThumbnailRuntimeToolConfig {
             vips_path: self.get_vips_path().to_string(),
             imagemagick_path: self.get_imagemagick_path().to_string(),
@@ -1233,7 +1239,11 @@ impl VfsThumbnailToolConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsThumbnailImageConfig {
-    #[config(desc_zh = "是否启用图片缩略图", desc_en = "Enable image thumbnails", example = "true")]
+    #[config(
+        desc_zh = "是否启用图片缩略图",
+        desc_en = "Enable image thumbnails",
+        example = "true"
+    )]
     pub enabled: Option<bool>,
     #[config(
         desc_zh = "小于此大小（MB）的图片直接返回原图，不再单独生成缩略图",
@@ -1253,7 +1263,11 @@ pub struct VfsThumbnailImageConfig {
         example = "20"
     )]
     pub imagemagick_max_mb: Option<u64>,
-    #[config(desc_zh = "生成超时时间（秒）", desc_en = "Generation timeout (seconds)", example = "10")]
+    #[config(
+        desc_zh = "生成超时时间（秒）",
+        desc_en = "Generation timeout (seconds)",
+        example = "10"
+    )]
     pub timeout_secs: Option<u64>,
     #[config(
         desc_zh = "图片缩略图后端，可选 builtin|external；builtin 为纯 Rust 内置实现，external 为 libvips/ImageMagick",
@@ -1265,10 +1279,18 @@ pub struct VfsThumbnailImageConfig {
 
 impl VfsThumbnailImageConfig {
     pub fn is_enabled(&self) -> bool {
-        yh_config_infra::config_require_clone!(self.enabled, "vfs_storage_hub", "thumbnail.image.enabled")
+        yh_config_infra::config_require_clone!(
+            self.enabled,
+            "vfs_storage_hub",
+            "thumbnail.image.enabled"
+        )
     }
     pub fn get_max_size_mb(&self) -> u64 {
-        yh_config_infra::config_require_clone!(self.max_size_mb, "vfs_storage_hub", "thumbnail.image.max_size_mb")
+        yh_config_infra::config_require_clone!(
+            self.max_size_mb,
+            "vfs_storage_hub",
+            "thumbnail.image.max_size_mb"
+        )
     }
     pub fn get_imagemagick_max_mb(&self) -> u64 {
         yh_config_infra::config_require_clone!(
@@ -1278,18 +1300,28 @@ impl VfsThumbnailImageConfig {
         )
     }
     pub fn get_timeout_secs(&self) -> u64 {
-        yh_config_infra::config_require_clone!(self.timeout_secs, "vfs_storage_hub", "thumbnail.image.timeout_secs")
+        yh_config_infra::config_require_clone!(
+            self.timeout_secs,
+            "vfs_storage_hub",
+            "thumbnail.image.timeout_secs"
+        )
     }
     pub fn get_small_skip_mb(&self) -> u64 {
-        yh_config_infra::config_require_clone!(self.small_skip_mb, "vfs_storage_hub", "thumbnail.image.small_skip_mb")
+        yh_config_infra::config_require_clone!(
+            self.small_skip_mb,
+            "vfs_storage_hub",
+            "thumbnail.image.small_skip_mb"
+        )
     }
     pub fn get_backend(&self) -> &str {
-        yh_config_infra::config_require_str!(self.backend, "vfs_storage_hub", "thumbnail.image.backend")
+        yh_config_infra::config_require_str!(
+            self.backend,
+            "vfs_storage_hub",
+            "thumbnail.image.backend"
+        )
     }
 
-    pub fn to_runtime_config(
-        &self,
-    ) -> crate::business::services::ThumbnailRuntimeImageConfig {
+    pub fn to_runtime_config(&self) -> crate::business::services::ThumbnailRuntimeImageConfig {
         crate::business::services::ThumbnailRuntimeImageConfig {
             enabled: self.is_enabled(),
             small_skip_mb: self.get_small_skip_mb(),
@@ -1303,7 +1335,11 @@ impl VfsThumbnailImageConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsThumbnailTypeConfig {
-    #[config(desc_zh = "是否启用此类文件的缩略图", desc_en = "Enable thumbnails for this type", example = "true")]
+    #[config(
+        desc_zh = "是否启用此类文件的缩略图",
+        desc_en = "Enable thumbnails for this type",
+        example = "true"
+    )]
     pub enabled: Option<bool>,
     #[config(
         desc_zh = "小于此大小（MB）的文件跳过缩略图生成",
@@ -1323,9 +1359,17 @@ pub struct VfsThumbnailTypeConfig {
         example = "20"
     )]
     pub imagemagick_max_mb: Option<u64>,
-    #[config(desc_zh = "生成超时时间（秒）", desc_en = "Generation timeout (seconds)", example = "10")]
+    #[config(
+        desc_zh = "生成超时时间（秒）",
+        desc_en = "Generation timeout (seconds)",
+        example = "10"
+    )]
     pub timeout_secs: Option<u64>,
-    #[config(desc_zh = "视频截取时间（秒）", desc_en = "Video seek position (seconds)", example = "3")]
+    #[config(
+        desc_zh = "视频截取时间（秒）",
+        desc_en = "Video seek position (seconds)",
+        example = "3"
+    )]
     pub seek_seconds: Option<u64>,
     #[config(
         desc_zh = "视频截取比例（0.0-1.0，优先于seek_seconds）",
@@ -1333,16 +1377,28 @@ pub struct VfsThumbnailTypeConfig {
         example = "0.3"
     )]
     pub seek_ratio: Option<f64>,
-    #[config(desc_zh = "文本预览最大提取字符数", desc_en = "Max characters to extract for text preview", example = "1000")]
+    #[config(
+        desc_zh = "文本预览最大提取字符数",
+        desc_en = "Max characters to extract for text preview",
+        example = "1000"
+    )]
     pub max_chars: Option<u64>,
 }
 
 impl VfsThumbnailTypeConfig {
     pub fn is_enabled(&self) -> bool {
-        yh_config_infra::config_require_clone!(self.enabled, "vfs_storage_hub", "thumbnail.type.enabled")
+        yh_config_infra::config_require_clone!(
+            self.enabled,
+            "vfs_storage_hub",
+            "thumbnail.type.enabled"
+        )
     }
     pub fn get_max_size_mb(&self) -> u64 {
-        yh_config_infra::config_require_clone!(self.max_size_mb, "vfs_storage_hub", "thumbnail.type.max_size_mb")
+        yh_config_infra::config_require_clone!(
+            self.max_size_mb,
+            "vfs_storage_hub",
+            "thumbnail.type.max_size_mb"
+        )
     }
     pub fn get_imagemagick_max_mb(&self) -> u64 {
         yh_config_infra::config_require_clone!(
@@ -1352,24 +1408,42 @@ impl VfsThumbnailTypeConfig {
         )
     }
     pub fn get_timeout_secs(&self) -> u64 {
-        yh_config_infra::config_require_clone!(self.timeout_secs, "vfs_storage_hub", "thumbnail.type.timeout_secs")
+        yh_config_infra::config_require_clone!(
+            self.timeout_secs,
+            "vfs_storage_hub",
+            "thumbnail.type.timeout_secs"
+        )
     }
     pub fn get_small_skip_mb(&self) -> u64 {
-        yh_config_infra::config_require_clone!(self.small_skip_mb, "vfs_storage_hub", "thumbnail.type.small_skip_mb")
+        yh_config_infra::config_require_clone!(
+            self.small_skip_mb,
+            "vfs_storage_hub",
+            "thumbnail.type.small_skip_mb"
+        )
     }
     pub fn get_seek_ratio(&self) -> f32 {
-        yh_config_infra::config_require_clone!(self.seek_ratio, "vfs_storage_hub", "thumbnail.type.seek_ratio") as f32
+        yh_config_infra::config_require_clone!(
+            self.seek_ratio,
+            "vfs_storage_hub",
+            "thumbnail.type.seek_ratio"
+        ) as f32
     }
     pub fn get_seek_seconds(&self) -> u64 {
-        yh_config_infra::config_require_clone!(self.seek_seconds, "vfs_storage_hub", "thumbnail.type.seek_seconds")
+        yh_config_infra::config_require_clone!(
+            self.seek_seconds,
+            "vfs_storage_hub",
+            "thumbnail.type.seek_seconds"
+        )
     }
     pub fn get_max_chars(&self) -> u64 {
-        yh_config_infra::config_require_clone!(self.max_chars, "vfs_storage_hub", "thumbnail.type.max_chars")
+        yh_config_infra::config_require_clone!(
+            self.max_chars,
+            "vfs_storage_hub",
+            "thumbnail.type.max_chars"
+        )
     }
 
-    pub fn to_runtime_config(
-        &self,
-    ) -> crate::business::services::ThumbnailRuntimeTypeConfig {
+    pub fn to_runtime_config(&self) -> crate::business::services::ThumbnailRuntimeTypeConfig {
         crate::business::services::ThumbnailRuntimeTypeConfig {
             enabled: self.is_enabled(),
             small_skip_mb: self.get_small_skip_mb(),
@@ -1385,7 +1459,11 @@ impl VfsThumbnailTypeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsThumbnailConfig {
-    #[config(desc_zh = "是否启用缩略图生成服务", desc_en = "Enable thumbnail generation service", example = "true")]
+    #[config(
+        desc_zh = "是否启用缩略图生成服务",
+        desc_en = "Enable thumbnail generation service",
+        example = "true"
+    )]
     pub enabled: Option<bool>,
     #[config(
         desc_zh = "缓存模式: dir(目录内 .thumbs)|global(集中缓存目录)|none(不缓存)",
@@ -1399,13 +1477,28 @@ pub struct VfsThumbnailConfig {
         example = "{RUNTIMEDIR}/cache/thumbnails"
     )]
     pub cache_dir: Option<String>,
-    #[config(desc_zh = "缩略图尺寸（像素）", desc_en = "Thumbnail size (pixels)", example = "256")]
+    #[config(
+        desc_zh = "缩略图尺寸（像素）",
+        desc_en = "Thumbnail size (pixels)",
+        example = "256"
+    )]
     pub thumb_size_px: Option<u32>,
-    #[config(desc_zh = "输出格式: jpg|png|webp", desc_en = "Output format", example = "jpg")]
+    #[config(
+        desc_zh = "输出格式: jpg|png|webp",
+        desc_en = "Output format",
+        example = "jpg"
+    )]
     pub thumb_format: Option<String>,
-    #[config(desc_zh = "输出质量（1-100）", desc_en = "Output quality (1-100)", example = "85")]
+    #[config(
+        desc_zh = "输出质量（1-100）",
+        desc_en = "Output quality (1-100)",
+        example = "85"
+    )]
     pub thumb_quality: Option<u8>,
-    #[config(desc_zh = "外部工具路径配置", desc_en = "External tools path configuration")]
+    #[config(
+        desc_zh = "外部工具路径配置",
+        desc_en = "External tools path configuration"
+    )]
     pub tools: Option<VfsThumbnailToolConfig>,
     #[config(desc_zh = "图片缩略图配置", desc_en = "Image thumbnail configuration")]
     pub image: Option<VfsThumbnailImageConfig>,
@@ -1413,9 +1506,15 @@ pub struct VfsThumbnailConfig {
     pub video: Option<VfsThumbnailTypeConfig>,
     #[config(desc_zh = "PDF缩略图配置", desc_en = "PDF thumbnail configuration")]
     pub pdf: Option<VfsThumbnailTypeConfig>,
-    #[config(desc_zh = "Office文档缩略图配置", desc_en = "Office thumbnail configuration")]
+    #[config(
+        desc_zh = "Office文档缩略图配置",
+        desc_en = "Office thumbnail configuration"
+    )]
     pub office: Option<VfsThumbnailTypeConfig>,
-    #[config(desc_zh = "文本文件缩略图配置", desc_en = "Text thumbnail configuration")]
+    #[config(
+        desc_zh = "文本文件缩略图配置",
+        desc_en = "Text thumbnail configuration"
+    )]
     pub text: Option<VfsThumbnailTypeConfig>,
 }
 
@@ -1442,24 +1541,42 @@ impl VfsThumbnailConfig {
         yh_config_infra::config_require_ref!(self.text, "vfs_storage_hub", "thumbnail.text")
     }
     pub fn get_thumb_size_px(&self) -> u32 {
-        yh_config_infra::config_require_clone!(self.thumb_size_px, "vfs_storage_hub", "thumbnail.thumb_size_px")
+        yh_config_infra::config_require_clone!(
+            self.thumb_size_px,
+            "vfs_storage_hub",
+            "thumbnail.thumb_size_px"
+        )
     }
     pub fn get_thumb_quality(&self) -> u8 {
-        yh_config_infra::config_require_clone!(self.thumb_quality, "vfs_storage_hub", "thumbnail.thumb_quality")
+        yh_config_infra::config_require_clone!(
+            self.thumb_quality,
+            "vfs_storage_hub",
+            "thumbnail.thumb_quality"
+        )
     }
     pub fn get_cache_dir(&self) -> &str {
-        yh_config_infra::config_require_str!(self.cache_dir, "vfs_storage_hub", "thumbnail.cache_dir")
+        yh_config_infra::config_require_str!(
+            self.cache_dir,
+            "vfs_storage_hub",
+            "thumbnail.cache_dir"
+        )
     }
     pub fn get_cache_mode(&self) -> &str {
-        yh_config_infra::config_require_str!(self.cache_mode, "vfs_storage_hub", "thumbnail.cache_mode")
+        yh_config_infra::config_require_str!(
+            self.cache_mode,
+            "vfs_storage_hub",
+            "thumbnail.cache_mode"
+        )
     }
     pub fn get_thumb_format(&self) -> &str {
-        yh_config_infra::config_require_str!(self.thumb_format, "vfs_storage_hub", "thumbnail.thumb_format")
+        yh_config_infra::config_require_str!(
+            self.thumb_format,
+            "vfs_storage_hub",
+            "thumbnail.thumb_format"
+        )
     }
 
-    pub fn to_runtime_config(
-        &self,
-    ) -> crate::business::services::ThumbnailRuntimeConfig {
+    pub fn to_runtime_config(&self) -> crate::business::services::ThumbnailRuntimeConfig {
         crate::business::services::ThumbnailRuntimeConfig {
             enabled: self.is_enabled(),
             cache_mode: self.get_cache_mode().to_string(),
@@ -1965,7 +2082,12 @@ impl VfsStorageHubConfig {
         }
         if let Some(thumb) = &self.thumbnail {
             yh_config_infra::config_collect_bool!(thumb.enabled, s, "thumbnail.enabled", errors);
-            yh_config_infra::config_collect_not_empty!(thumb.cache_mode, s, "thumbnail.cache_mode", errors);
+            yh_config_infra::config_collect_not_empty!(
+                thumb.cache_mode,
+                s,
+                "thumbnail.cache_mode",
+                errors
+            );
             if let Some(mode) = thumb.cache_mode.as_deref() {
                 let mode = mode.trim().to_ascii_lowercase();
                 if !matches!(mode.as_str(), "dir" | "global" | "none" | "db") {
@@ -1975,24 +2097,86 @@ impl VfsStorageHubConfig {
                     ));
                 }
             }
-            yh_config_infra::config_collect_not_empty!(thumb.cache_dir, s, "thumbnail.cache_dir", errors);
-            yh_config_infra::config_collect_gt_zero!(thumb.thumb_size_px, s, "thumbnail.thumb_size_px", errors);
-            yh_config_infra::config_collect_not_empty!(thumb.thumb_format, s, "thumbnail.thumb_format", errors);
-            yh_config_infra::config_collect_range!(thumb.thumb_quality, s, "thumbnail.thumb_quality", 1, 100, errors);
+            yh_config_infra::config_collect_not_empty!(
+                thumb.cache_dir,
+                s,
+                "thumbnail.cache_dir",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                thumb.thumb_size_px,
+                s,
+                "thumbnail.thumb_size_px",
+                errors
+            );
+            yh_config_infra::config_collect_not_empty!(
+                thumb.thumb_format,
+                s,
+                "thumbnail.thumb_format",
+                errors
+            );
+            yh_config_infra::config_collect_range!(
+                thumb.thumb_quality,
+                s,
+                "thumbnail.thumb_quality",
+                1,
+                100,
+                errors
+            );
             if let Some(tools) = &thumb.tools {
-                yh_config_infra::config_collect_any!(tools.vips_path, s, "thumbnail.tools.vips_path", errors);
-                yh_config_infra::config_collect_any!(tools.imagemagick_path, s, "thumbnail.tools.imagemagick_path", errors);
-                yh_config_infra::config_collect_any!(tools.ffmpeg_path, s, "thumbnail.tools.ffmpeg_path", errors);
-                yh_config_infra::config_collect_any!(tools.libreoffice_path, s, "thumbnail.tools.libreoffice_path", errors);
+                yh_config_infra::config_collect_any!(
+                    tools.vips_path,
+                    s,
+                    "thumbnail.tools.vips_path",
+                    errors
+                );
+                yh_config_infra::config_collect_any!(
+                    tools.imagemagick_path,
+                    s,
+                    "thumbnail.tools.imagemagick_path",
+                    errors
+                );
+                yh_config_infra::config_collect_any!(
+                    tools.ffmpeg_path,
+                    s,
+                    "thumbnail.tools.ffmpeg_path",
+                    errors
+                );
+                yh_config_infra::config_collect_any!(
+                    tools.libreoffice_path,
+                    s,
+                    "thumbnail.tools.libreoffice_path",
+                    errors
+                );
             } else {
                 errors.push(format!("[{}] thumbnail.tools is required (section)", s));
             }
 
             if let Some(image) = &thumb.image {
-                yh_config_infra::config_collect_bool!(image.enabled, s, "thumbnail.image.enabled", errors);
-                yh_config_infra::config_collect_gt_zero!(image.max_size_mb, s, "thumbnail.image.max_size_mb", errors);
-                yh_config_infra::config_collect_gt_zero!(image.timeout_secs, s, "thumbnail.image.timeout_secs", errors);
-                yh_config_infra::config_collect_any!(image.backend, s, "thumbnail.image.backend", errors);
+                yh_config_infra::config_collect_bool!(
+                    image.enabled,
+                    s,
+                    "thumbnail.image.enabled",
+                    errors
+                );
+                yh_config_infra::config_collect_gt_zero!(
+                    image.max_size_mb,
+                    s,
+                    "thumbnail.image.max_size_mb",
+                    errors
+                );
+                yh_config_infra::config_collect_gt_zero!(
+                    image.timeout_secs,
+                    s,
+                    "thumbnail.image.timeout_secs",
+                    errors
+                );
+                yh_config_infra::config_collect_any!(
+                    image.backend,
+                    s,
+                    "thumbnail.image.backend",
+                    errors
+                );
                 if let Some(backend) = image.backend.as_deref() {
                     let backend = backend.trim().to_ascii_lowercase();
                     if !matches!(backend.as_str(), "builtin" | "external") {
@@ -2014,14 +2198,31 @@ impl VfsStorageHubConfig {
             ];
             for (t, name) in types {
                 if let Some(tc) = t {
-                    yh_config_infra::config_collect_bool!(tc.enabled, s, format!("thumbnail.{}.enabled", name), errors);
-                    yh_config_infra::config_collect_gt_zero!(tc.max_size_mb, s, format!("thumbnail.{}.max_size_mb", name), errors);
-                    yh_config_infra::config_collect_gt_zero!(tc.timeout_secs, s, format!("thumbnail.{}.timeout_secs", name), errors);
+                    yh_config_infra::config_collect_bool!(
+                        tc.enabled,
+                        s,
+                        format!("thumbnail.{}.enabled", name),
+                        errors
+                    );
+                    yh_config_infra::config_collect_gt_zero!(
+                        tc.max_size_mb,
+                        s,
+                        format!("thumbnail.{}.max_size_mb", name),
+                        errors
+                    );
+                    yh_config_infra::config_collect_gt_zero!(
+                        tc.timeout_secs,
+                        s,
+                        format!("thumbnail.{}.timeout_secs", name),
+                        errors
+                    );
 
                     if name == "video" && tc.enabled == Some(true) {
                         let seek_ratio = tc.seek_ratio;
                         let seek_seconds = tc.seek_seconds;
-                        let ratio_ok = seek_ratio.map(|r| r.is_finite() && r > 0.0 && r <= 1.0).unwrap_or(false);
+                        let ratio_ok = seek_ratio
+                            .map(|r| r.is_finite() && r > 0.0 && r <= 1.0)
+                            .unwrap_or(false);
                         let secs_ok = seek_seconds.map(|v| v > 0).unwrap_or(false);
                         if !ratio_ok && !secs_ok {
                             errors.push(format!(
@@ -2029,19 +2230,29 @@ impl VfsStorageHubConfig {
                                 s
                             ));
                         }
-                        if let Some(r) = seek_ratio && (!r.is_finite() || r <= 0.0 || r > 1.0) {
+                        if let Some(r) = seek_ratio
+                            && (!r.is_finite() || r <= 0.0 || r > 1.0)
+                        {
                             errors.push(format!(
                                 "[{}] thumbnail.video.seek_ratio must be within (0.0, 1.0]",
                                 s
                             ));
                         }
-                        if let Some(v) = seek_seconds && v == 0 {
-                            errors.push(format!("[{}] thumbnail.video.seek_seconds must be > 0", s));
+                        if let Some(v) = seek_seconds
+                            && v == 0
+                        {
+                            errors
+                                .push(format!("[{}] thumbnail.video.seek_seconds must be > 0", s));
                         }
                     }
 
                     if name == "text" && tc.enabled == Some(true) {
-                        yh_config_infra::config_collect_gt_zero!(tc.max_chars, s, "thumbnail.text.max_chars", errors);
+                        yh_config_infra::config_collect_gt_zero!(
+                            tc.max_chars,
+                            s,
+                            "thumbnail.text.max_chars",
+                            errors
+                        );
                     }
                 } else {
                     errors.push(format!("[{}] thumbnail.{} is required (section)", s, name));
@@ -2060,8 +2271,13 @@ impl VfsStorageHubConfig {
                 let magick = tools.imagemagick_path.as_deref().unwrap_or("").trim();
                 let ffmpeg = tools.ffmpeg_path.as_deref().unwrap_or("").trim();
                 let libreoffice = tools.libreoffice_path.as_deref().unwrap_or("").trim();
-                let image_backend_is_builtin = image.backend.as_deref().map(|value| value.trim().eq_ignore_ascii_case("builtin")).unwrap_or(false);
-                let video_backend_requires_ffmpeg = !cfg!(any(target_os = "android", target_os = "ios"));
+                let image_backend_is_builtin = image
+                    .backend
+                    .as_deref()
+                    .map(|value| value.trim().eq_ignore_ascii_case("builtin"))
+                    .unwrap_or(false);
+                let video_backend_requires_ffmpeg =
+                    !cfg!(any(target_os = "android", target_os = "ios"));
 
                 let has_raster_tool = !vips.is_empty() || !magick.is_empty();
                 if image.enabled == Some(true) && !image_backend_is_builtin && !has_raster_tool {
@@ -2090,7 +2306,8 @@ impl VfsStorageHubConfig {
                         ));
                     }
                 }
-                if video.enabled == Some(true) && video_backend_requires_ffmpeg && ffmpeg.is_empty() {
+                if video.enabled == Some(true) && video_backend_requires_ffmpeg && ffmpeg.is_empty()
+                {
                     errors.push(format!(
                         "[{}] thumbnail.tools.ffmpeg_path must be set for video thumbnails",
                         s
