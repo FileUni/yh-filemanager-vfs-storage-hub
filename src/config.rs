@@ -1963,6 +1963,149 @@ impl VfsStorageHubConfig {
         } else {
             errors.push(format!("[{}] file_index is required (section)", s));
         }
+        if let Some(thumb) = &self.thumbnail {
+            yh_config_infra::config_collect_bool!(thumb.enabled, s, "thumbnail.enabled", errors);
+            yh_config_infra::config_collect_not_empty!(thumb.cache_mode, s, "thumbnail.cache_mode", errors);
+            if let Some(mode) = thumb.cache_mode.as_deref() {
+                let mode = mode.trim().to_ascii_lowercase();
+                if !matches!(mode.as_str(), "dir" | "global" | "none" | "db") {
+                    errors.push(format!(
+                        "[{}] thumbnail.cache_mode must be one of dir|global|none (legacy alias db is accepted)",
+                        s
+                    ));
+                }
+            }
+            yh_config_infra::config_collect_not_empty!(thumb.cache_dir, s, "thumbnail.cache_dir", errors);
+            yh_config_infra::config_collect_gt_zero!(thumb.thumb_size_px, s, "thumbnail.thumb_size_px", errors);
+            yh_config_infra::config_collect_not_empty!(thumb.thumb_format, s, "thumbnail.thumb_format", errors);
+            yh_config_infra::config_collect_range!(thumb.thumb_quality, s, "thumbnail.thumb_quality", 1, 100, errors);
+            if let Some(tools) = &thumb.tools {
+                yh_config_infra::config_collect_any!(tools.vips_path, s, "thumbnail.tools.vips_path", errors);
+                yh_config_infra::config_collect_any!(tools.imagemagick_path, s, "thumbnail.tools.imagemagick_path", errors);
+                yh_config_infra::config_collect_any!(tools.ffmpeg_path, s, "thumbnail.tools.ffmpeg_path", errors);
+                yh_config_infra::config_collect_any!(tools.libreoffice_path, s, "thumbnail.tools.libreoffice_path", errors);
+            } else {
+                errors.push(format!("[{}] thumbnail.tools is required (section)", s));
+            }
+
+            if let Some(image) = &thumb.image {
+                yh_config_infra::config_collect_bool!(image.enabled, s, "thumbnail.image.enabled", errors);
+                yh_config_infra::config_collect_gt_zero!(image.max_size_mb, s, "thumbnail.image.max_size_mb", errors);
+                yh_config_infra::config_collect_gt_zero!(image.timeout_secs, s, "thumbnail.image.timeout_secs", errors);
+                yh_config_infra::config_collect_any!(image.backend, s, "thumbnail.image.backend", errors);
+                if let Some(backend) = image.backend.as_deref() {
+                    let backend = backend.trim().to_ascii_lowercase();
+                    if !matches!(backend.as_str(), "builtin" | "external") {
+                        errors.push(format!(
+                            "[{}] thumbnail.image.backend must be one of builtin|external",
+                            s
+                        ));
+                    }
+                }
+            } else {
+                errors.push(format!("[{}] thumbnail.image is required (section)", s));
+            }
+
+            let types = [
+                (&thumb.video, "video"),
+                (&thumb.pdf, "pdf"),
+                (&thumb.office, "office"),
+                (&thumb.text, "text"),
+            ];
+            for (t, name) in types {
+                if let Some(tc) = t {
+                    yh_config_infra::config_collect_bool!(tc.enabled, s, format!("thumbnail.{}.enabled", name), errors);
+                    yh_config_infra::config_collect_gt_zero!(tc.max_size_mb, s, format!("thumbnail.{}.max_size_mb", name), errors);
+                    yh_config_infra::config_collect_gt_zero!(tc.timeout_secs, s, format!("thumbnail.{}.timeout_secs", name), errors);
+
+                    if name == "video" && tc.enabled == Some(true) {
+                        let seek_ratio = tc.seek_ratio;
+                        let seek_seconds = tc.seek_seconds;
+                        let ratio_ok = seek_ratio.map(|r| r.is_finite() && r > 0.0 && r <= 1.0).unwrap_or(false);
+                        let secs_ok = seek_seconds.map(|v| v > 0).unwrap_or(false);
+                        if !ratio_ok && !secs_ok {
+                            errors.push(format!(
+                                "[{}] thumbnail.video.seek_ratio or thumbnail.video.seek_seconds is required",
+                                s
+                            ));
+                        }
+                        if let Some(r) = seek_ratio && (!r.is_finite() || r <= 0.0 || r > 1.0) {
+                            errors.push(format!(
+                                "[{}] thumbnail.video.seek_ratio must be within (0.0, 1.0]",
+                                s
+                            ));
+                        }
+                        if let Some(v) = seek_seconds && v == 0 {
+                            errors.push(format!("[{}] thumbnail.video.seek_seconds must be > 0", s));
+                        }
+                    }
+
+                    if name == "text" && tc.enabled == Some(true) {
+                        yh_config_infra::config_collect_gt_zero!(tc.max_chars, s, "thumbnail.text.max_chars", errors);
+                    }
+                } else {
+                    errors.push(format!("[{}] thumbnail.{} is required (section)", s, name));
+                }
+            }
+
+            if let (Some(tools), Some(image), Some(video), Some(pdf), Some(office), Some(text)) = (
+                thumb.tools.as_ref(),
+                thumb.image.as_ref(),
+                thumb.video.as_ref(),
+                thumb.pdf.as_ref(),
+                thumb.office.as_ref(),
+                thumb.text.as_ref(),
+            ) {
+                let vips = tools.vips_path.as_deref().unwrap_or("").trim();
+                let magick = tools.imagemagick_path.as_deref().unwrap_or("").trim();
+                let ffmpeg = tools.ffmpeg_path.as_deref().unwrap_or("").trim();
+                let libreoffice = tools.libreoffice_path.as_deref().unwrap_or("").trim();
+                let image_backend_is_builtin = image.backend.as_deref().map(|value| value.trim().eq_ignore_ascii_case("builtin")).unwrap_or(false);
+                let video_backend_requires_ffmpeg = !cfg!(any(target_os = "android", target_os = "ios"));
+
+                let has_raster_tool = !vips.is_empty() || !magick.is_empty();
+                if image.enabled == Some(true) && !image_backend_is_builtin && !has_raster_tool {
+                    errors.push(format!(
+                        "[{}] thumbnail.tools.vips_path or thumbnail.tools.imagemagick_path must be set for image thumbnails",
+                        s
+                    ));
+                }
+                if pdf.enabled == Some(true) && !has_raster_tool {
+                    errors.push(format!(
+                        "[{}] thumbnail.tools.vips_path or thumbnail.tools.imagemagick_path must be set for pdf thumbnails",
+                        s
+                    ));
+                }
+                if office.enabled == Some(true) {
+                    if libreoffice.is_empty() {
+                        errors.push(format!(
+                            "[{}] thumbnail.tools.libreoffice_path must be set for office thumbnails",
+                            s
+                        ));
+                    }
+                    if !has_raster_tool {
+                        errors.push(format!(
+                            "[{}] thumbnail.tools.vips_path or thumbnail.tools.imagemagick_path must be set for office thumbnails",
+                            s
+                        ));
+                    }
+                }
+                if video.enabled == Some(true) && video_backend_requires_ffmpeg && ffmpeg.is_empty() {
+                    errors.push(format!(
+                        "[{}] thumbnail.tools.ffmpeg_path must be set for video thumbnails",
+                        s
+                    ));
+                }
+                if text.enabled == Some(true) && magick.is_empty() {
+                    errors.push(format!(
+                        "[{}] thumbnail.tools.imagemagick_path must be set for text thumbnails",
+                        s
+                    ));
+                }
+            }
+        } else {
+            errors.push(format!("[{}] thumbnail is required (section)", s));
+        }
         if let Some(fs) = &self.file_share {
             yh_config_infra::config_collect_bool!(fs.enable, s, "file_share.enable", errors);
             yh_config_infra::config_collect_bool!(
@@ -2290,6 +2433,9 @@ impl VfsStorageHubConfig {
     }
     pub fn get_file_index(&self) -> &VfsFileIndexConfig {
         yh_config_infra::config_require!(self.file_index, "vfs_storage_hub", "file_index")
+    }
+    pub fn get_thumbnail(&self) -> &VfsThumbnailConfig {
+        yh_config_infra::config_require!(self.thumbnail, "vfs_storage_hub", "thumbnail")
     }
     pub fn get_maintenance(&self) -> &VfsMaintenanceConfig {
         yh_config_infra::config_require!(self.maintenance, "vfs_storage_hub", "maintenance")
