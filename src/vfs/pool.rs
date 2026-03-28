@@ -509,7 +509,7 @@ impl VfsStorage for VfsPool {
                 Ok((data.to_bytes(), info))
             }
             Err(err) => {
-                let primary_err = crate::vfs::error::VfsError::from(err);
+                let primary_err = err;
                 let Some(backup) = &self.backup else {
                     return Err(primary_err);
                 };
