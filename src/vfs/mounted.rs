@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::business::{RemoteMountService, RemoteMountSnapshot, RemoteMountSyncMode};
@@ -46,6 +47,7 @@ static MOUNT_SYNC_LOCKS: Lazy<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static BATCH_TASK_SEMAPHORE: once_cell::sync::OnceCell<Arc<Semaphore>> =
     once_cell::sync::OnceCell::new();
+const MOUNTED_BATCH_TASK_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
 
 fn normalize_logical_path(path: &str) -> String {
     if path.starts_with('/') {
@@ -192,6 +194,23 @@ impl MountedUserStorage {
             .acquire_owned()
             .await
             .map_err(|err| VfsError::Internal(format!("Acquire batch task permit failed: {}", err)))
+    }
+
+    fn spawn_batch_task<F>(task_name: &'static str, task: F)
+    where
+        F: futures::Future<Output = ()> + Send + 'static,
+    {
+        tokio::spawn(async move {
+            if tokio::time::timeout(MOUNTED_BATCH_TASK_TIMEOUT, task)
+                .await
+                .is_err()
+            {
+                yh_console_log::yhlog(
+                    "error",
+                    &format!("Mounted batch task '{}' timed out after 24 hours", task_name),
+                );
+            }
+        });
     }
 
     fn contains_mounted_path(&self, path: &str) -> bool {
@@ -956,7 +975,7 @@ impl VfsStorage for MountedUserStorage {
             .await
             .get_batch_operation()
             .get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("mounted_batch_move", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {
@@ -1009,7 +1028,7 @@ impl VfsStorage for MountedUserStorage {
             .await
             .get_batch_operation()
             .get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("mounted_batch_copy", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {
@@ -1054,7 +1073,7 @@ impl VfsStorage for MountedUserStorage {
             .await
             .get_batch_operation()
             .get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("mounted_batch_delete", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {
@@ -1114,7 +1133,7 @@ impl VfsStorage for MountedUserStorage {
             .await
             .get_batch_operation()
             .get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("mounted_batch_compress", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {
@@ -1230,7 +1249,7 @@ impl VfsStorage for MountedUserStorage {
             .await
             .get_batch_operation()
             .get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("mounted_batch_decompress", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {

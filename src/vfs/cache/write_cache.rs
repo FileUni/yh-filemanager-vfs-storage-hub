@@ -13,7 +13,10 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
+
+const WRITE_CACHE_TASK_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WriteCacheBackend {
@@ -39,11 +42,25 @@ struct PendingWriteDiskMeta {
     user_id: String,
     logical_path: String,
     physical_path: String,
+    blob_path: Option<String>,
     size: u64,
     modified_at: i64,
     deadline_at: i64,
     generation: u64,
     abnormal: bool,
+}
+
+#[derive(Debug, Clone)]
+enum PendingWriteUpdatePlan {
+    InMemory,
+    StageDisk { abnormal: bool },
+}
+
+#[derive(Debug)]
+enum AbnormalPromotionResult {
+    Promoted { old_blob: Option<PendingWriteBlob> },
+    AlreadyAbnormal,
+    Failed,
 }
 
 #[derive(Debug)]
@@ -167,6 +184,30 @@ fn parent_path(path: &str) -> Arc<str> {
     Arc::from(parent)
 }
 
+fn pending_write_disk_meta(
+    user_id: &str,
+    logical_path: &str,
+    physical_path: &str,
+    blob_path: Option<&Path>,
+    size: u64,
+    modified_at: i64,
+    deadline_at: i64,
+    generation: u64,
+    abnormal: bool,
+) -> PendingWriteDiskMeta {
+    PendingWriteDiskMeta {
+        user_id: user_id.to_string(),
+        logical_path: logical_path.to_string(),
+        physical_path: physical_path.to_string(),
+        blob_path: blob_path.map(|path| path.to_string_lossy().to_string()),
+        size,
+        modified_at,
+        deadline_at,
+        generation,
+        abnormal,
+    }
+}
+
 fn file_info_from_pending(path: &str, size: u64, modified_at: i64) -> VfsFileInfo {
     let name = Path::new(path)
         .file_name()
@@ -187,6 +228,23 @@ fn file_info_from_pending(path: &str, size: u64, modified_at: i64) -> VfsFileInf
 }
 
 impl WriteCacheManager {
+    fn spawn_cache_task<F>(task_name: &'static str, task: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        tokio::spawn(async move {
+            if tokio::time::timeout(WRITE_CACHE_TASK_TIMEOUT, task)
+                .await
+                .is_err()
+            {
+                yh_console_log::yhlog(
+                    "error",
+                    &format!("Write cache task '{}' timed out after 24 hours", task_name),
+                );
+            }
+        });
+    }
+
     pub async fn new(
         pool_name: &str,
         primary: Arc<Operator>,
@@ -294,16 +352,17 @@ impl WriteCacheManager {
         }
         let blob = self
             .store_blob(
-                &PendingWriteDiskMeta {
-                    user_id: user_id.to_string(),
-                    logical_path: logical_path.to_string(),
-                    physical_path: physical_path.to_string(),
-                    size: data.len() as u64,
+                &pending_write_disk_meta(
+                    user_id,
+                    logical_path,
+                    physical_path,
+                    None,
+                    data.len() as u64,
                     modified_at,
                     deadline_at,
-                    generation: 1,
-                    abnormal: false,
-                },
+                    1,
+                    false,
+                ),
                 &data,
             )
             .await?;
@@ -436,7 +495,7 @@ impl WriteCacheManager {
                         break;
                     };
                     let this_clone = Arc::clone(&this);
-                    tokio::spawn(async move {
+                    Self::spawn_cache_task("write_cache_flush_entry", async move {
                         let _permit = permit;
                         let _ = this_clone.flush_entry(entry, false).await;
                     });
@@ -453,7 +512,7 @@ impl WriteCacheManager {
                         continue;
                     };
                     let this_clone = Arc::clone(&this);
-                    tokio::spawn(async move {
+                    Self::spawn_cache_task("write_cache_sync_directory_index", async move {
                         let _ = this_clone.sync_directory_index(task_key, task).await;
                     });
                 }
@@ -469,7 +528,7 @@ impl WriteCacheManager {
                         continue;
                     };
                     let this_clone = Arc::clone(&this);
-                    tokio::spawn(async move {
+                    Self::spawn_cache_task("write_cache_sync_user_quota", async move {
                         let _ = this_clone.sync_user_quota(user_key, task).await;
                     });
                 }
@@ -507,28 +566,53 @@ impl WriteCacheManager {
             Ok(meta) => meta.content_length() as i64,
             Err(_) => 0,
         };
-        let write_result = self
-            .primary
-            .write(entry.physical_path.as_ref(), data.clone())
-            .await;
+        let flush_data = data.clone();
+        let write_result = self.primary.write(entry.physical_path.as_ref(), data).await;
         if let Err(err) = write_result {
-            let mut inner = entry.inner.lock().await;
-            inner.retry_count = inner.retry_count.saturating_add(1);
-            inner.last_error = Some(err.to_string());
-            inner.next_retry_at =
-                now_ts() + self.retry_delay_secs(inner.retry_count, inner.abnormal_logged);
-            if now_ts() > deadline_at {
-                let promoted = self.promote_to_abnormal(&entry, &mut inner, &data).await;
-                if promoted && !inner.abnormal_logged {
-                    inner.abnormal_logged = true;
-                    inner.state = PendingWriteState::Abnormal;
-                    inner.next_retry_at = now_ts() + self.retry_delay_secs(inner.retry_count, true);
-                    drop(inner);
-                    global_vfs_metrics().record_write_cache_abnormal_spill();
-                    self.log_abnormal_journal(&entry, &err.to_string()).await;
-                    global_vfs_metrics().record_write_cache_flush_failure();
-                    return Err(crate::vfs::VfsError::Internal(err.to_string()));
+            let err_msg = err.to_string();
+            let should_promote = {
+                let mut inner = entry.inner.lock().await;
+                inner.retry_count = inner.retry_count.saturating_add(1);
+                inner.last_error = Some(err_msg.clone());
+                inner.next_retry_at =
+                    now_ts() + self.retry_delay_secs(inner.retry_count, inner.abnormal_logged);
+                now_ts() > deadline_at
+            };
+
+            if should_promote {
+                let promoted = self.promote_to_abnormal(&entry, &flush_data).await;
+                match promoted {
+                    AbnormalPromotionResult::Promoted { old_blob } => {
+                        let mut inner = entry.inner.lock().await;
+                        if !inner.abnormal_logged {
+                            inner.abnormal_logged = true;
+                            inner.state = PendingWriteState::Abnormal;
+                            inner.next_retry_at =
+                                now_ts() + self.retry_delay_secs(inner.retry_count, true);
+                            drop(inner);
+
+                            if let Some(PendingWriteBlob::Disk(path)) = old_blob.as_ref() {
+                                let _ = tokio::fs::remove_file(path).await;
+                                let _ = tokio::fs::remove_file(self.meta_path_for_blob(path)).await;
+                            }
+
+                            global_vfs_metrics().record_write_cache_abnormal_spill();
+                            self.log_abnormal_journal(&entry, &err_msg).await;
+                            global_vfs_metrics().record_write_cache_flush_failure();
+                            return Err(crate::vfs::VfsError::Internal(err_msg));
+                        }
+                    }
+                    AbnormalPromotionResult::AlreadyAbnormal => {
+                        let mut inner = entry.inner.lock().await;
+                        inner.state = PendingWriteState::Abnormal;
+                    }
+                    AbnormalPromotionResult::Failed => {}
                 }
+            }
+
+            let mut inner = entry.inner.lock().await;
+            if now_ts() > deadline_at {
+                inner.next_retry_at = now_ts() + self.retry_delay_secs(inner.retry_count, true);
             }
             inner.state = if inner.abnormal_logged {
                 PendingWriteState::Abnormal
@@ -536,7 +620,7 @@ impl WriteCacheManager {
                 PendingWriteState::Pending
             };
             global_vfs_metrics().record_write_cache_flush_failure();
-            return Err(crate::vfs::VfsError::Internal(err.to_string()));
+            return Err(crate::vfs::VfsError::Internal(err_msg));
         }
 
         let info = match self.primary.stat(entry.physical_path.as_ref()).await {
@@ -579,7 +663,7 @@ impl WriteCacheManager {
 
         if let Some(read_cache) = &self.read_cache {
             read_cache
-                .put(entry.physical_path.as_ref(), data, info.clone())
+                .put(entry.physical_path.as_ref(), flush_data, info.clone())
                 .await;
         }
         let delta = info.size as i64 - previous_size;
@@ -613,67 +697,86 @@ impl WriteCacheManager {
         modified_at: i64,
         deadline_at: i64,
     ) -> anyhow::Result<()> {
-        let mut inner = entry.inner.lock().await;
-        let previous_accounted = self.accounted_bytes_for_blob(&inner);
-        inner.generation = inner.generation.saturating_add(1);
-        inner.size = data.len() as u64;
-        inner.modified_at = modified_at;
-        inner.deadline_at = deadline_at;
-        inner.next_retry_at = modified_at;
-        inner.state = if inner.abnormal_logged {
-            PendingWriteState::Abnormal
-        } else {
-            PendingWriteState::Pending
+        let (generation, previous_accounted, plan) = {
+            let mut inner = entry.inner.lock().await;
+            let previous_accounted = self.accounted_bytes_for_blob(&inner);
+            inner.generation = inner.generation.saturating_add(1);
+            inner.size = data.len() as u64;
+            inner.modified_at = modified_at;
+            inner.deadline_at = deadline_at;
+            inner.next_retry_at = modified_at;
+            inner.state = if inner.abnormal_logged {
+                PendingWriteState::Abnormal
+            } else {
+                PendingWriteState::Pending
+            };
+            inner.last_error = None;
+            let plan = match (&self.backend, &inner.blob) {
+                (WriteCacheBackend::Memory, PendingWriteBlob::Memory(_)) => PendingWriteUpdatePlan::InMemory,
+                (_, PendingWriteBlob::Disk(path)) => PendingWriteUpdatePlan::StageDisk {
+                    abnormal: path.starts_with(&self.abnormal_dir),
+                },
+                (WriteCacheBackend::LocalDir, PendingWriteBlob::Memory(_)) => {
+                    PendingWriteUpdatePlan::StageDisk { abnormal: false }
+                }
+            };
+            (inner.generation, previous_accounted, plan)
         };
-        inner.last_error = None;
-        match (&self.backend, &inner.blob) {
-            (WriteCacheBackend::Memory, PendingWriteBlob::Memory(_)) => {
-                inner.blob = PendingWriteBlob::Memory(data);
-            }
-            (_, PendingWriteBlob::Disk(path)) => {
-                let abnormal = path.starts_with(&self.abnormal_dir);
-                tokio::fs::write(path, &data).await?;
-                self.write_disk_meta(
-                    path,
-                    &PendingWriteDiskMeta {
-                        user_id: entry.user_id.to_string(),
-                        logical_path: entry.logical_path.to_string(),
-                        physical_path: physical_path.to_string(),
-                        size: data.len() as u64,
+
+        let staged_blob = match plan {
+            PendingWriteUpdatePlan::InMemory => PendingWriteBlob::Memory(data),
+            PendingWriteUpdatePlan::StageDisk { abnormal } => {
+                self.store_staged_blob(
+                    &pending_write_disk_meta(
+                        entry.user_id.as_ref(),
+                        entry.logical_path.as_ref(),
+                        physical_path,
+                        None,
+                        data.len() as u64,
                         modified_at,
                         deadline_at,
-                        generation: inner.generation,
+                        generation,
                         abnormal,
-                    },
+                    ),
+                    &data,
                 )
-                .await?;
+                .await?
             }
-            (WriteCacheBackend::LocalDir, PendingWriteBlob::Memory(_)) => {
-                let blob = self
-                    .store_blob(
-                        &PendingWriteDiskMeta {
-                            user_id: entry.user_id.to_string(),
-                            logical_path: entry.logical_path.to_string(),
-                            physical_path: physical_path.to_string(),
-                            size: data.len() as u64,
-                            modified_at,
-                            deadline_at,
-                            generation: inner.generation,
-                            abnormal: false,
-                        },
-                        &data,
-                    )
-                    .await?;
-                inner.blob = blob;
+        };
+        let staged_blob_cleanup_path = match &staged_blob {
+            PendingWriteBlob::Disk(path) => Some(path.clone()),
+            PendingWriteBlob::Memory(_) => None,
+        };
+
+        let old_blob = {
+            let mut inner = entry.inner.lock().await;
+            if inner.generation != generation {
+                None
+            } else {
+                let old_blob = std::mem::replace(&mut inner.blob, staged_blob);
+                let new_accounted = self.accounted_bytes_for_blob(&inner);
+                if new_accounted >= previous_accounted {
+                    self.accounted_bytes
+                        .fetch_add(new_accounted - previous_accounted, Ordering::SeqCst);
+                } else {
+                    self.accounted_bytes
+                        .fetch_sub(previous_accounted - new_accounted, Ordering::SeqCst);
+                }
+                Some(old_blob)
             }
+        };
+
+        if old_blob.is_none() {
+            if let Some(path) = staged_blob_cleanup_path.as_ref() {
+                let _ = tokio::fs::remove_file(path).await;
+                let _ = tokio::fs::remove_file(self.meta_path_for_blob(path)).await;
+            }
+            return Ok(());
         }
-        let new_accounted = self.accounted_bytes_for_blob(&inner);
-        if new_accounted >= previous_accounted {
-            self.accounted_bytes
-                .fetch_add(new_accounted - previous_accounted, Ordering::SeqCst);
-        } else {
-            self.accounted_bytes
-                .fetch_sub(previous_accounted - new_accounted, Ordering::SeqCst);
+
+        if let Some(PendingWriteBlob::Disk(path)) = old_blob.as_ref() {
+            let _ = tokio::fs::remove_file(path).await;
+            let _ = tokio::fs::remove_file(self.meta_path_for_blob(path)).await;
         }
         Ok(())
     }
@@ -700,6 +803,31 @@ impl WriteCacheManager {
         }
     }
 
+    async fn store_staged_blob(
+        &self,
+        meta: &PendingWriteDiskMeta,
+        data: &Bytes,
+    ) -> anyhow::Result<PendingWriteBlob> {
+        let base_dir = if meta.abnormal {
+            &self.abnormal_dir
+        } else {
+            &self.queue_dir
+        };
+        tokio::fs::create_dir_all(base_dir).await?;
+        let file_path = base_dir.join(format!(
+            "{}-{}.bin",
+            cache_hash(&meta.physical_path),
+            uuid::Uuid::now_v7()
+        ));
+        tokio::fs::write(&file_path, data).await?;
+        let staged_meta = PendingWriteDiskMeta {
+            blob_path: Some(file_path.to_string_lossy().to_string()),
+            ..meta.clone()
+        };
+        self.write_disk_meta(&file_path, &staged_meta).await?;
+        Ok(PendingWriteBlob::Disk(file_path))
+    }
+
     async fn read_blob_bytes(&self, blob: &PendingWriteBlob) -> anyhow::Result<Bytes> {
         match blob {
             PendingWriteBlob::Memory(data) => Ok(data.clone()),
@@ -710,52 +838,86 @@ impl WriteCacheManager {
     async fn promote_to_abnormal(
         &self,
         entry: &Arc<PendingWriteRecord>,
-        inner: &mut PendingWriteMutable,
         data: &Bytes,
-    ) -> bool {
-        if matches!(inner.blob, PendingWriteBlob::Disk(ref path) if path.starts_with(&self.abnormal_dir))
+    ) -> AbnormalPromotionResult {
+        let (generation, size, modified_at, deadline_at, previous_accounted, already_abnormal) = {
+            let inner = entry.inner.lock().await;
+            (
+                inner.generation,
+                inner.size,
+                inner.modified_at,
+                inner.deadline_at,
+                self.accounted_bytes_for_blob(&inner),
+                matches!(
+                    inner.blob,
+                    PendingWriteBlob::Disk(ref path) if path.starts_with(&self.abnormal_dir)
+                ),
+            )
+        };
+
+        if already_abnormal {
+            let mut inner = entry.inner.lock().await;
+            if inner.generation == generation {
+                inner.state = PendingWriteState::Abnormal;
+            }
+            return AbnormalPromotionResult::AlreadyAbnormal;
+        }
+
+        let staged_blob = match self
+            .store_staged_blob(
+                &pending_write_disk_meta(
+                    entry.user_id.as_ref(),
+                    entry.logical_path.as_ref(),
+                    entry.physical_path.as_ref(),
+                    None,
+                    size,
+                    modified_at,
+                    deadline_at,
+                    generation,
+                    true,
+                ),
+                data,
+            )
+            .await
         {
-            inner.state = PendingWriteState::Abnormal;
-            return true;
+            Ok(blob) => blob,
+            Err(_) => return AbnormalPromotionResult::Failed,
+        };
+        let staged_blob_cleanup_path = match &staged_blob {
+            PendingWriteBlob::Disk(path) => Some(path.clone()),
+            PendingWriteBlob::Memory(_) => None,
+        };
+
+        let old_blob = {
+            let mut inner = entry.inner.lock().await;
+            if inner.generation != generation {
+                None
+            } else {
+                let old_blob = std::mem::replace(&mut inner.blob, staged_blob);
+                inner.state = PendingWriteState::Abnormal;
+                let current_accounted = self.accounted_bytes_for_blob(&inner);
+                if current_accounted >= previous_accounted {
+                    self.accounted_bytes
+                        .fetch_add(current_accounted - previous_accounted, Ordering::SeqCst);
+                } else {
+                    self.accounted_bytes
+                        .fetch_sub(previous_accounted - current_accounted, Ordering::SeqCst);
+                }
+                Some(old_blob)
+            }
+        };
+
+        let Some(old_blob) = old_blob else {
+            if let Some(path) = staged_blob_cleanup_path.as_ref() {
+                let _ = tokio::fs::remove_file(path).await;
+                let _ = tokio::fs::remove_file(self.meta_path_for_blob(path)).await;
+            }
+            return AbnormalPromotionResult::Failed;
+        };
+
+        AbnormalPromotionResult::Promoted {
+            old_blob: Some(old_blob),
         }
-        let abnormal_path = data_path(&self.abnormal_dir, entry.physical_path.as_ref());
-        let write_ok = tokio::fs::create_dir_all(&self.abnormal_dir).await.is_ok()
-            && tokio::fs::write(&abnormal_path, data).await.is_ok()
-            && self
-                .write_disk_meta(
-                    &abnormal_path,
-                    &PendingWriteDiskMeta {
-                        user_id: entry.user_id.to_string(),
-                        logical_path: entry.logical_path.to_string(),
-                        physical_path: entry.physical_path.to_string(),
-                        size: inner.size,
-                        modified_at: inner.modified_at,
-                        deadline_at: inner.deadline_at,
-                        generation: inner.generation,
-                        abnormal: true,
-                    },
-                )
-                .await
-                .is_ok();
-        if !write_ok {
-            return false;
-        }
-        if let PendingWriteBlob::Disk(path) = &inner.blob {
-            let _ = tokio::fs::remove_file(path).await;
-            let _ = tokio::fs::remove_file(self.meta_path_for_blob(path)).await;
-        }
-        let previous_accounted = self.accounted_bytes_for_blob(inner);
-        inner.blob = PendingWriteBlob::Disk(abnormal_path);
-        inner.state = PendingWriteState::Abnormal;
-        let current_accounted = self.accounted_bytes_for_blob(inner);
-        if current_accounted >= previous_accounted {
-            self.accounted_bytes
-                .fetch_add(current_accounted - previous_accounted, Ordering::SeqCst);
-        } else {
-            self.accounted_bytes
-                .fetch_sub(previous_accounted - current_accounted, Ordering::SeqCst);
-        }
-        true
     }
 
     async fn load_existing_entries(&self) {
@@ -783,7 +945,11 @@ impl WriteCacheManager {
             let Ok(meta) = serde_json::from_str::<PendingWriteDiskMeta>(&raw) else {
                 continue;
             };
-            let blob_path = data_path(dir, &meta.physical_path);
+            let blob_path = meta
+                .blob_path
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| data_path(dir, &meta.physical_path));
             if tokio::fs::metadata(&blob_path).await.is_err() {
                 let _ = tokio::fs::remove_file(&path).await;
                 continue;
@@ -940,23 +1106,28 @@ impl WriteCacheManager {
             .list_directory_entries(task.physical_parent_path.as_ref())
             .await?;
         let now = chrono::Utc::now();
+        let user_id = task.user_id.as_ref();
+        let parent_path = task.logical_parent_path.as_ref();
+        let user_id_owned = user_id.to_string();
+        let parent_path_owned = parent_path.to_string();
+        let storage_id = self.pool_name.to_string();
+        let backend_type = self.backend_type.to_string();
         let models: Vec<file_index::ActiveModel> = entries
             .into_iter()
             .filter_map(|info| {
-                let logical_path =
-                    self.physical_to_logical_path(task.user_id.as_ref(), info.path.as_ref())?;
+                let logical_path = self.physical_to_logical_path(user_id, info.path.as_ref())?;
                 if !self.policy.allows(&logical_path) {
                     return None;
                 }
                 Some(file_index::ActiveModel {
                     id: Set(uuid::Uuid::now_v7().to_string()),
-                    user_id: Set(task.user_id.to_string()),
-                    parent_path: Set(task.logical_parent_path.to_string()),
+                    user_id: Set(user_id_owned.clone()),
+                    parent_path: Set(parent_path_owned.clone()),
                     name: Set(info.name.to_string()),
-                    path: Set(logical_path.clone()),
+                    path: Set(logical_path),
                     is_dir: Set(info.is_dir),
-                    storage_id: Set(Some(self.pool_name.to_string())),
-                    backend_type: Set(Some(self.backend_type.to_string())),
+                    storage_id: Set(Some(storage_id.clone())),
+                    backend_type: Set(Some(backend_type.clone())),
                     backend_key: Set(Some(info.path.to_string())),
                     size: Set(info.size as i64),
                     file_updated_at: Set(info.modified.map(|dt| dt.into())),
@@ -975,12 +1146,7 @@ impl WriteCacheManager {
         let rows = models.len() as u64;
         let chunk_count = rows.div_ceil(chunk_size.max(1) as u64);
         if let Err(err) = index_service
-            .sync_directory_optimized(
-                task.user_id.as_ref(),
-                task.logical_parent_path.as_ref(),
-                models,
-                chunk_size,
-            )
+            .sync_directory_optimized(user_id, parent_path, models, chunk_size)
             .await
         {
             global_vfs_metrics().record_index_sync_failed();
