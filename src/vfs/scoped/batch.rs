@@ -1,10 +1,13 @@
 use super::ScopedVfsStorageEngine;
 use crate::vfs::error::{VfsError, VfsResult};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 static BATCH_TASK_SEMAPHORE: once_cell::sync::OnceCell<Arc<Semaphore>> =
     once_cell::sync::OnceCell::new();
+const BATCH_TASK_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
+
 impl ScopedVfsStorageEngine {
     async fn acquire_batch_task_permit() -> VfsResult<OwnedSemaphorePermit> {
         let semaphore = if let Some(existing) = BATCH_TASK_SEMAPHORE.get() {
@@ -22,6 +25,20 @@ impl ScopedVfsStorageEngine {
             .acquire_owned()
             .await
             .map_err(|e| VfsError::Internal(format!("Acquire batch task permit failed: {}", e)))
+    }
+
+    fn spawn_batch_task<F>(task_name: &'static str, task: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        tokio::spawn(async move {
+            if tokio::time::timeout(BATCH_TASK_TIMEOUT, task).await.is_err() {
+                yh_console_log::yhlog(
+                    "error",
+                    &format!("Batch task '{}' timed out after 24 hours", task_name),
+                );
+            }
+        });
     }
 
     pub(super) async fn submit_batch_move_impl(
@@ -43,7 +60,7 @@ impl ScopedVfsStorageEngine {
         let handler = Arc::clone(task_handler);
         let vfs_cfg = crate::config::get_vfs_hub_config().await;
         let timeout = vfs_cfg.get_batch_operation().get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("batch_move", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {
@@ -86,7 +103,7 @@ impl ScopedVfsStorageEngine {
         let handler = Arc::clone(task_handler);
         let vfs_cfg = crate::config::get_vfs_hub_config().await;
         let timeout = vfs_cfg.get_batch_operation().get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("batch_copy", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {
@@ -125,7 +142,7 @@ impl ScopedVfsStorageEngine {
         let handler = Arc::clone(task_handler);
         let vfs_cfg = crate::config::get_vfs_hub_config().await;
         let timeout = vfs_cfg.get_batch_operation().get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("batch_delete", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {
@@ -174,7 +191,7 @@ impl ScopedVfsStorageEngine {
         let handler = Arc::clone(task_handler);
         let vfs_cfg = crate::config::get_vfs_hub_config().await;
         let timeout = vfs_cfg.get_batch_operation().get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("batch_compress", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {
@@ -291,7 +308,7 @@ impl ScopedVfsStorageEngine {
         let handler = Arc::clone(task_handler);
         let vfs_cfg = crate::config::get_vfs_hub_config().await;
         let timeout = vfs_cfg.get_batch_operation().get_timeout_secs();
-        tokio::spawn(async move {
+        Self::spawn_batch_task("batch_decompress", async move {
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {
