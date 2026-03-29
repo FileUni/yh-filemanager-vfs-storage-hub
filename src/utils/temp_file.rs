@@ -226,7 +226,8 @@ impl Drop for VfsTempFileGuard {
             if let Some((op, logical_path)) = self.vfs_cleanup.take() {
                 // VFS takes over cleanup
                 tokio::spawn(async move {
-                    match tokio::time::timeout(VFS_CLEANUP_TIMEOUT, op.delete(&logical_path)).await {
+                    match tokio::time::timeout(VFS_CLEANUP_TIMEOUT, op.delete(&logical_path)).await
+                    {
                         Ok(Ok(())) => {}
                         Ok(Err(e)) => {
                             yhlog(

@@ -32,7 +32,10 @@ impl ScopedVfsStorageEngine {
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         tokio::spawn(async move {
-            if tokio::time::timeout(BATCH_TASK_TIMEOUT, task).await.is_err() {
+            if tokio::time::timeout(BATCH_TASK_TIMEOUT, task)
+                .await
+                .is_err()
+            {
                 yh_console_log::yhlog(
                     "error",
                     &format!("Batch task '{}' timed out after 24 hours", task_name),

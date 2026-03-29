@@ -49,7 +49,10 @@ fn spawn_process_stdin_pump<S>(
             }
         };
 
-        if tokio::time::timeout(PROCESS_PIPE_TIMEOUT, pump).await.is_err() {
+        if tokio::time::timeout(PROCESS_PIPE_TIMEOUT, pump)
+            .await
+            .is_err()
+        {
             yhlog(
                 "warn",
                 &format!("Process pipe task '{}' timed out after 24 hours", task_name),
@@ -869,7 +872,8 @@ pub async fn extract_archive_file(
         };
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
-        Ok(Box::pin(std::io::Cursor::new(buffer)) as Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>)
+        Ok(Box::pin(std::io::Cursor::new(buffer))
+            as Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>)
     }
 }
 // --- Trait Compatible Wrappers ---

@@ -374,13 +374,18 @@ impl ScopedVfsStorageEngine {
             .get_effective_max_concurrent_tasks()
             .max(1);
         let mut result = VfsBatchResult::default();
-        let mut stream = futures::stream::iter(paths.iter().map(std::borrow::ToOwned::to_owned).map(|path| {
-            let engine = self.clone_for_async();
-            async move {
-                let result = engine.delete_impl(&path).await;
-                (path, result)
-            }
-        }))
+        let mut stream = futures::stream::iter(
+            paths
+                .iter()
+                .map(std::borrow::ToOwned::to_owned)
+                .map(|path| {
+                    let engine = self.clone_for_async();
+                    async move {
+                        let result = engine.delete_impl(&path).await;
+                        (path, result)
+                    }
+                }),
+        )
         .buffer_unordered(concurrency);
         while let Some((path, op_result)) = stream.next().await {
             match op_result {
@@ -406,17 +411,20 @@ impl ScopedVfsStorageEngine {
             .max(1);
         let mut result = VfsBatchResult::default();
         let dst_dir = dst_dir.to_string();
-        let mut stream = futures::stream::iter(src_paths.iter().map(std::borrow::ToOwned::to_owned).map(|src| {
-            let engine = self.clone_for_async();
-            let dst_dir = dst_dir.clone();
-            async move {
-                let filename = src.split('/').next_back().map_or("", |value| value);
-                let dst = format!("{}/{}", dst_dir.trim_end_matches('/'), filename);
-                let result = engine.move_file_impl(&src, &dst).await;
-                (src, result)
-            }
-        }))
-        .buffer_unordered(concurrency);
+        let mut stream =
+            futures::stream::iter(src_paths.iter().map(std::borrow::ToOwned::to_owned).map(
+                |src| {
+                    let engine = self.clone_for_async();
+                    let dst_dir = dst_dir.clone();
+                    async move {
+                        let filename = src.split('/').next_back().map_or("", |value| value);
+                        let dst = format!("{}/{}", dst_dir.trim_end_matches('/'), filename);
+                        let result = engine.move_file_impl(&src, &dst).await;
+                        (src, result)
+                    }
+                },
+            ))
+            .buffer_unordered(concurrency);
         while let Some((src, op_result)) = stream.next().await {
             match op_result {
                 Ok(_) => result.success.push(src.into()),

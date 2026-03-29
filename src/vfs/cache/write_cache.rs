@@ -712,7 +712,9 @@ impl WriteCacheManager {
             };
             inner.last_error = None;
             let plan = match (&self.backend, &inner.blob) {
-                (WriteCacheBackend::Memory, PendingWriteBlob::Memory(_)) => PendingWriteUpdatePlan::InMemory,
+                (WriteCacheBackend::Memory, PendingWriteBlob::Memory(_)) => {
+                    PendingWriteUpdatePlan::InMemory
+                }
                 (_, PendingWriteBlob::Disk(path)) => PendingWriteUpdatePlan::StageDisk {
                     abnormal: path.starts_with(&self.abnormal_dir),
                 },
@@ -787,7 +789,9 @@ impl WriteCacheManager {
         data: &Bytes,
     ) -> anyhow::Result<PendingWriteBlob> {
         match self.backend {
-            WriteCacheBackend::Memory if !meta.abnormal => Ok(PendingWriteBlob::Memory(data.clone())),
+            WriteCacheBackend::Memory if !meta.abnormal => {
+                Ok(PendingWriteBlob::Memory(data.clone()))
+            }
             _ => {
                 let base_dir = if meta.abnormal {
                     &self.abnormal_dir

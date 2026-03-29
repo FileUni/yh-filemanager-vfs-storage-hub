@@ -207,7 +207,10 @@ impl MountedUserStorage {
             {
                 yh_console_log::yhlog(
                     "error",
-                    &format!("Mounted batch task '{}' timed out after 24 hours", task_name),
+                    &format!(
+                        "Mounted batch task '{}' timed out after 24 hours",
+                        task_name
+                    ),
                 );
             }
         });
