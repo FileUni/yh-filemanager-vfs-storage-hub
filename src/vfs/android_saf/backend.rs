@@ -98,7 +98,7 @@ impl Access for AndroidSafBackend {
         }
 
         let file = self.core.open_for_write(path, &args).await?;
-        let writer = AndroidSafWriter::new(Arc::clone(&self.core), path.to_string(), file);
+        let writer = AndroidSafWriter::new(Arc::clone(&self.core), path, file);
         Ok((RpWrite::default(), writer))
     }
 

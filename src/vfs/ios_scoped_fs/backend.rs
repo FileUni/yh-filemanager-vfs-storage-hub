@@ -141,7 +141,7 @@ impl Access for IosScopedFsBackend {
             .map_err(opendal::raw::new_std_io_error)?;
         Ok((
             RpWrite::default(),
-            IosScopedFsWriter::new(Arc::clone(&self.core), path.to_string(), f),
+            IosScopedFsWriter::new(Arc::clone(&self.core), path, f),
         ))
     }
 

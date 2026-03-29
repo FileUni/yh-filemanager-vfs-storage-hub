@@ -11,6 +11,7 @@ use futures::stream::BoxStream;
 use std::cmp::Ordering;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 static INDEX_SYNC_SEMAPHORE: once_cell::sync::OnceCell<Arc<Semaphore>> =
@@ -20,6 +21,7 @@ static INDEX_SYNC_INFLIGHT: once_cell::sync::OnceCell<DashMap<String, ()>> =
 static INDEX_SYNC_LAST_DONE: once_cell::sync::OnceCell<DashMap<String, i64>> =
     once_cell::sync::OnceCell::new();
 const INDEX_SYNC_DEBOUNCE_SECS: i64 = 3;
+const INDEX_SYNC_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
 
 #[inline]
 fn list_stream_page_size() -> u64 {
@@ -45,6 +47,13 @@ fn file_name_from_path(path: &str) -> &str {
 }
 
 impl ScopedVfsStorageEngine {
+    #[inline]
+    fn clear_index_sync_inflight(sync_key: &str) {
+        if let Some(inflight) = INDEX_SYNC_INFLIGHT.get() {
+            inflight.remove(sync_key);
+        }
+    }
+
     async fn acquire_index_sync_permit() -> VfsResult<OwnedSemaphorePermit> {
         let semaphore = if let Some(existing) = INDEX_SYNC_SEMAPHORE.get() {
             Arc::clone(existing)
@@ -126,22 +135,39 @@ impl ScopedVfsStorageEngine {
                             "error",
                             &format!("Background sync permit acquire failed: {}", err),
                         );
-                        if let Some(inflight) = INDEX_SYNC_INFLIGHT.get() {
-                            inflight.remove(&sync_key);
-                        }
+                        Self::clear_index_sync_inflight(&sync_key);
                         return;
                     }
                     let _permit = permit;
-                    if let Err(e) = self_clone.sync_index_internal(&path_clone, false).await {
-                        global_vfs_metrics().record_index_sync_failed();
-                        yh_console_log::yhlog("error", &format!("Background sync failed: {}", e));
+                    match tokio::time::timeout(
+                        INDEX_SYNC_TIMEOUT,
+                        self_clone.sync_index_internal(&path_clone, false),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => {
+                            global_vfs_metrics().record_index_sync_failed();
+                            yh_console_log::yhlog(
+                                "error",
+                                &format!("Background sync failed: {}", e),
+                            );
+                        }
+                        Err(_) => {
+                            global_vfs_metrics().record_index_sync_failed();
+                            yh_console_log::yhlog(
+                                "error",
+                                &format!(
+                                    "Background sync timed out after {:?}: {}",
+                                    INDEX_SYNC_TIMEOUT, path_clone
+                                ),
+                            );
+                        }
                     }
                     if let Some(last_done) = INDEX_SYNC_LAST_DONE.get() {
                         last_done.insert(sync_key.clone(), chrono::Utc::now().timestamp());
                     }
-                    if let Some(inflight) = INDEX_SYNC_INFLIGHT.get() {
-                        inflight.remove(&sync_key);
-                    }
+                    Self::clear_index_sync_inflight(&sync_key);
                 });
                 Ok(None)
             }

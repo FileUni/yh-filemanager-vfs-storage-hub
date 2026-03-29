@@ -13,8 +13,12 @@ pub struct AndroidSafWriter {
 }
 
 impl AndroidSafWriter {
-    pub fn new(core: Arc<AndroidSafCore>, path: String, file: tokio::fs::File) -> Self {
-        Self { core, path, file }
+    pub fn new(core: Arc<AndroidSafCore>, path: &str, file: tokio::fs::File) -> Self {
+        Self {
+            core,
+            path: path.to_string(),
+            file,
+        }
     }
 }
 

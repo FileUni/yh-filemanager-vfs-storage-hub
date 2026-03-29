@@ -13,8 +13,12 @@ pub struct IosScopedFsWriter {
 }
 
 impl IosScopedFsWriter {
-    pub fn new(core: Arc<IosScopedFsCore>, path: String, file: tokio::fs::File) -> Self {
-        Self { core, path, file }
+    pub fn new(core: Arc<IosScopedFsCore>, path: &str, file: tokio::fs::File) -> Self {
+        Self {
+            core,
+            path: path.to_string(),
+            file,
+        }
     }
 }
 

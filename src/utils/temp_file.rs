@@ -2,10 +2,13 @@ use crate::config::VfsTempFileConfig;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use yh_console_log::yhlog;
+
+const VFS_CLEANUP_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
 /// VFS temporary file manager
 ///
 /// User-isolated temporary file management with active file tracking and automatic cleanup
@@ -207,8 +210,8 @@ impl VfsTempFileGuard {
         self
     }
     /// Set VFS cleanup info
-    pub fn with_vfs_cleanup(mut self, op: opendal::Operator, logical_path: String) -> Self {
-        self.vfs_cleanup = Some((op, logical_path));
+    pub fn with_vfs_cleanup(mut self, op: opendal::Operator, logical_path: &str) -> Self {
+        self.vfs_cleanup = Some((op, logical_path.to_string()));
         self
     }
 }
@@ -223,14 +226,26 @@ impl Drop for VfsTempFileGuard {
             if let Some((op, logical_path)) = self.vfs_cleanup.take() {
                 // VFS takes over cleanup
                 tokio::spawn(async move {
-                    if let Err(e) = op.delete(&logical_path).await {
-                        yhlog(
-                            "warn",
-                            &format!(
-                                "VFS Cleanup: Failed to delete virtual temp file {}: {}",
-                                logical_path, e
-                            ),
-                        );
+                    match tokio::time::timeout(VFS_CLEANUP_TIMEOUT, op.delete(&logical_path)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            yhlog(
+                                "warn",
+                                &format!(
+                                    "VFS Cleanup: Failed to delete virtual temp file {}: {}",
+                                    logical_path, e
+                                ),
+                            );
+                        }
+                        Err(_) => {
+                            yhlog(
+                                "warn",
+                                &format!(
+                                    "VFS Cleanup: Timed out deleting virtual temp file {}",
+                                    logical_path
+                                ),
+                            );
+                        }
                     }
                 });
             } else {
@@ -265,8 +280,8 @@ impl VfsTempDirGuard {
         self
     }
     /// Set VFS cleanup info
-    pub fn with_vfs_cleanup(mut self, op: opendal::Operator, logical_path: String) -> Self {
-        self.vfs_cleanup = Some((op, logical_path));
+    pub fn with_vfs_cleanup(mut self, op: opendal::Operator, logical_path: &str) -> Self {
+        self.vfs_cleanup = Some((op, logical_path.to_string()));
         self
     }
 }
@@ -281,14 +296,28 @@ impl Drop for VfsTempDirGuard {
             if let Some((op, logical_path)) = self.vfs_cleanup.take() {
                 // VFS takes over cleanup
                 tokio::spawn(async move {
-                    if let Err(e) = op.remove_all(&logical_path).await {
-                        yhlog(
-                            "warn",
-                            &format!(
-                                "VFS Cleanup: Failed to remove virtual temp directory {}: {}",
-                                logical_path, e
-                            ),
-                        );
+                    match tokio::time::timeout(VFS_CLEANUP_TIMEOUT, op.remove_all(&logical_path))
+                        .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            yhlog(
+                                "warn",
+                                &format!(
+                                    "VFS Cleanup: Failed to remove virtual temp directory {}: {}",
+                                    logical_path, e
+                                ),
+                            );
+                        }
+                        Err(_) => {
+                            yhlog(
+                                "warn",
+                                &format!(
+                                    "VFS Cleanup: Timed out removing virtual temp directory {}",
+                                    logical_path
+                                ),
+                            );
+                        }
                     }
                 });
             } else {

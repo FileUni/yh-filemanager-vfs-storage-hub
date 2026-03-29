@@ -24,14 +24,14 @@ fn split_stem_and_ext(file_name: &str) -> (&str, &str) {
     }
 }
 
-fn reserve_batch_destination(candidate: String, reserved: &mut HashSet<String>) -> String {
-    if reserved.insert(candidate.clone()) {
-        return candidate;
+fn reserve_batch_destination(candidate: &str, reserved: &mut HashSet<String>) -> String {
+    if reserved.insert(candidate.to_string()) {
+        return candidate.to_string();
     }
     let (dir, file_name) = candidate
         .rsplit_once('/')
         .map(|(dir, file)| (dir.to_string(), file.to_string()))
-        .unwrap_or_else(|| (String::new(), candidate.clone()));
+        .unwrap_or_else(|| (String::new(), candidate.to_string()));
     let (stem, ext) = split_stem_and_ext(&file_name);
     for idx in 1..=10_000 {
         let next_file_name = if ext.is_empty() {
@@ -48,7 +48,7 @@ fn reserve_batch_destination(candidate: String, reserved: &mut HashSet<String>) 
             return next;
         }
     }
-    candidate
+    candidate.to_string()
 }
 
 async fn batch_concurrency() -> usize {
@@ -70,7 +70,7 @@ async fn prepare_copy_like_targets(
         let filename = file_name_from_path(src);
         let base_dst = format!("{}/{}", dst_dir.trim_end_matches('/'), filename);
         let candidate = storage.get_unique_path(&base_dst).await.unwrap_or(base_dst);
-        let dst = reserve_batch_destination(candidate, &mut reserved);
+        let dst = reserve_batch_destination(&candidate, &mut reserved);
         plans.push((src.clone(), dst));
     }
     plans

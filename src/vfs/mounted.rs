@@ -434,11 +434,12 @@ impl VfsStorage for MountedUserStorage {
     }
 
     fn list_stream(&self, path: &str) -> BoxStream<'static, VfsResult<VfsFileInfo>> {
-        let this = self.clone();
-        let path = path.to_string();
+        let storage = self.clone();
+        let path = path.to_owned();
         Box::pin(
             futures::stream::once(async move {
-                this.list(&path)
+                storage
+                    .list(&path)
                     .await
                     .map(|entries| futures::stream::iter(entries.into_iter().map(Ok)))
             })
@@ -860,10 +861,10 @@ impl VfsStorage for MountedUserStorage {
     }
 
     fn get_recursive_size(&self, path: &str) -> BoxFuture<'static, VfsResult<i64>> {
-        let this = self.clone();
-        let path = path.to_string();
+        let storage = self.clone();
+        let path = path.to_owned();
         Box::pin(async move {
-            let entries = this.list_recursive(&path).await?;
+            let entries = storage.list_recursive(&path).await?;
             Ok(entries
                 .into_iter()
                 .filter(|entry| !entry.is_dir)
