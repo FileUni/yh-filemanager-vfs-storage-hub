@@ -171,7 +171,8 @@ fn decompress_zip_native(
 ) -> anyhow::Result<()> {
     let file = File::open(src_file)?;
     let mut archive = ZipArchive::new(file)?;
-    for i in 0..archive.len() {
+    let archive_len = archive.len();
+    for i in 0..archive_len {
         let mut file = if let Some(pwd) = password {
             archive.by_index_decrypt(i, pwd.as_bytes())?
         } else {
@@ -761,7 +762,8 @@ pub async fn list_archive_contents(
         let cursor = std::io::Cursor::new(data);
         let mut archive = ZipArchive::new(cursor)?;
         let mut entries = Vec::new();
-        for i in 0..archive.len() {
+        let archive_len = archive.len();
+        for i in 0..archive_len {
             let file = if let Some(pwd) = password {
                 archive.by_index_decrypt(i, pwd.as_bytes())?
             } else {

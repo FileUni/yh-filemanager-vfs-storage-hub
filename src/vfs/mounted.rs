@@ -1366,7 +1366,9 @@ pub async fn build_user_storage_with_mounts(
 }
 
 fn mount_lock(mount_id: &str) -> Arc<AsyncMutex<()>> {
-    let mut map = MOUNT_SYNC_LOCKS.lock().expect("mount sync lock poisoned");
+    let mut map = MOUNT_SYNC_LOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     Arc::clone(
         map.entry(mount_id.to_string())
             .or_insert_with(|| Arc::new(AsyncMutex::new(()))),
