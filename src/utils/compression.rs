@@ -4,6 +4,7 @@ use crate::vfs::{VfsFileInfo, VfsStorage};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use futures::Stream;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -19,6 +20,47 @@ use yh_console_log::yhlog;
 use yh_external_process_manager::get_global_manager;
 use zip::ZipArchive;
 use zip::write::SimpleFileOptions;
+
+const PROCESS_PIPE_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
+
+fn spawn_process_stdin_pump<S>(
+    task_name: &'static str,
+    mut stream: S,
+    mut stdin: tokio::process::ChildStdin,
+    mut child: Option<tokio::process::Child>,
+) where
+    S: Stream<Item = VfsResult<bytes::Bytes>> + Send + Unpin + 'static,
+{
+    tokio::spawn(async move {
+        let pump = async {
+            use futures::StreamExt;
+
+            while let Some(chunk) = stream.next().await {
+                if let Ok(bytes) = chunk
+                    && stdin.write_all(&bytes).await.is_err()
+                {
+                    break;
+                }
+            }
+
+            let _ = stdin.shutdown().await;
+            if let Some(child) = child.as_mut() {
+                let _ = child.wait().await;
+            }
+        };
+
+        if tokio::time::timeout(PROCESS_PIPE_TIMEOUT, pump).await.is_err() {
+            yhlog(
+                "warn",
+                &format!("Process pipe task '{}' timed out after 24 hours", task_name),
+            );
+            if let Some(child) = child.as_mut() {
+                let _ = child.kill().await;
+            }
+        }
+    });
+}
+
 fn is_extension_allowed(path: &str, allowed_formats: &[Arc<str>]) -> bool {
     let path_lower = path.to_lowercase();
     for format in allowed_formats {
@@ -605,7 +647,7 @@ pub async fn stream_compress_reader(
             "Streaming directory compression is not supported via stdin."
         ));
     }
-    let (mut vfs_stream, _) = engine.read_stream(&src_path).await?;
+    let (vfs_stream, _) = engine.read_stream(&src_path).await?;
     let exe_path = fc.get_exe_7zip_path();
     let final_exe = if exe_path.is_empty() { "7z" } else { exe_path };
     let mut child = Command::new(final_exe)
@@ -618,7 +660,7 @@ pub async fn stream_compress_reader(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let mut stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
@@ -626,18 +668,7 @@ pub async fn stream_compress_reader(
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
-    tokio::spawn(async move {
-        use futures::StreamExt;
-        while let Some(chunk) = vfs_stream.next().await {
-            if let Ok(bytes) = chunk
-                && stdin.write_all(&bytes).await.is_err()
-            {
-                break;
-            }
-        }
-        let _ = stdin.shutdown().await;
-        let _ = child.wait().await;
-    });
+    spawn_process_stdin_pump("compress_stream", vfs_stream, stdin, Some(child));
     Ok(stdout)
 }
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -683,7 +714,7 @@ pub async fn list_archive_contents(
                 "7z format requires 7z executable to be configured."
             ));
         }
-        let (mut stream, _) = engine.read_stream(archive_path).await?;
+        let (stream, _) = engine.read_stream(archive_path).await?;
         let mut child = Command::new(if exe_path.is_empty() { "7z" } else { exe_path })
             .arg("l")
             .arg("-slt")
@@ -697,21 +728,11 @@ pub async fn list_archive_contents(
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
-        let mut stdin = child
+        let stdin = child
             .stdin
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
-        tokio::spawn(async move {
-            use futures::StreamExt;
-            while let Some(chunk) = stream.next().await {
-                if let Ok(b) = chunk
-                    && stdin.write_all(&b).await.is_err()
-                {
-                    break;
-                }
-            }
-            let _ = stdin.shutdown().await;
-        });
+        spawn_process_stdin_pump("list_archive_contents", stream, stdin, None);
         let output = child.wait_with_output().await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut entries = Vec::new();
@@ -806,7 +827,7 @@ pub async fn extract_archive_file(
                 "7z format requires 7z executable to be configured."
             ));
         }
-        let (mut stream, _) = engine.read_stream(archive_path).await?;
+        let (stream, _) = engine.read_stream(archive_path).await?;
         let mut child = Command::new(if exe_path.is_empty() { "7z" } else { exe_path })
             .arg("e")
             .arg("-si")
@@ -822,7 +843,7 @@ pub async fn extract_archive_file(
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
-        let mut stdin = child
+        let stdin = child
             .stdin
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
@@ -830,19 +851,8 @@ pub async fn extract_archive_file(
             .stdout
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
-        tokio::spawn(async move {
-            use futures::StreamExt;
-            while let Some(chunk) = stream.next().await {
-                if let Ok(b) = chunk
-                    && stdin.write_all(&b).await.is_err()
-                {
-                    break;
-                }
-            }
-            let _ = stdin.shutdown().await;
-            let _ = child.wait().await;
-        });
-        Ok(Box::pin(stdout))
+        spawn_process_stdin_pump("extract_archive_file", stream, stdin, Some(child));
+        Ok(Box::pin(stdout) as Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>)
     } else {
         if format != CompressionFormat::Zip {
             return Err(anyhow::anyhow!(
@@ -859,7 +869,7 @@ pub async fn extract_archive_file(
         };
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
-        Ok(Box::pin(std::io::Cursor::new(buffer)))
+        Ok(Box::pin(std::io::Cursor::new(buffer)) as Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>)
     }
 }
 // --- Trait Compatible Wrappers ---
