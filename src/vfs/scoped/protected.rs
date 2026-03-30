@@ -351,7 +351,7 @@ impl ScopedVfsStorageEngine {
             trashed_at: None,
             original_path: None,
         };
-        self.upsert_index_helper_with_backend_key(normalized, &info, None)
+        self.upsert_index_helper_with_backend_key(normalized, &info, None, None, None)
             .await?;
         self.journal_log("PROTECTED_MKDIR", normalized, None, true, None)
             .await;
