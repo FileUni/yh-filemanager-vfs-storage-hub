@@ -3231,6 +3231,13 @@ impl VfsStorageHubConfig {
                     "protected_storage.encrypt.cipher",
                     errors
                 );
+                yh_config_infra::config_collect_secret_key!(
+                    encrypt.wrap_key,
+                    s,
+                    "protected_storage.encrypt.wrap_key",
+                    32,
+                    errors
+                );
                 if let Some(cipher) = encrypt.cipher.as_deref()
                     && !cipher.trim().eq_ignore_ascii_case("aes-256-ctr")
                 {
