@@ -60,7 +60,12 @@ struct VideoTranscodeSessionRecord {
 }
 
 impl VideoTranscodeSessionRecord {
-    fn new(key: Arc<str>, session_id: Arc<str>, session_dir: PathBuf, cleanup_ttl_secs: u64) -> Self {
+    fn new(
+        key: Arc<str>,
+        session_id: Arc<str>,
+        session_dir: PathBuf,
+        cleanup_ttl_secs: u64,
+    ) -> Self {
         let manifest_path = session_dir.join("index.m3u8");
         Self {
             key,
@@ -73,8 +78,10 @@ impl VideoTranscodeSessionRecord {
     }
 
     fn touch(&self, cleanup_ttl_secs: u64) {
-        self.expires_at_epoch_secs
-            .store(now_epoch_secs() + cleanup_ttl_secs as i64, Ordering::Relaxed);
+        self.expires_at_epoch_secs.store(
+            now_epoch_secs() + cleanup_ttl_secs as i64,
+            Ordering::Relaxed,
+        );
     }
 
     fn is_expired(&self) -> bool {
@@ -165,7 +172,10 @@ pub async fn resolve_web_video_hls_asset(
     let record = Arc::clone(record_ref.value());
     drop(record_ref);
     record.touch(cleanup_ttl_secs);
-    if !matches!(&*record.state.read().await, VideoTranscodeSessionWorkerState::Ready) {
+    if !matches!(
+        &*record.state.read().await,
+        VideoTranscodeSessionWorkerState::Ready
+    ) {
         return Ok(None);
     }
     let path = record.session_dir.join(asset);
@@ -188,7 +198,10 @@ async fn count_pending_video_jobs() -> usize {
         .collect();
     let mut count = 0usize;
     for record in records {
-        if matches!(&*record.state.read().await, VideoTranscodeSessionWorkerState::Pending) {
+        if matches!(
+            &*record.state.read().await,
+            VideoTranscodeSessionWorkerState::Pending
+        ) {
             count += 1;
         }
     }
@@ -204,7 +217,10 @@ async fn cleanup_expired_video_sessions() {
         if !record.is_expired() {
             continue;
         }
-        if matches!(&*record.state.read().await, VideoTranscodeSessionWorkerState::Pending) {
+        if matches!(
+            &*record.state.read().await,
+            VideoTranscodeSessionWorkerState::Pending
+        ) {
             continue;
         }
         remove_video_session_record(&record).await;
@@ -368,7 +384,11 @@ async fn run_ffmpeg_hls_command(
         .arg("0:a:0?")
         .arg("-sn")
         .arg("-vf")
-        .arg(build_video_filter(video, use_hardware, hardware.get_backend()))
+        .arg(build_video_filter(
+            video,
+            use_hardware,
+            hardware.get_backend(),
+        ))
         .arg("-c:a")
         .arg(video.get_audio_codec())
         .arg("-b:a")
@@ -514,7 +534,11 @@ fn normalize_asset_name(asset: &str) -> Result<&str> {
     Ok(normalized)
 }
 
-fn build_video_session_key(user_id: &str, logical_path: &str, cfg: &MediaTranscodingRuntimeConfig) -> String {
+fn build_video_session_key(
+    user_id: &str,
+    logical_path: &str,
+    cfg: &MediaTranscodingRuntimeConfig,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(user_id.as_bytes());
     hasher.update([0]);

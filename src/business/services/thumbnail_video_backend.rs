@@ -47,18 +47,16 @@ async fn render_video_thumbnail_ffmpeg(
     let qscale = ((100 - quality) / 4).clamp(2, 31);
     let timeout = video_cfg.get_timeout_secs();
     if let Some(hardware) = resolve_thumbnail_hardware_mode(cfg) {
-        match run_thumbnail_command(
-            ThumbnailCommandSpec {
-                ffmpeg_path,
-                input,
-                output,
-                seek,
-                size: &size,
-                qscale,
-                hardware_mode: Some(hardware),
-                timeout,
-            },
-        )
+        match run_thumbnail_command(ThumbnailCommandSpec {
+            ffmpeg_path,
+            input,
+            output,
+            seek,
+            size: &size,
+            qscale,
+            hardware_mode: Some(hardware),
+            timeout,
+        })
         .await
         {
             Ok(value) => return Ok(value),
@@ -137,9 +135,7 @@ fn resolve_thumbnail_hardware_mode(cfg: &ThumbnailRuntimeConfig) -> Option<Thumb
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-async fn run_thumbnail_command(
-    spec: ThumbnailCommandSpec<'_>,
-) -> Result<bool> {
+async fn run_thumbnail_command(spec: ThumbnailCommandSpec<'_>) -> Result<bool> {
     let mut cmd = Command::new(spec.ffmpeg_path);
     cmd.arg("-y");
 

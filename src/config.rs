@@ -2057,6 +2057,114 @@ impl VfsMediaTranscodingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsProtectedStorageObfuscationConfig {
+    #[config(
+        desc_zh = "混淆模式块大小（KiB）。值越大顺序读吞吐越高，但小范围 range 读取会放大处理粒度",
+        desc_en = "Block size in KiB for obfuscation mode. Larger values improve sequential throughput but increase processing granularity for small range reads",
+        example = "256"
+    )]
+    pub block_size_kib: Option<u32>,
+    #[config(
+        desc_zh = "混淆模式伪随机遮罩生成器，可选 xorshift|pcg",
+        desc_en = "Pseudo-random mask generator for obfuscation mode, one of xorshift|pcg",
+        example = "xorshift"
+    )]
+    pub prng: Option<Arc<str>>,
+    #[config(
+        desc_zh = "混淆模式工作线程数。0 表示按 CPU 核心数自动决定",
+        desc_en = "Worker count for obfuscation mode. 0 means choose automatically based on CPU cores",
+        example = "0"
+    )]
+    pub workers: Option<usize>,
+}
+
+impl VfsProtectedStorageObfuscationConfig {
+    pub fn get_block_size_kib(&self) -> u32 {
+        yh_config_infra::config_require_clone!(
+            self.block_size_kib,
+            "vfs_storage_hub",
+            "protected_storage.obfuscation.block_size_kib"
+        )
+    }
+
+    pub fn get_prng(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.prng,
+            "vfs_storage_hub",
+            "protected_storage.obfuscation.prng"
+        )
+    }
+
+    pub fn get_workers(&self) -> usize {
+        yh_config_infra::config_require_clone!(
+            self.workers,
+            "vfs_storage_hub",
+            "protected_storage.obfuscation.workers"
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsProtectedStorageEncryptConfig {
+    #[config(
+        desc_zh = "真加密模式固定使用的流式算法。第一阶段仅允许 aes-256-ctr",
+        desc_en = "Fixed streaming cipher used by encryption mode. Phase 1 only allows aes-256-ctr",
+        example = "aes-256-ctr"
+    )]
+    pub cipher: Option<Arc<str>>,
+}
+
+impl VfsProtectedStorageEncryptConfig {
+    pub fn get_cipher(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.cipher,
+            "vfs_storage_hub",
+            "protected_storage.encrypt.cipher"
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsProtectedStorageConfig {
+    #[config(
+        desc_zh = "受保护储存全局模式。disabled=关闭；obfuscate=仅启用混淆；encrypt=仅启用真加密",
+        desc_en = "Global protected storage mode. disabled=off; obfuscate=obfuscation only; encrypt=encryption only",
+        example = "disabled"
+    )]
+    pub global_mode: Option<Arc<str>>,
+    #[config(desc_zh = "混淆模式参数", desc_en = "Obfuscation mode parameters")]
+    pub obfuscation: Option<VfsProtectedStorageObfuscationConfig>,
+    #[config(desc_zh = "真加密模式参数", desc_en = "Encryption mode parameters")]
+    pub encrypt: Option<VfsProtectedStorageEncryptConfig>,
+}
+
+impl VfsProtectedStorageConfig {
+    pub fn get_global_mode(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.global_mode,
+            "vfs_storage_hub",
+            "protected_storage.global_mode"
+        )
+    }
+
+    pub fn get_obfuscation(&self) -> &VfsProtectedStorageObfuscationConfig {
+        yh_config_infra::config_require!(
+            self.obfuscation,
+            "vfs_storage_hub",
+            "protected_storage.obfuscation"
+        )
+    }
+
+    pub fn get_encrypt(&self) -> &VfsProtectedStorageEncryptConfig {
+        yh_config_infra::config_require!(
+            self.encrypt,
+            "vfs_storage_hub",
+            "protected_storage.encrypt"
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsStorageHubConfig {
     #[config(
         desc_zh = "启用WebDAV协议服务。低性能设备建议设为false，仅保留HTTP API",
@@ -2117,7 +2225,10 @@ pub struct VfsStorageHubConfig {
         desc_en = "Temporary file management configuration"
     )]
     pub temp_file: Option<VfsTempFileConfig>,
-    #[config(desc_zh = "共享外部工具配置", desc_en = "Shared external tools configuration")]
+    #[config(
+        desc_zh = "共享外部工具配置",
+        desc_en = "Shared external tools configuration"
+    )]
     pub external_tools: Option<VfsExternalToolConfig>,
     #[config(desc_zh = "本地读缓存配置", desc_en = "Local read cache configuration")]
     pub read_cache: Option<VfsReadCacheConfig>,
@@ -2141,6 +2252,11 @@ pub struct VfsStorageHubConfig {
     pub thumbnail: Option<VfsThumbnailConfig>,
     #[config(desc_zh = "媒体转码配置", desc_en = "Media transcoding configuration")]
     pub media_transcoding: Option<VfsMediaTranscodingConfig>,
+    #[config(
+        desc_zh = "混淆和加密储存配置",
+        desc_en = "Protected storage configuration"
+    )]
+    pub protected_storage: Option<VfsProtectedStorageConfig>,
     #[config(desc_zh = "维护任务配置", desc_en = "Maintenance task configuration")]
     pub maintenance: Option<VfsMaintenanceConfig>,
 }
@@ -2736,7 +2852,15 @@ impl VfsStorageHubConfig {
                 }
             }
 
-            if let (Some(tools), Some(image), Some(video), Some(pdf), Some(office), Some(text), Some(model3d)) = (
+            if let (
+                Some(tools),
+                Some(image),
+                Some(video),
+                Some(pdf),
+                Some(office),
+                Some(text),
+                Some(model3d),
+            ) = (
                 thumb.tools.as_ref(),
                 thumb.image.as_ref(),
                 thumb.video.as_ref(),
@@ -2953,7 +3077,10 @@ impl VfsStorageHubConfig {
                     ));
                 }
             } else {
-                errors.push(format!("[{}] media_transcoding.video is required (section)", s));
+                errors.push(format!(
+                    "[{}] media_transcoding.video is required (section)",
+                    s
+                ));
             }
 
             if let Some(hardware) = &transcoding.hardware {
@@ -3024,6 +3151,82 @@ impl VfsStorageHubConfig {
             }
         } else {
             errors.push(format!("[{}] media_transcoding is required (section)", s));
+        }
+        if let Some(protected) = &self.protected_storage {
+            yh_config_infra::config_collect_not_empty!(
+                protected.global_mode,
+                s,
+                "protected_storage.global_mode",
+                errors
+            );
+            if let Some(mode) = protected.global_mode.as_deref() {
+                let mode = mode.trim().to_ascii_lowercase();
+                if !matches!(mode.as_str(), "disabled" | "obfuscate" | "encrypt") {
+                    errors.push(format!(
+                        "[{}] protected_storage.global_mode must be one of disabled|obfuscate|encrypt",
+                        s
+                    ));
+                }
+            }
+
+            if let Some(obfuscation) = &protected.obfuscation {
+                yh_config_infra::config_collect_gt_zero!(
+                    obfuscation.block_size_kib,
+                    s,
+                    "protected_storage.obfuscation.block_size_kib",
+                    errors
+                );
+                yh_config_infra::config_collect_not_empty!(
+                    obfuscation.prng,
+                    s,
+                    "protected_storage.obfuscation.prng",
+                    errors
+                );
+                if obfuscation.workers.is_none() {
+                    errors.push(format!(
+                        "[{}] protected_storage.obfuscation.workers is required",
+                        s
+                    ));
+                }
+                if let Some(prng) = obfuscation.prng.as_deref() {
+                    let prng = prng.trim().to_ascii_lowercase();
+                    if !matches!(prng.as_str(), "xorshift" | "pcg") {
+                        errors.push(format!(
+                            "[{}] protected_storage.obfuscation.prng must be one of xorshift|pcg",
+                            s
+                        ));
+                    }
+                }
+            } else {
+                errors.push(format!(
+                    "[{}] protected_storage.obfuscation is required (section)",
+                    s
+                ));
+            }
+
+            if let Some(encrypt) = &protected.encrypt {
+                yh_config_infra::config_collect_not_empty!(
+                    encrypt.cipher,
+                    s,
+                    "protected_storage.encrypt.cipher",
+                    errors
+                );
+                if let Some(cipher) = encrypt.cipher.as_deref()
+                    && !cipher.trim().eq_ignore_ascii_case("aes-256-ctr")
+                {
+                    errors.push(format!(
+                        "[{}] protected_storage.encrypt.cipher must be aes-256-ctr",
+                        s
+                    ));
+                }
+            } else {
+                errors.push(format!(
+                    "[{}] protected_storage.encrypt is required (section)",
+                    s
+                ));
+            }
+        } else {
+            errors.push(format!("[{}] protected_storage is required (section)", s));
         }
         if let Some(fs) = &self.file_share {
             yh_config_infra::config_collect_bool!(fs.enable, s, "file_share.enable", errors);
@@ -3380,6 +3583,13 @@ impl VfsStorageHubConfig {
             self.media_transcoding,
             "vfs_storage_hub",
             "media_transcoding"
+        )
+    }
+    pub fn get_protected_storage(&self) -> &VfsProtectedStorageConfig {
+        yh_config_infra::config_require!(
+            self.protected_storage,
+            "vfs_storage_hub",
+            "protected_storage"
         )
     }
     pub fn get_maintenance(&self) -> &VfsMaintenanceConfig {

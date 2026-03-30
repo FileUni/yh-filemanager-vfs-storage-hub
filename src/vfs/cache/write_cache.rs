@@ -201,7 +201,9 @@ fn pending_write_disk_meta(args: PendingWriteDiskMetaArgs<'_>) -> PendingWriteDi
         user_id: args.user_id.to_string(),
         logical_path: args.logical_path.to_string(),
         physical_path: args.physical_path.to_string(),
-        blob_path: args.blob_path.map(|path| path.to_string_lossy().to_string()),
+        blob_path: args
+            .blob_path
+            .map(|path| path.to_string_lossy().to_string()),
         size: args.size,
         modified_at: args.modified_at,
         deadline_at: args.deadline_at,
@@ -1153,7 +1155,8 @@ impl WriteCacheManager {
         let mut chunk_count = 0_u64;
         let mut pending_chunk: Vec<file_index::ActiveModel> = Vec::with_capacity(chunk_size);
         for info in entries {
-            let Some(logical_path) = self.physical_to_logical_path(user_id, info.path.as_ref()) else {
+            let Some(logical_path) = self.physical_to_logical_path(user_id, info.path.as_ref())
+            else {
                 continue;
             };
             if !self.policy.allows(logical_path.as_str()) {
@@ -1187,7 +1190,10 @@ impl WriteCacheManager {
                             task_key,
                             DirectoryIndexSyncTask {
                                 next_sync_at: now_ts()
-                                    + self.retry_delay_secs(task.retry_count.saturating_add(1), false),
+                                    + self.retry_delay_secs(
+                                        task.retry_count.saturating_add(1),
+                                        false,
+                                    ),
                                 retry_count: task.retry_count.saturating_add(1),
                                 ..task
                             },
