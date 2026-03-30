@@ -2112,6 +2112,12 @@ pub struct VfsProtectedStorageEncryptConfig {
         example = "aes-256-ctr"
     )]
     pub cipher: Option<Arc<str>>,
+    #[config(
+        desc_zh = "服务端包装受保护目录随机 key 的主密钥，至少 32 个字符",
+        desc_en = "Server-side wrap key used to encrypt protected directory random keys, minimum 32 characters",
+        example = "VERY_SECURE_PROTECTED_STORAGE_WRAP_KEY"
+    )]
+    pub wrap_key: Option<Arc<str>>,
 }
 
 impl VfsProtectedStorageEncryptConfig {
@@ -2121,6 +2127,20 @@ impl VfsProtectedStorageEncryptConfig {
             "vfs_storage_hub",
             "protected_storage.encrypt.cipher"
         )
+    }
+
+    pub fn get_wrap_key(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.wrap_key,
+            "vfs_storage_hub",
+            "protected_storage.encrypt.wrap_key"
+        )
+    }
+
+    pub fn get_binary_wrap_key(&self) -> [u8; 32] {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(self.get_wrap_key().trim().as_bytes());
+        digest.into()
     }
 }
 

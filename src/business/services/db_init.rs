@@ -189,6 +189,14 @@ async fn ensure_user_settings_columns(db: &Arc<sea_orm::DatabaseConnection>) -> 
         "protected_key_slot_id TEXT NULL",
     )
     .await?;
+    add_user_settings_column_if_missing(
+        db,
+        "protected_wrapped_key",
+        "protected_wrapped_key TEXT NULL",
+        "protected_wrapped_key TEXT NULL",
+        "protected_wrapped_key TEXT NULL",
+    )
+    .await?;
     Ok(())
 }
 

@@ -23,6 +23,7 @@ pub struct UserSettingsUpdatePatch {
     pub protected_root: Option<Option<String>>,
     pub protected_mode: Option<Option<String>>,
     pub protected_key_slot_id: Option<Option<String>>,
+    pub protected_wrapped_key: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +53,7 @@ pub struct UserSettingsSnapshot {
     pub protected_root: Option<String>,
     pub protected_mode: Option<String>,
     pub protected_key_slot_id: Option<String>,
+    pub protected_wrapped_key: Option<String>,
 }
 
 impl From<&user_settings::Model> for UserSettingsSnapshot {
@@ -76,6 +78,7 @@ impl From<&user_settings::Model> for UserSettingsSnapshot {
             protected_root: model.protected_root.clone(),
             protected_mode: model.protected_mode.clone(),
             protected_key_slot_id: model.protected_key_slot_id.clone(),
+            protected_wrapped_key: model.protected_wrapped_key.clone(),
         }
     }
 }
@@ -145,6 +148,7 @@ impl UserSettingsService {
             protected_root: Set(None),
             protected_mode: Set(None),
             protected_key_slot_id: Set(None),
+            protected_wrapped_key: Set(None),
             created_at: Set(now),
             updated_at: Set(now),
         };
@@ -278,6 +282,12 @@ impl UserSettingsService {
         if let Some(value) = &patch.protected_key_slot_id {
             update = update.col_expr(
                 user_settings::Column::ProtectedKeySlotId,
+                Expr::value(value.as_deref()),
+            );
+        }
+        if let Some(value) = &patch.protected_wrapped_key {
+            update = update.col_expr(
+                user_settings::Column::ProtectedWrappedKey,
                 Expr::value(value.as_deref()),
             );
         }
