@@ -1595,6 +1595,417 @@ impl VfsThumbnailConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsMediaTranscodingVideoConfig {
+    #[config(
+        desc_zh = "是否启用 WebUI 视频转码",
+        desc_en = "Enable WebUI video transcoding",
+        example = "true"
+    )]
+    pub enabled: Option<bool>,
+    #[config(
+        desc_zh = "视频分发方式，当前仅支持 hls",
+        desc_en = "Video delivery method, currently only hls is supported",
+        example = "hls"
+    )]
+    pub delivery: Option<String>,
+    #[config(
+        desc_zh = "HLS 分片时长（秒）",
+        desc_en = "HLS segment duration (seconds)",
+        example = "4"
+    )]
+    pub segment_duration_secs: Option<u64>,
+    #[config(
+        desc_zh = "视频编码器抽象名，当前仅支持 h264",
+        desc_en = "Abstract video codec name, currently only h264 is supported",
+        example = "h264"
+    )]
+    pub video_codec: Option<String>,
+    #[config(
+        desc_zh = "音频编码器抽象名，当前仅支持 aac",
+        desc_en = "Abstract audio codec name, currently only aac is supported",
+        example = "aac"
+    )]
+    pub audio_codec: Option<String>,
+    #[config(
+        desc_zh = "软件编码预设，建议 veryfast",
+        desc_en = "Software encoding preset, recommended veryfast",
+        example = "veryfast"
+    )]
+    pub preset: Option<String>,
+    #[config(
+        desc_zh = "质量参数（0-51，数值越低画质越高）",
+        desc_en = "Quality value (0-51, lower means better quality)",
+        example = "23"
+    )]
+    pub crf: Option<u8>,
+    #[config(
+        desc_zh = "输出最大宽度（像素）",
+        desc_en = "Maximum output width (pixels)",
+        example = "1920"
+    )]
+    pub max_width: Option<u32>,
+    #[config(
+        desc_zh = "输出最大高度（像素）",
+        desc_en = "Maximum output height (pixels)",
+        example = "1080"
+    )]
+    pub max_height: Option<u32>,
+    #[config(
+        desc_zh = "输出最大帧率",
+        desc_en = "Maximum output frame rate",
+        example = "30"
+    )]
+    pub max_fps: Option<u32>,
+    #[config(
+        desc_zh = "输出音频码率（kbps）",
+        desc_en = "Output audio bitrate (kbps)",
+        example = "160"
+    )]
+    pub audio_bitrate_kbps: Option<u32>,
+}
+
+impl VfsMediaTranscodingVideoConfig {
+    pub fn is_enabled(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.enabled,
+            "vfs_storage_hub",
+            "media_transcoding.video.enabled"
+        )
+    }
+
+    pub fn get_delivery(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.delivery,
+            "vfs_storage_hub",
+            "media_transcoding.video.delivery"
+        )
+    }
+
+    pub fn get_segment_duration_secs(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.segment_duration_secs,
+            "vfs_storage_hub",
+            "media_transcoding.video.segment_duration_secs"
+        )
+    }
+
+    pub fn get_video_codec(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.video_codec,
+            "vfs_storage_hub",
+            "media_transcoding.video.video_codec"
+        )
+    }
+
+    pub fn get_audio_codec(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.audio_codec,
+            "vfs_storage_hub",
+            "media_transcoding.video.audio_codec"
+        )
+    }
+
+    pub fn get_preset(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.preset,
+            "vfs_storage_hub",
+            "media_transcoding.video.preset"
+        )
+    }
+
+    pub fn get_crf(&self) -> u8 {
+        yh_config_infra::config_require_clone!(
+            self.crf,
+            "vfs_storage_hub",
+            "media_transcoding.video.crf"
+        )
+    }
+
+    pub fn get_max_width(&self) -> u32 {
+        yh_config_infra::config_require_clone!(
+            self.max_width,
+            "vfs_storage_hub",
+            "media_transcoding.video.max_width"
+        )
+    }
+
+    pub fn get_max_height(&self) -> u32 {
+        yh_config_infra::config_require_clone!(
+            self.max_height,
+            "vfs_storage_hub",
+            "media_transcoding.video.max_height"
+        )
+    }
+
+    pub fn get_max_fps(&self) -> u32 {
+        yh_config_infra::config_require_clone!(
+            self.max_fps,
+            "vfs_storage_hub",
+            "media_transcoding.video.max_fps"
+        )
+    }
+
+    pub fn get_audio_bitrate_kbps(&self) -> u32 {
+        yh_config_infra::config_require_clone!(
+            self.audio_bitrate_kbps,
+            "vfs_storage_hub",
+            "media_transcoding.video.audio_bitrate_kbps"
+        )
+    }
+
+    pub fn to_runtime_config(
+        &self,
+    ) -> crate::business::services::MediaTranscodingVideoRuntimeConfig {
+        crate::business::services::MediaTranscodingVideoRuntimeConfig {
+            enabled: self.is_enabled(),
+            delivery: self.get_delivery().to_string(),
+            segment_duration_secs: self.get_segment_duration_secs(),
+            video_codec: self.get_video_codec().to_string(),
+            audio_codec: self.get_audio_codec().to_string(),
+            preset: self.get_preset().to_string(),
+            crf: self.get_crf(),
+            max_width: self.get_max_width(),
+            max_height: self.get_max_height(),
+            max_fps: self.get_max_fps(),
+            audio_bitrate_kbps: self.get_audio_bitrate_kbps(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsMediaHardwareAccelerationConfig {
+    #[config(
+        desc_zh = "是否启用硬件加速编码",
+        desc_en = "Enable hardware accelerated encoding",
+        example = "false"
+    )]
+    pub enabled: Option<bool>,
+    #[config(
+        desc_zh = "硬件后端，可选 none|vaapi|qsv|nvenc|videotoolbox|amf",
+        desc_en = "Hardware backend, one of none|vaapi|qsv|nvenc|videotoolbox|amf",
+        example = "vaapi"
+    )]
+    pub backend: Option<String>,
+    #[config(
+        desc_zh = "硬件设备路径或标识；vaapi/qsv 常见值为 /dev/dri/renderD128",
+        desc_en = "Hardware device path or identifier; common vaapi/qsv value is /dev/dri/renderD128",
+        example = "/dev/dri/renderD128"
+    )]
+    pub device: Option<String>,
+    #[config(
+        desc_zh = "硬件编码失败后是否回退到软件编码",
+        desc_en = "Whether to fall back to software encoding when hardware encoding fails",
+        example = "true"
+    )]
+    pub allow_fallback_to_software: Option<bool>,
+}
+
+impl VfsMediaHardwareAccelerationConfig {
+    pub fn is_enabled(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.enabled,
+            "vfs_storage_hub",
+            "media_transcoding.hardware.enabled"
+        )
+    }
+
+    pub fn get_backend(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.backend,
+            "vfs_storage_hub",
+            "media_transcoding.hardware.backend"
+        )
+    }
+
+    pub fn get_device(&self) -> &str {
+        self.device.as_deref().unwrap_or("")
+    }
+
+    pub fn is_allow_fallback_to_software(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.allow_fallback_to_software,
+            "vfs_storage_hub",
+            "media_transcoding.hardware.allow_fallback_to_software"
+        )
+    }
+
+    pub fn to_runtime_config(
+        &self,
+    ) -> crate::business::services::MediaHardwareAccelerationRuntimeConfig {
+        crate::business::services::MediaHardwareAccelerationRuntimeConfig {
+            enabled: self.is_enabled(),
+            backend: self.get_backend().to_string(),
+            device: self.get_device().to_string(),
+            allow_fallback_to_software: self.is_allow_fallback_to_software(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsMediaTranscodingConfig {
+    #[config(
+        desc_zh = "是否启用 WebUI 媒体转码",
+        desc_en = "Enable WebUI media transcoding",
+        example = "false"
+    )]
+    pub enabled: Option<bool>,
+    #[config(
+        desc_zh = "媒体转码缓存目录（本地文件系统路径）",
+        desc_en = "Media transcoding cache directory (local filesystem path)",
+        example = "{RUNTIMEDIR}/cache/media-transcoding"
+    )]
+    pub cache_dir: Option<String>,
+    #[config(
+        desc_zh = "会话缓存清理 TTL（秒）",
+        desc_en = "Session cache cleanup TTL (seconds)",
+        example = "1800"
+    )]
+    pub cleanup_ttl_secs: Option<u64>,
+    #[config(
+        desc_zh = "单个转码任务超时时间（秒）",
+        desc_en = "Single transcoding task timeout (seconds)",
+        example = "7200"
+    )]
+    pub timeout_secs: Option<u64>,
+    #[config(
+        desc_zh = "平衡档位最大并发转码任务数",
+        desc_en = "Maximum concurrent transcoding tasks for balanced profile",
+        example = "1"
+    )]
+    pub max_concurrent_tasks: Option<usize>,
+    #[config(
+        desc_zh = "低内存档位最大并发转码任务数",
+        desc_en = "Maximum concurrent transcoding tasks for low_memory profile",
+        example = "1"
+    )]
+    pub max_concurrent_tasks_low_memory: Option<usize>,
+    #[config(
+        desc_zh = "高吞吐档位最大并发转码任务数",
+        desc_en = "Maximum concurrent transcoding tasks for throughput profile",
+        example = "2"
+    )]
+    pub max_concurrent_tasks_throughput: Option<usize>,
+    #[config(
+        desc_zh = "硬件转码失败后是否允许整体回退到软件转码",
+        desc_en = "Allow falling back to software transcoding when hardware transcoding fails",
+        example = "true"
+    )]
+    pub allow_software_fallback: Option<bool>,
+    #[config(desc_zh = "视频转码配置", desc_en = "Video transcoding configuration")]
+    pub video: Option<VfsMediaTranscodingVideoConfig>,
+    #[config(
+        desc_zh = "硬件加速配置",
+        desc_en = "Hardware acceleration configuration"
+    )]
+    pub hardware: Option<VfsMediaHardwareAccelerationConfig>,
+}
+
+impl VfsMediaTranscodingConfig {
+    pub fn is_enabled(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.enabled,
+            "vfs_storage_hub",
+            "media_transcoding.enabled"
+        )
+    }
+
+    pub fn get_cache_dir(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.cache_dir,
+            "vfs_storage_hub",
+            "media_transcoding.cache_dir"
+        )
+    }
+
+    pub fn get_cleanup_ttl_secs(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.cleanup_ttl_secs,
+            "vfs_storage_hub",
+            "media_transcoding.cleanup_ttl_secs"
+        )
+    }
+
+    pub fn get_timeout_secs(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.timeout_secs,
+            "vfs_storage_hub",
+            "media_transcoding.timeout_secs"
+        )
+    }
+
+    pub fn get_max_concurrent_tasks(&self) -> usize {
+        yh_config_infra::config_require_clone!(
+            self.max_concurrent_tasks,
+            "vfs_storage_hub",
+            "media_transcoding.max_concurrent_tasks"
+        )
+    }
+
+    pub fn get_effective_max_concurrent_tasks(&self) -> usize {
+        match require_allocator_profile() {
+            HardwareProfile::LowMemory => yh_config_infra::config_require_clone!(
+                self.max_concurrent_tasks_low_memory,
+                "vfs_storage_hub",
+                "media_transcoding.max_concurrent_tasks_low_memory"
+            ),
+            HardwareProfile::Throughput => yh_config_infra::config_require_clone!(
+                self.max_concurrent_tasks_throughput,
+                "vfs_storage_hub",
+                "media_transcoding.max_concurrent_tasks_throughput"
+            ),
+            HardwareProfile::Balanced => self.get_max_concurrent_tasks(),
+        }
+    }
+
+    pub fn is_allow_software_fallback(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.allow_software_fallback,
+            "vfs_storage_hub",
+            "media_transcoding.allow_software_fallback"
+        )
+    }
+
+    pub fn get_video(&self) -> &VfsMediaTranscodingVideoConfig {
+        yh_config_infra::config_require_ref!(
+            self.video,
+            "vfs_storage_hub",
+            "media_transcoding.video"
+        )
+    }
+
+    pub fn get_hardware(&self) -> &VfsMediaHardwareAccelerationConfig {
+        yh_config_infra::config_require_ref!(
+            self.hardware,
+            "vfs_storage_hub",
+            "media_transcoding.hardware"
+        )
+    }
+
+    pub fn to_runtime_config(
+        &self,
+        tools: &VfsThumbnailToolConfig,
+    ) -> crate::business::services::MediaTranscodingRuntimeConfig {
+        let hardware = self.get_hardware().to_runtime_config();
+        let allow_software_fallback = if hardware.enabled {
+            hardware.allow_fallback_to_software || self.is_allow_software_fallback()
+        } else {
+            self.is_allow_software_fallback()
+        };
+        crate::business::services::MediaTranscodingRuntimeConfig {
+            enabled: self.is_enabled(),
+            cache_dir: self.get_cache_dir().to_string(),
+            cleanup_ttl_secs: self.get_cleanup_ttl_secs(),
+            timeout_secs: self.get_timeout_secs(),
+            max_concurrent_tasks: self.get_effective_max_concurrent_tasks(),
+            allow_software_fallback,
+            ffmpeg_path: tools.get_ffmpeg_path().to_string(),
+            video: self.get_video().to_runtime_config(),
+            hardware,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsStorageHubConfig {
     #[config(
         desc_zh = "启用WebDAV协议服务。低性能设备建议设为false，仅保留HTTP API",
@@ -1675,6 +2086,8 @@ pub struct VfsStorageHubConfig {
     pub file_index: Option<VfsFileIndexConfig>,
     #[config(desc_zh = "缩略图配置", desc_en = "Thumbnail configuration")]
     pub thumbnail: Option<VfsThumbnailConfig>,
+    #[config(desc_zh = "媒体转码配置", desc_en = "Media transcoding configuration")]
+    pub media_transcoding: Option<VfsMediaTranscodingConfig>,
     #[config(desc_zh = "维护任务配置", desc_en = "Maintenance task configuration")]
     pub maintenance: Option<VfsMaintenanceConfig>,
 }
@@ -2323,6 +2736,214 @@ impl VfsStorageHubConfig {
         } else {
             errors.push(format!("[{}] thumbnail is required (section)", s));
         }
+        if let Some(transcoding) = &self.media_transcoding {
+            yh_config_infra::config_collect_bool!(
+                transcoding.enabled,
+                s,
+                "media_transcoding.enabled",
+                errors
+            );
+            yh_config_infra::config_collect_not_empty!(
+                transcoding.cache_dir,
+                s,
+                "media_transcoding.cache_dir",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                transcoding.cleanup_ttl_secs,
+                s,
+                "media_transcoding.cleanup_ttl_secs",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                transcoding.timeout_secs,
+                s,
+                "media_transcoding.timeout_secs",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                transcoding.max_concurrent_tasks,
+                s,
+                "media_transcoding.max_concurrent_tasks",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                transcoding.max_concurrent_tasks_low_memory,
+                s,
+                "media_transcoding.max_concurrent_tasks_low_memory",
+                errors
+            );
+            yh_config_infra::config_collect_gt_zero!(
+                transcoding.max_concurrent_tasks_throughput,
+                s,
+                "media_transcoding.max_concurrent_tasks_throughput",
+                errors
+            );
+            yh_config_infra::config_collect_bool!(
+                transcoding.allow_software_fallback,
+                s,
+                "media_transcoding.allow_software_fallback",
+                errors
+            );
+
+            if let Some(video) = &transcoding.video {
+                yh_config_infra::config_collect_bool!(
+                    video.enabled,
+                    s,
+                    "media_transcoding.video.enabled",
+                    errors
+                );
+                yh_config_infra::config_collect_not_empty!(
+                    video.delivery,
+                    s,
+                    "media_transcoding.video.delivery",
+                    errors
+                );
+                yh_config_infra::config_collect_gt_zero!(
+                    video.segment_duration_secs,
+                    s,
+                    "media_transcoding.video.segment_duration_secs",
+                    errors
+                );
+                yh_config_infra::config_collect_not_empty!(
+                    video.video_codec,
+                    s,
+                    "media_transcoding.video.video_codec",
+                    errors
+                );
+                yh_config_infra::config_collect_not_empty!(
+                    video.audio_codec,
+                    s,
+                    "media_transcoding.video.audio_codec",
+                    errors
+                );
+                yh_config_infra::config_collect_not_empty!(
+                    video.preset,
+                    s,
+                    "media_transcoding.video.preset",
+                    errors
+                );
+                yh_config_infra::config_collect_range!(
+                    video.crf,
+                    s,
+                    "media_transcoding.video.crf",
+                    0,
+                    51,
+                    errors
+                );
+                yh_config_infra::config_collect_gt_zero!(
+                    video.max_width,
+                    s,
+                    "media_transcoding.video.max_width",
+                    errors
+                );
+                yh_config_infra::config_collect_gt_zero!(
+                    video.max_height,
+                    s,
+                    "media_transcoding.video.max_height",
+                    errors
+                );
+                yh_config_infra::config_collect_gt_zero!(
+                    video.max_fps,
+                    s,
+                    "media_transcoding.video.max_fps",
+                    errors
+                );
+                yh_config_infra::config_collect_gt_zero!(
+                    video.audio_bitrate_kbps,
+                    s,
+                    "media_transcoding.video.audio_bitrate_kbps",
+                    errors
+                );
+
+                if let Some(delivery) = video.delivery.as_deref()
+                    && !delivery.trim().eq_ignore_ascii_case("hls")
+                {
+                    errors.push(format!(
+                        "[{}] media_transcoding.video.delivery must be hls",
+                        s
+                    ));
+                }
+                if let Some(video_codec) = video.video_codec.as_deref()
+                    && !video_codec.trim().eq_ignore_ascii_case("h264")
+                {
+                    errors.push(format!(
+                        "[{}] media_transcoding.video.video_codec must be h264",
+                        s
+                    ));
+                }
+                if let Some(audio_codec) = video.audio_codec.as_deref()
+                    && !audio_codec.trim().eq_ignore_ascii_case("aac")
+                {
+                    errors.push(format!(
+                        "[{}] media_transcoding.video.audio_codec must be aac",
+                        s
+                    ));
+                }
+            } else {
+                errors.push(format!("[{}] media_transcoding.video is required (section)", s));
+            }
+
+            if let Some(hardware) = &transcoding.hardware {
+                yh_config_infra::config_collect_bool!(
+                    hardware.enabled,
+                    s,
+                    "media_transcoding.hardware.enabled",
+                    errors
+                );
+                yh_config_infra::config_collect_not_empty!(
+                    hardware.backend,
+                    s,
+                    "media_transcoding.hardware.backend",
+                    errors
+                );
+                yh_config_infra::config_collect_bool!(
+                    hardware.allow_fallback_to_software,
+                    s,
+                    "media_transcoding.hardware.allow_fallback_to_software",
+                    errors
+                );
+                if let Some(backend) = hardware.backend.as_deref() {
+                    let backend = backend.trim().to_ascii_lowercase();
+                    if !matches!(
+                        backend.as_str(),
+                        "none" | "vaapi" | "qsv" | "nvenc" | "videotoolbox" | "amf"
+                    ) {
+                        errors.push(format!(
+                            "[{}] media_transcoding.hardware.backend must be one of none|vaapi|qsv|nvenc|videotoolbox|amf",
+                            s
+                        ));
+                    }
+                    if hardware.enabled == Some(true)
+                        && matches!(backend.as_str(), "vaapi" | "qsv")
+                        && hardware
+                            .device
+                            .as_deref()
+                            .map(str::trim)
+                            .unwrap_or("")
+                            .is_empty()
+                    {
+                        errors.push(format!(
+                            "[{}] media_transcoding.hardware.device must be set for {}",
+                            s, backend
+                        ));
+                    }
+                    if hardware.enabled == Some(true) && backend == "none" {
+                        errors.push(format!(
+                            "[{}] media_transcoding.hardware.backend cannot be none when hardware.enabled=true",
+                            s
+                        ));
+                    }
+                }
+            } else {
+                errors.push(format!(
+                    "[{}] media_transcoding.hardware is required (section)",
+                    s
+                ));
+            }
+        } else {
+            errors.push(format!("[{}] media_transcoding is required (section)", s));
+        }
         if let Some(fs) = &self.file_share {
             yh_config_infra::config_collect_bool!(fs.enable, s, "file_share.enable", errors);
             yh_config_infra::config_collect_bool!(
@@ -2653,6 +3274,13 @@ impl VfsStorageHubConfig {
     }
     pub fn get_thumbnail(&self) -> &VfsThumbnailConfig {
         yh_config_infra::config_require!(self.thumbnail, "vfs_storage_hub", "thumbnail")
+    }
+    pub fn get_media_transcoding(&self) -> &VfsMediaTranscodingConfig {
+        yh_config_infra::config_require!(
+            self.media_transcoding,
+            "vfs_storage_hub",
+            "media_transcoding"
+        )
     }
     pub fn get_maintenance(&self) -> &VfsMaintenanceConfig {
         yh_config_infra::config_require!(self.maintenance, "vfs_storage_hub", "maintenance")
