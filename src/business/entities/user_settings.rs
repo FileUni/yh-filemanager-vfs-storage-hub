@@ -24,6 +24,7 @@ pub struct Model {
     pub protected_root: Option<String>,
     pub protected_mode: Option<String>,
     pub protected_key_slot_id: Option<String>,
+    pub protected_wrapped_key: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
