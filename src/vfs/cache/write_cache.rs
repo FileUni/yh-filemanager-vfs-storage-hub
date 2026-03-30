@@ -184,27 +184,29 @@ fn parent_path(path: &str) -> Arc<str> {
     Arc::from(parent)
 }
 
-fn pending_write_disk_meta(
-    user_id: &str,
-    logical_path: &str,
-    physical_path: &str,
-    blob_path: Option<&Path>,
+struct PendingWriteDiskMetaArgs<'a> {
+    user_id: &'a str,
+    logical_path: &'a str,
+    physical_path: &'a str,
+    blob_path: Option<&'a Path>,
     size: u64,
     modified_at: i64,
     deadline_at: i64,
     generation: u64,
     abnormal: bool,
-) -> PendingWriteDiskMeta {
+}
+
+fn pending_write_disk_meta(args: PendingWriteDiskMetaArgs<'_>) -> PendingWriteDiskMeta {
     PendingWriteDiskMeta {
-        user_id: user_id.to_string(),
-        logical_path: logical_path.to_string(),
-        physical_path: physical_path.to_string(),
-        blob_path: blob_path.map(|path| path.to_string_lossy().to_string()),
-        size,
-        modified_at,
-        deadline_at,
-        generation,
-        abnormal,
+        user_id: args.user_id.to_string(),
+        logical_path: args.logical_path.to_string(),
+        physical_path: args.physical_path.to_string(),
+        blob_path: args.blob_path.map(|path| path.to_string_lossy().to_string()),
+        size: args.size,
+        modified_at: args.modified_at,
+        deadline_at: args.deadline_at,
+        generation: args.generation,
+        abnormal: args.abnormal,
     }
 }
 
@@ -352,17 +354,17 @@ impl WriteCacheManager {
         }
         let blob = self
             .store_blob(
-                &pending_write_disk_meta(
+                &pending_write_disk_meta(PendingWriteDiskMetaArgs {
                     user_id,
                     logical_path,
                     physical_path,
-                    None,
-                    data.len() as u64,
+                    blob_path: None,
+                    size: data.len() as u64,
                     modified_at,
                     deadline_at,
-                    1,
-                    false,
-                ),
+                    generation: 1,
+                    abnormal: false,
+                }),
                 &data,
             )
             .await?;
@@ -729,17 +731,17 @@ impl WriteCacheManager {
             PendingWriteUpdatePlan::InMemory => PendingWriteBlob::Memory(data),
             PendingWriteUpdatePlan::StageDisk { abnormal } => {
                 self.store_staged_blob(
-                    &pending_write_disk_meta(
-                        entry.user_id.as_ref(),
-                        entry.logical_path.as_ref(),
+                    &pending_write_disk_meta(PendingWriteDiskMetaArgs {
+                        user_id: entry.user_id.as_ref(),
+                        logical_path: entry.logical_path.as_ref(),
                         physical_path,
-                        None,
-                        data.len() as u64,
+                        blob_path: None,
+                        size: data.len() as u64,
                         modified_at,
                         deadline_at,
                         generation,
                         abnormal,
-                    ),
+                    }),
                     &data,
                 )
                 .await?
@@ -869,17 +871,17 @@ impl WriteCacheManager {
 
         let staged_blob = match self
             .store_staged_blob(
-                &pending_write_disk_meta(
-                    entry.user_id.as_ref(),
-                    entry.logical_path.as_ref(),
-                    entry.physical_path.as_ref(),
-                    None,
+                &pending_write_disk_meta(PendingWriteDiskMetaArgs {
+                    user_id: entry.user_id.as_ref(),
+                    logical_path: entry.logical_path.as_ref(),
+                    physical_path: entry.physical_path.as_ref(),
+                    blob_path: None,
                     size,
                     modified_at,
                     deadline_at,
                     generation,
-                    true,
-                ),
+                    abnormal: true,
+                }),
                 data,
             )
             .await
@@ -1116,41 +1118,109 @@ impl WriteCacheManager {
         let parent_path_owned = parent_path.to_string();
         let storage_id = self.pool_name.to_string();
         let backend_type = self.backend_type.to_string();
-        let models: Vec<file_index::ActiveModel> = entries
-            .into_iter()
-            .filter_map(|info| {
-                let logical_path = self.physical_to_logical_path(user_id, info.path.as_ref())?;
-                if !self.policy.allows(&logical_path) {
-                    return None;
-                }
-                Some(file_index::ActiveModel {
-                    id: Set(uuid::Uuid::now_v7().to_string()),
-                    user_id: Set(user_id_owned.clone()),
-                    parent_path: Set(parent_path_owned.clone()),
-                    name: Set(info.name.to_string()),
-                    path: Set(logical_path),
-                    is_dir: Set(info.is_dir),
-                    storage_id: Set(Some(storage_id.clone())),
-                    backend_type: Set(Some(backend_type.clone())),
-                    backend_key: Set(Some(info.path.to_string())),
-                    size: Set(info.size as i64),
-                    file_updated_at: Set(info.modified.map(|dt| dt.into())),
-                    favorite_color: Set(0),
-                    row_created_at: Set(now.into()),
-                    row_updated_at: Set(now.into()),
-                    ..Default::default()
-                })
-            })
-            .collect();
+        let row_created_at: chrono::DateTime<chrono::FixedOffset> = now.into();
         let index_service = FileIndexService::new(Arc::clone(&self.db));
         let chunk_size = crate::config::get_vfs_hub_config()
             .await
             .get_file_index()
-            .get_effective_max_files_per_refresh() as usize;
-        let rows = models.len() as u64;
-        let chunk_count = rows.div_ceil(chunk_size.max(1) as u64);
+            .get_effective_max_files_per_refresh()
+            .max(1) as usize;
+        let parent_path_normalized = if parent_path == "/" {
+            "/"
+        } else {
+            parent_path.trim_end_matches('/')
+        };
+        let (txn, sync_start) = match index_service.begin_directory_sync_txn().await {
+            Ok(value) => value,
+            Err(err) => {
+                global_vfs_metrics().record_index_sync_failed();
+                if !self.index_sync_dirs.contains_key(&task_key) {
+                    self.index_sync_dirs.insert(
+                        task_key,
+                        DirectoryIndexSyncTask {
+                            next_sync_at: now_ts()
+                                + self.retry_delay_secs(task.retry_count.saturating_add(1), false),
+                            retry_count: task.retry_count.saturating_add(1),
+                            ..task
+                        },
+                    );
+                }
+                return Err(err.into());
+            }
+        };
+
+        let mut rows = 0_u64;
+        let mut chunk_count = 0_u64;
+        let mut pending_chunk: Vec<file_index::ActiveModel> = Vec::with_capacity(chunk_size);
+        for info in entries {
+            let Some(logical_path) = self.physical_to_logical_path(user_id, info.path.as_ref()) else {
+                continue;
+            };
+            if !self.policy.allows(logical_path.as_str()) {
+                continue;
+            }
+            pending_chunk.push(file_index::ActiveModel {
+                id: Set(uuid::Uuid::now_v7().to_string()),
+                user_id: Set(user_id_owned.clone()),
+                parent_path: Set(parent_path_owned.clone()),
+                name: Set(info.name.to_string()),
+                path: Set(logical_path),
+                is_dir: Set(info.is_dir),
+                storage_id: Set(Some(storage_id.clone())),
+                backend_type: Set(Some(backend_type.clone())),
+                backend_key: Set(Some(info.path.to_string())),
+                size: Set(info.size as i64),
+                file_updated_at: Set(info.modified.map(|dt| dt.into())),
+                favorite_color: Set(0),
+                row_created_at: Set(row_created_at),
+                row_updated_at: Set(row_created_at),
+                ..Default::default()
+            });
+            if pending_chunk.len() >= chunk_size {
+                let chunk = std::mem::replace(&mut pending_chunk, Vec::with_capacity(chunk_size));
+                rows += chunk.len() as u64;
+                chunk_count += 1;
+                if let Err(err) = index_service.upsert_directory_chunk_txn(&txn, chunk).await {
+                    global_vfs_metrics().record_index_sync_failed();
+                    if !self.index_sync_dirs.contains_key(&task_key) {
+                        self.index_sync_dirs.insert(
+                            task_key,
+                            DirectoryIndexSyncTask {
+                                next_sync_at: now_ts()
+                                    + self.retry_delay_secs(task.retry_count.saturating_add(1), false),
+                                retry_count: task.retry_count.saturating_add(1),
+                                ..task
+                            },
+                        );
+                    }
+                    return Err(err.into());
+                }
+            }
+        }
+        if !pending_chunk.is_empty() {
+            rows += pending_chunk.len() as u64;
+            chunk_count += 1;
+            if let Err(err) = index_service
+                .upsert_directory_chunk_txn(&txn, pending_chunk)
+                .await
+            {
+                global_vfs_metrics().record_index_sync_failed();
+                if !self.index_sync_dirs.contains_key(&task_key) {
+                    self.index_sync_dirs.insert(
+                        task_key,
+                        DirectoryIndexSyncTask {
+                            next_sync_at: now_ts()
+                                + self.retry_delay_secs(task.retry_count.saturating_add(1), false),
+                            retry_count: task.retry_count.saturating_add(1),
+                            ..task
+                        },
+                    );
+                }
+                return Err(err.into());
+            }
+        }
         if let Err(err) = index_service
-            .sync_directory_optimized(user_id, parent_path, models, chunk_size)
+            .finish_directory_sync_txn(txn, user_id, parent_path_normalized, sync_start)
             .await
         {
             global_vfs_metrics().record_index_sync_failed();

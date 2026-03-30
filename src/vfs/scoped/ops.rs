@@ -48,6 +48,7 @@ impl ScopedVfsStorageEngine {
         let mut synced_entry_count = 0_u64;
         let mut flushed_chunks = 0_u64;
 
+        let normalized_owned = normalized.to_string();
         for e in p_entries {
             let backend_key = e.path.to_string();
             let translated = self.translate_file_info(e, false);
@@ -66,22 +67,27 @@ impl ScopedVfsStorageEngine {
             if parent != norm_path {
                 continue;
             }
+            let name = translated.name.to_string();
+            let logical_path = translated.path.to_string();
+            let is_dir = translated.is_dir;
+            let size = translated.size as i64;
+            let file_updated_at = translated.modified.as_ref().map(|dt| dt.to_owned().into());
             if let Some(entries) = translated_entries.as_mut() {
-                entries.push(translated.clone());
+                entries.push(translated);
             }
             synced_entry_count += 1;
             active_models.push(crate::business::entities::file_index::ActiveModel {
                 id: sea_orm::ActiveValue::Set(uuid::Uuid::now_v7().to_string()),
                 user_id: sea_orm::ActiveValue::Set(self.user_id.to_string()),
-                parent_path: sea_orm::ActiveValue::Set(normalized.to_string()),
-                name: sea_orm::ActiveValue::Set(translated.name.to_string()),
-                path: sea_orm::ActiveValue::Set(translated.path.to_string()),
-                is_dir: sea_orm::ActiveValue::Set(translated.is_dir),
+                parent_path: sea_orm::ActiveValue::Set(normalized_owned.clone()),
+                name: sea_orm::ActiveValue::Set(name),
+                path: sea_orm::ActiveValue::Set(logical_path),
+                is_dir: sea_orm::ActiveValue::Set(is_dir),
                 storage_id: sea_orm::ActiveValue::Set(Some(storage_id.clone())),
                 backend_type: sea_orm::ActiveValue::Set(Some(backend_type.clone())),
                 backend_key: sea_orm::ActiveValue::Set(Some(backend_key)),
-                size: sea_orm::ActiveValue::Set(translated.size as i64),
-                file_updated_at: sea_orm::ActiveValue::Set(translated.modified.map(|dt| dt.into())),
+                size: sea_orm::ActiveValue::Set(size),
+                file_updated_at: sea_orm::ActiveValue::Set(file_updated_at),
                 favorite_color: sea_orm::ActiveValue::Set(0),
                 row_created_at: sea_orm::ActiveValue::Set(now.into()),
                 row_updated_at: sea_orm::ActiveValue::Set(now.into()),

@@ -1248,9 +1248,13 @@ impl FileIndexService {
         };
         let (txn, sync_start) = self.begin_directory_sync_txn().await?;
         let chunk_size = chunk_size.max(1);
-        for chunk in items.chunks(chunk_size) {
-            self.upsert_directory_chunk_txn(&txn, chunk.to_vec())
-                .await?;
+        let mut iter = items.into_iter();
+        loop {
+            let chunk: Vec<file_index::ActiveModel> = iter.by_ref().take(chunk_size).collect();
+            if chunk.is_empty() {
+                break;
+            }
+            self.upsert_directory_chunk_txn(&txn, chunk).await?;
         }
         self.finish_directory_sync_txn(txn, user_id, parent_path, sync_start)
             .await?;
