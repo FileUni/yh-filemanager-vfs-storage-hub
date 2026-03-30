@@ -248,6 +248,33 @@ impl ScopedVfsStorageEngine {
         let info = self.stat_impl(&normalized).await?;
         let timestamp = chrono::Utc::now().timestamp();
         let trash_path = format!("/.recycle_bin/{}_{}", timestamp, info.name);
+        if let Some(plan) = self.get_protected_plan(&normalized).await?
+            && plan.root == "/"
+            && !self.is_hidden_storage_path(&normalized)
+        {
+            let wal_id = self
+                .begin_wal(
+                    crate::vfs::wal::WalOperation::MoveToTrash {
+                        path: normalized.to_string(),
+                        trash_path: trash_path.clone(),
+                    },
+                    self.should_skip_wal_for_path(&normalized).await,
+                )
+                .await?;
+            self.mark_wal_physical_done(wal_id).await;
+            self.index_service
+                .trash_file(&self.user_id, &normalized, &trash_path)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))?;
+            self.complete_wal(wal_id).await;
+            self.journal_log("MOVE_TO_TRASH", &normalized, Some(&trash_path), true, None)
+                .await;
+            let mut trashed_info = info.clone();
+            trashed_info.path = trash_path.into();
+            trashed_info.original_path = Some(normalized.into());
+            trashed_info.trashed_at = Some(chrono::Utc::now());
+            return Ok(trashed_info);
+        }
         self.ensure_recycle_bin_initialized().await?;
         let wal_id = self
             .begin_wal(
@@ -312,6 +339,28 @@ impl ScopedVfsStorageEngine {
             .await
             && let Some(orig) = meta.original_path
         {
+            if let Some(plan) = self.get_protected_plan(&orig).await?
+                && plan.root == "/"
+            {
+                let wal_id = self
+                    .begin_wal(
+                        crate::vfs::wal::WalOperation::RestoreTrash {
+                            trash_path: normalized.to_string(),
+                            original_path: orig.to_string(),
+                        },
+                        self.should_skip_wal_for_path(&normalized).await,
+                    )
+                    .await?;
+                self.mark_wal_physical_done(wal_id).await;
+                self.index_service
+                    .restore_file(&self.user_id, &normalized, &orig)
+                    .await
+                    .map_err(|e| VfsError::Internal(e.to_string()))?;
+                self.complete_wal(wal_id).await;
+                self.journal_log("RESTORE_TRASH", &normalized, Some(&orig), true, None)
+                    .await;
+                return self.stat_impl(&orig).await;
+            }
             let wal_id = self
                 .begin_wal(
                     crate::vfs::wal::WalOperation::RestoreTrash {
