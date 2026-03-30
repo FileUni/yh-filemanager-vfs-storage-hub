@@ -1170,6 +1170,26 @@ impl VfsMaintenanceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsExternalToolConfig {
+    #[config(
+        desc_zh = "FFmpeg 可执行命令或绝对路径。视频缩略图与 WebUI 视频转码共用此配置；默认建议使用命令名 \"ffmpeg\"（依赖系统 PATH）；Windows 常见路径：C:/ffmpeg/bin/ffmpeg.exe，Linux 常见路径：/usr/bin/ffmpeg",
+        desc_en = "FFmpeg executable command or absolute path. Video thumbnails and WebUI video transcoding share this setting. Default recommended value is command name \"ffmpeg\" (resolved via system PATH); common Windows path: C:/ffmpeg/bin/ffmpeg.exe, common Linux path: /usr/bin/ffmpeg",
+        example = "ffmpeg"
+    )]
+    pub ffmpeg_path: Option<String>,
+}
+
+impl VfsExternalToolConfig {
+    pub fn get_ffmpeg_path(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.ffmpeg_path,
+            "vfs_storage_hub",
+            "external_tools.ffmpeg_path"
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsThumbnailToolConfig {
     #[config(
         desc_zh = "libvips 可执行命令或绝对路径。默认建议使用命令名 \"vips\"（依赖系统 PATH）；Windows 常见路径：C:/Program Files/vips-dev/bin/vips.exe，Linux 常见路径：/usr/bin/vips",
@@ -1184,8 +1204,8 @@ pub struct VfsThumbnailToolConfig {
     )]
     pub imagemagick_path: Option<String>,
     #[config(
-        desc_zh = "FFmpeg 可执行命令或绝对路径。默认建议使用命令名 \"ffmpeg\"（依赖系统 PATH）；Windows 常见路径：C:/ffmpeg/bin/ffmpeg.exe，Linux 常见路径：/usr/bin/ffmpeg",
-        desc_en = "FFmpeg executable command or absolute path. Default recommended value is command name \"ffmpeg\" (resolved via system PATH); common Windows path: C:/ffmpeg/bin/ffmpeg.exe, common Linux path: /usr/bin/ffmpeg",
+        desc_zh = "已废弃：兼容旧配置保留的 FFmpeg 路径。请改用 vfs_storage_hub.external_tools.ffmpeg_path",
+        desc_en = "Deprecated: legacy FFmpeg path kept for backward compatibility. Use vfs_storage_hub.external_tools.ffmpeg_path instead",
         example = "ffmpeg"
     )]
     pub ffmpeg_path: Option<String>,
@@ -1205,12 +1225,11 @@ impl VfsThumbnailToolConfig {
             "thumbnail.tools.vips_path"
         )
     }
-    pub fn get_ffmpeg_path(&self) -> &str {
-        yh_config_infra::config_require_str!(
-            self.ffmpeg_path,
-            "vfs_storage_hub",
-            "thumbnail.tools.ffmpeg_path"
-        )
+    pub fn get_legacy_ffmpeg_path(&self) -> Option<&str> {
+        self.ffmpeg_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
     }
     pub fn get_libreoffice_path(&self) -> &str {
         yh_config_infra::config_require_str!(
@@ -1227,11 +1246,14 @@ impl VfsThumbnailToolConfig {
         )
     }
 
-    pub fn to_runtime_config(&self) -> crate::business::services::ThumbnailRuntimeToolConfig {
+    pub fn to_runtime_config(
+        &self,
+        ffmpeg_path: &str,
+    ) -> crate::business::services::ThumbnailRuntimeToolConfig {
         crate::business::services::ThumbnailRuntimeToolConfig {
             vips_path: self.get_vips_path().to_string(),
             imagemagick_path: self.get_imagemagick_path().to_string(),
-            ffmpeg_path: self.get_ffmpeg_path().to_string(),
+            ffmpeg_path: ffmpeg_path.to_string(),
             libreoffice_path: self.get_libreoffice_path().to_string(),
         }
     }
@@ -1576,7 +1598,7 @@ impl VfsThumbnailConfig {
         )
     }
 
-    pub fn to_runtime_config(&self) -> crate::business::services::ThumbnailRuntimeConfig {
+    pub fn to_runtime_config(&self, ffmpeg_path: &str) -> crate::business::services::ThumbnailRuntimeConfig {
         crate::business::services::ThumbnailRuntimeConfig {
             enabled: self.is_enabled(),
             cache_mode: self.get_cache_mode().to_string(),
@@ -1584,7 +1606,7 @@ impl VfsThumbnailConfig {
             thumb_size_px: self.get_thumb_size_px(),
             thumb_format: self.get_thumb_format().to_string(),
             thumb_quality: self.get_thumb_quality(),
-            tools: self.get_tools().to_runtime_config(),
+            tools: self.get_tools().to_runtime_config(ffmpeg_path),
             image: self.get_image().to_runtime_config(),
             video: self.get_video().to_runtime_config(),
             pdf: self.get_pdf().to_runtime_config(),
@@ -1983,7 +2005,7 @@ impl VfsMediaTranscodingConfig {
 
     pub fn to_runtime_config(
         &self,
-        tools: &VfsThumbnailToolConfig,
+        ffmpeg_path: &str,
     ) -> crate::business::services::MediaTranscodingRuntimeConfig {
         let hardware = self.get_hardware().to_runtime_config();
         let allow_software_fallback = if hardware.enabled {
@@ -1998,7 +2020,7 @@ impl VfsMediaTranscodingConfig {
             timeout_secs: self.get_timeout_secs(),
             max_concurrent_tasks: self.get_effective_max_concurrent_tasks(),
             allow_software_fallback,
-            ffmpeg_path: tools.get_ffmpeg_path().to_string(),
+            ffmpeg_path: ffmpeg_path.to_string(),
             video: self.get_video().to_runtime_config(),
             hardware,
         }
@@ -2066,6 +2088,8 @@ pub struct VfsStorageHubConfig {
         desc_en = "Temporary file management configuration"
     )]
     pub temp_file: Option<VfsTempFileConfig>,
+    #[config(desc_zh = "共享外部工具配置", desc_en = "Shared external tools configuration")]
+    pub external_tools: Option<VfsExternalToolConfig>,
     #[config(desc_zh = "本地读缓存配置", desc_en = "Local read cache configuration")]
     pub read_cache: Option<VfsReadCacheConfig>,
     #[config(
@@ -2125,6 +2149,16 @@ impl VfsStorageHubConfig {
             yh_config_infra::config_collect_gt_zero!(tf.max_age, s, "temp_file.max_age", errors);
         } else {
             errors.push(format!("[{}] temp_file is required (section)", s));
+        }
+        if let Some(external_tools) = &self.external_tools {
+            yh_config_infra::config_collect_any!(
+                external_tools.ffmpeg_path,
+                s,
+                "external_tools.ffmpeg_path",
+                errors
+            );
+        } else {
+            errors.push(format!("[{}] external_tools is required (section)", s));
         }
         if let Some(rc) = &self.read_cache {
             yh_config_infra::config_collect_bool!(rc.enable, s, "read_cache.enable", errors);
@@ -2550,12 +2584,6 @@ impl VfsStorageHubConfig {
                     errors
                 );
                 yh_config_infra::config_collect_any!(
-                    tools.ffmpeg_path,
-                    s,
-                    "thumbnail.tools.ffmpeg_path",
-                    errors
-                );
-                yh_config_infra::config_collect_any!(
                     tools.libreoffice_path,
                     s,
                     "thumbnail.tools.libreoffice_path",
@@ -2682,7 +2710,7 @@ impl VfsStorageHubConfig {
             ) {
                 let vips = tools.vips_path.as_deref().unwrap_or("").trim();
                 let magick = tools.imagemagick_path.as_deref().unwrap_or("").trim();
-                let ffmpeg = tools.ffmpeg_path.as_deref().unwrap_or("").trim();
+                let ffmpeg = self.get_effective_ffmpeg_path();
                 let libreoffice = tools.libreoffice_path.as_deref().unwrap_or("").trim();
                 let image_backend_is_builtin = image
                     .backend
@@ -2938,6 +2966,15 @@ impl VfsStorageHubConfig {
             } else {
                 errors.push(format!(
                     "[{}] media_transcoding.hardware is required (section)",
+                    s
+                ));
+            }
+            if transcoding.enabled == Some(true)
+                && transcoding.video.as_ref().and_then(|value| value.enabled) == Some(true)
+                && self.get_effective_ffmpeg_path().trim().is_empty()
+            {
+                errors.push(format!(
+                    "[{}] external_tools.ffmpeg_path must be set for media transcoding",
                     s
                 ));
             }
@@ -3256,6 +3293,25 @@ impl VfsStorageHubConfig {
     }
     pub fn get_temp_file(&self) -> &VfsTempFileConfig {
         yh_config_infra::config_require!(self.temp_file, "vfs_storage_hub", "temp_file")
+    }
+    pub fn get_external_tools(&self) -> &VfsExternalToolConfig {
+        yh_config_infra::config_require!(self.external_tools, "vfs_storage_hub", "external_tools")
+    }
+    pub fn get_effective_ffmpeg_path(&self) -> &str {
+        if let Some(external_tools) = &self.external_tools
+            && let Some(value) = external_tools
+                .ffmpeg_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        {
+            return value;
+        }
+        self.thumbnail
+            .as_ref()
+            .and_then(|thumbnail| thumbnail.tools.as_ref())
+            .and_then(VfsThumbnailToolConfig::get_legacy_ffmpeg_path)
+            .unwrap_or("")
     }
     pub fn get_read_cache(&self) -> &VfsReadCacheConfig {
         yh_config_infra::config_require!(self.read_cache, "vfs_storage_hub", "read_cache")
