@@ -2,6 +2,7 @@ use aes::Aes256;
 use bytes::{Bytes, BytesMut};
 use ctr::cipher::{KeyIvInit, StreamCipher};
 use rand::RngCore;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -81,6 +82,8 @@ pub struct ProtectedPathPlan {
     pub key_slot_id: String,
     pub block_size: usize,
     pub prng: ProtectedPrng,
+    pub encrypt_key: Option<[u8; 32]>,
+    pub workers: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +103,8 @@ pub struct ProtectedMetaRecord {
     pub block_size: u32,
     pub logical_size: u64,
     pub seed_or_nonce_hex: String,
+    pub integrity: String,
+    pub integrity_chunk_size: Option<u32>,
 }
 
 impl ProtectedHeader {
@@ -171,10 +176,15 @@ pub fn encode_payload(
             seed_or_nonce,
             plan.block_size.max(1),
             plan.prng,
+            plan.workers,
         ),
-        ProtectedMode::Encrypt => {
-            encrypt_in_place(&mut payload, user_id, &plan.key_slot_id, seed_or_nonce)
-        }
+        ProtectedMode::Encrypt => encrypt_in_place(
+            &mut payload,
+            plan.encrypt_key
+                .as_ref()
+                .ok_or_else(|| "Protected encrypt key is missing".to_string())?,
+            seed_or_nonce,
+        ),
     }
     let header = ProtectedHeader {
         mode: plan.mode,
@@ -191,35 +201,6 @@ pub fn encode_payload(
     Ok((out.freeze(), header, meta_json))
 }
 
-pub fn decode_payload(
-    user_id: &str,
-    key_slot_id: &str,
-    data: Bytes,
-) -> Result<(ProtectedHeader, Bytes), String> {
-    if data.len() < PROTECTED_HEADER_LEN {
-        return Err("protected payload is too short".to_string());
-    }
-    let header = ProtectedHeader::decode(&data[..PROTECTED_HEADER_LEN])?;
-    let mut payload = data.slice(PROTECTED_HEADER_LEN..).to_vec();
-    match header.mode {
-        ProtectedMode::Obfuscate => obfuscate_in_place(
-            &mut payload,
-            user_id,
-            key_slot_id,
-            header.seed_or_nonce,
-            (header.block_size as usize).max(1),
-            header.prng,
-        ),
-        ProtectedMode::Encrypt => {
-            encrypt_in_place(&mut payload, user_id, key_slot_id, header.seed_or_nonce)
-        }
-    }
-    if payload.len() as u64 != header.logical_size {
-        return Err("protected payload size mismatch".to_string());
-    }
-    Ok((header, Bytes::from(payload)))
-}
-
 pub fn header_from_meta_json(raw: &str) -> Result<ProtectedHeader, String> {
     let meta: ProtectedMetaRecord =
         serde_json::from_str(raw).map_err(|e| format!("parse protected meta failed: {}", e))?;
@@ -229,6 +210,8 @@ pub fn header_from_meta_json(raw: &str) -> Result<ProtectedHeader, String> {
 pub fn decode_range(
     user_id: &str,
     key_slot_id: &str,
+    encrypt_key: Option<[u8; 32]>,
+    workers: usize,
     header: &ProtectedHeader,
     payload: Bytes,
     start: u64,
@@ -241,11 +224,17 @@ pub fn decode_range(
         return Ok(Bytes::new());
     }
     match header.mode {
-        ProtectedMode::Obfuscate => {
-            decode_obfuscate_range(user_id, key_slot_id, header, payload, start, logical_end)
-        }
+        ProtectedMode::Obfuscate => decode_obfuscate_range(
+            user_id,
+            key_slot_id,
+            workers,
+            header,
+            payload,
+            start,
+            logical_end,
+        ),
         ProtectedMode::Encrypt => {
-            decode_encrypt_range(user_id, key_slot_id, header, payload, start, logical_end)
+            decode_encrypt_range(encrypt_key, header, payload, start, logical_end)
         }
     }
 }
@@ -272,6 +261,8 @@ impl ProtectedMetaRecord {
             block_size: header.block_size,
             logical_size: header.logical_size,
             seed_or_nonce_hex: hex::encode(header.seed_or_nonce),
+            integrity: "none".to_string(),
+            integrity_chunk_size: None,
         }
     }
 
@@ -297,25 +288,17 @@ impl ProtectedMetaRecord {
     }
 }
 
-fn encrypt_in_place(buf: &mut [u8], user_id: &str, key_slot_id: &str, nonce: [u8; 16]) {
-    let key = derive_encrypt_key(user_id, key_slot_id);
-    let mut cipher = Aes256Ctr::new((&key).into(), (&nonce).into());
+fn encrypt_in_place(buf: &mut [u8], key: &[u8; 32], nonce: [u8; 16]) {
+    let mut cipher = Aes256Ctr::new(key.into(), (&nonce).into());
     cipher.apply_keystream(buf);
 }
 
-fn encrypt_range_in_place(
-    buf: &mut [u8],
-    user_id: &str,
-    key_slot_id: &str,
-    nonce: [u8; 16],
-    logical_offset: u64,
-) {
-    let key = derive_encrypt_key(user_id, key_slot_id);
+fn encrypt_range_in_place(buf: &mut [u8], key: &[u8; 32], nonce: [u8; 16], logical_offset: u64) {
     let block_offset = logical_offset / 16;
     let intra_offset = (logical_offset % 16) as usize;
     let counter = u128::from_be_bytes(nonce).wrapping_add(block_offset as u128);
     let iv = counter.to_be_bytes();
-    let mut cipher = Aes256Ctr::new((&key).into(), (&iv).into());
+    let mut cipher = Aes256Ctr::new(key.into(), (&iv).into());
     if intra_offset > 0 {
         let mut skip = vec![0u8; intra_offset];
         cipher.apply_keystream(&mut skip);
@@ -341,15 +324,6 @@ fn obfuscate_in_place(
             }
         }
     }
-}
-
-fn derive_encrypt_key(user_id: &str, key_slot_id: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"fileuni:protected:encrypt:v1:");
-    hasher.update(user_id.as_bytes());
-    hasher.update(b":");
-    hasher.update(key_slot_id.as_bytes());
-    hasher.finalize().into()
 }
 
 fn derive_block_material(
@@ -458,15 +432,15 @@ fn decode_obfuscate_range(
 }
 
 fn decode_encrypt_range(
-    user_id: &str,
-    key_slot_id: &str,
+    encrypt_key: Option<[u8; 32]>,
     header: &ProtectedHeader,
     payload: Bytes,
     start: u64,
     end: u64,
 ) -> Result<Bytes, String> {
     let mut buf = payload.to_vec();
-    encrypt_range_in_place(&mut buf, user_id, key_slot_id, header.seed_or_nonce, start);
+    let key = encrypt_key.ok_or_else(|| "Protected encrypt key is missing".to_string())?;
+    encrypt_range_in_place(&mut buf, &key, header.seed_or_nonce, start);
     let expected = (end - start) as usize;
     if buf.len() != expected {
         return Err("protected encrypt range size mismatch".to_string());

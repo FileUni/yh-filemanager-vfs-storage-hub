@@ -7,6 +7,7 @@ use bytes::{Bytes, BytesMut};
 use futures::Stream;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use std::pin::Pin;
 
 fn file_info_from_index(row: &file_index::Model) -> VfsFileInfo {
@@ -24,7 +25,9 @@ fn file_info_from_index(row: &file_index::Model) -> VfsFileInfo {
     }
 }
 
-fn header_from_index(row: &file_index::Model) -> Result<crate::vfs::protected::ProtectedHeader, VfsError> {
+fn header_from_index(
+    row: &file_index::Model,
+) -> Result<crate::vfs::protected::ProtectedHeader, VfsError> {
     let raw = row
         .protected_meta
         .as_deref()
@@ -65,7 +68,8 @@ impl ScopedVfsStorageEngine {
                     .0
             }
             crate::vfs::protected::ProtectedMode::Encrypt => {
-                let physical_end = (crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + logical_end)
+                let physical_end = (crate::vfs::protected::PROTECTED_HEADER_LEN as u64
+                    + logical_end)
                     .min(physical_size.max(crate::vfs::protected::PROTECTED_HEADER_LEN as u64));
                 self.pool
                     .read_range(
@@ -100,6 +104,7 @@ impl ScopedVfsStorageEngine {
         let data = crate::vfs::protected::decode_range(
             &self.user_id,
             &plan.key_slot_id,
+            plan.encrypt_key,
             &header,
             payload,
             0,
@@ -130,6 +135,7 @@ impl ScopedVfsStorageEngine {
         let data = crate::vfs::protected::decode_range(
             &self.user_id,
             &plan.key_slot_id,
+            plan.encrypt_key,
             &header,
             payload,
             start,
@@ -187,7 +193,7 @@ impl ScopedVfsStorageEngine {
             );
         let (encoded, _header, protected_meta) =
             crate::vfs::protected::encode_payload(&self.user_id, plan, data.clone())
-            .map_err(VfsError::Internal)?;
+                .map_err(VfsError::Internal)?;
         let physical_size = encoded.len() as i64;
         let write_result = self.pool.write(&backend_key, encoded).await;
         match write_result {
@@ -287,19 +293,27 @@ impl ScopedVfsStorageEngine {
             .await?
             .ok_or_else(|| VfsError::NotFound(normalized.to_string()))?;
         let info = file_info_from_index(&row);
-        if row.is_dir {
-            let children = self
-                .index_service
-                .list_files(&self.user_id, normalized)
+        let descendants = if row.is_dir {
+            let prefix = format!("{}/", normalized.trim_end_matches('/'));
+            file_index::Entity::find()
+                .filter(file_index::Column::UserId.eq(self.user_id.as_ref()))
+                .filter(
+                    file_index::Column::Path
+                        .eq(normalized)
+                        .or(file_index::Column::Path.starts_with(prefix.as_str())),
+                )
+                .filter(file_index::Column::RowDeletedAt.is_null())
+                .all(self.db.as_ref())
                 .await
-                .map_err(|e| VfsError::Internal(e.to_string()))?;
-            if !children.is_empty() {
-                return Err(VfsError::Internal(
-                    "Protected directory is not empty".to_string(),
-                ));
-            }
-        }
-        let size = row.size.max(0);
+                .map_err(|e| VfsError::Internal(e.to_string()))?
+        } else {
+            vec![row.clone()]
+        };
+        let reclaimed_size: i64 = descendants
+            .iter()
+            .filter(|item| !item.is_dir)
+            .map(|item| item.size.max(0))
+            .sum();
         let wal_id = self
             .begin_wal(
                 crate::vfs::wal::WalOperation::Delete {
@@ -308,8 +322,13 @@ impl ScopedVfsStorageEngine {
                 self.should_skip_wal_for_path(normalized).await,
             )
             .await?;
-        if let Some(backend_key) = row.backend_key.as_deref() {
-            self.pool.delete(backend_key).await?;
+        let mut deleted_backend_keys = std::collections::HashSet::new();
+        for item in &descendants {
+            if let Some(backend_key) = item.backend_key.as_deref()
+                && deleted_backend_keys.insert(backend_key.to_string())
+            {
+                self.pool.delete(backend_key).await?;
+            }
         }
         self.mark_wal_physical_done(wal_id).await;
         self.index_service
@@ -317,8 +336,8 @@ impl ScopedVfsStorageEngine {
             .await
             .map_err(|e| VfsError::Internal(e.to_string()))?;
         self.complete_wal(wal_id).await;
-        if !row.is_dir && size > 0 {
-            let _ = self.update_quota(-size).await;
+        if reclaimed_size > 0 {
+            let _ = self.update_quota(-reclaimed_size).await;
         }
         self.cache.invalidate_parent_ls(normalized).await;
         self.cache.invalidate("stat", normalized).await;
