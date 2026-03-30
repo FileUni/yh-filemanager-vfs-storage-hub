@@ -3,6 +3,7 @@ pub mod batch;
 pub mod engine;
 pub mod internal;
 pub mod ops;
+pub mod protected;
 pub mod read;
 pub mod storage_impl;
 pub mod write;

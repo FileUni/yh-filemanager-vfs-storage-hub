@@ -48,6 +48,8 @@ impl FileIndexService {
                     file_index::Column::BackendType,
                     file_index::Column::BackendKey,
                     file_index::Column::Size,
+                    file_index::Column::PhysicalSize,
+                    file_index::Column::ProtectedMeta,
                     file_index::Column::Etag,
                     file_index::Column::FileUpdatedAt,
                     file_index::Column::RowUpdatedAt,
@@ -84,7 +86,7 @@ impl FileIndexService {
         logical_path: &str,
         info: &crate::vfs::VfsFileInfo,
     ) -> Result<file_index::Model, DbErr> {
-        self.upsert_file_with_location(user_id, logical_path, info, None, None, None)
+        self.upsert_file_with_location(user_id, logical_path, info, None, None, None, None, None)
             .await
     }
     pub async fn upsert_file_with_location(
@@ -95,6 +97,8 @@ impl FileIndexService {
         storage_id: Option<&str>,
         backend_type: Option<&str>,
         backend_key: Option<&str>,
+        physical_size: Option<i64>,
+        protected_meta: Option<&str>,
     ) -> Result<file_index::Model, DbErr> {
         let parent = std::path::Path::new(logical_path)
             .parent()
@@ -117,6 +121,8 @@ impl FileIndexService {
             backend_type: Set(backend_type.map(std::borrow::ToOwned::to_owned)),
             backend_key: Set(backend_key.map(std::borrow::ToOwned::to_owned)),
             size: Set(info.size as i64),
+            physical_size: Set(physical_size),
+            protected_meta: Set(protected_meta.map(std::borrow::ToOwned::to_owned)),
             file_updated_at: Set(info.modified.map(|dt| dt.into())),
             favorite_color: Set(0),
             row_created_at: Set(now.into()),
@@ -1187,6 +1193,8 @@ impl FileIndexService {
                     file_index::Column::BackendType,
                     file_index::Column::BackendKey,
                     file_index::Column::Size,
+                    file_index::Column::PhysicalSize,
+                    file_index::Column::ProtectedMeta,
                     file_index::Column::FileUpdatedAt,
                     file_index::Column::RowUpdatedAt,
                     //favorite_color is intentionally excluded

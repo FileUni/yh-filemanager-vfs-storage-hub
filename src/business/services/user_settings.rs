@@ -20,6 +20,9 @@ pub struct UserSettingsUpdatePatch {
     pub sftp_enable_password: Option<bool>,
     pub s3_access_key: Option<Option<String>>,
     pub s3_secret_key: Option<Option<String>>,
+    pub protected_root: Option<Option<String>>,
+    pub protected_mode: Option<Option<String>>,
+    pub protected_key_slot_id: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +49,9 @@ pub struct UserSettingsSnapshot {
     pub sftp_enable_password: bool,
     pub s3_access_key: Option<String>,
     pub s3_secret_key: Option<String>,
+    pub protected_root: Option<String>,
+    pub protected_mode: Option<String>,
+    pub protected_key_slot_id: Option<String>,
 }
 
 impl From<&user_settings::Model> for UserSettingsSnapshot {
@@ -67,7 +73,44 @@ impl From<&user_settings::Model> for UserSettingsSnapshot {
             sftp_enable_password: model.sftp_enable_password,
             s3_access_key: model.s3_access_key.clone(),
             s3_secret_key: model.s3_secret_key.clone(),
+            protected_root: model.protected_root.clone(),
+            protected_mode: model.protected_mode.clone(),
+            protected_key_slot_id: model.protected_key_slot_id.clone(),
         }
+    }
+}
+
+impl UserSettingsSnapshot {
+    pub fn protected_root_trimmed(&self) -> Option<&str> {
+        self.protected_root
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn is_protected_subdir_root(&self) -> bool {
+        self.protected_root_trimmed()
+            .is_some_and(|root| root != "/")
+    }
+
+    pub fn matches_protected_root(&self, path: &str) -> bool {
+        let Some(root) = self.protected_root_trimmed() else {
+            return false;
+        };
+        let normalized_path = path.trim_end_matches('/');
+        let normalized_path = if normalized_path.is_empty() {
+            "/"
+        } else {
+            normalized_path
+        };
+        let normalized_root = root.trim_end_matches('/');
+        let normalized_root = if normalized_root.is_empty() {
+            "/"
+        } else {
+            normalized_root
+        };
+        normalized_path == normalized_root
+            || normalized_path.starts_with(&format!("{}/", normalized_root))
     }
 }
 
@@ -99,6 +142,9 @@ impl UserSettingsService {
             sftp_enable_password: Set(true),
             s3_access_key: Set(None),
             s3_secret_key: Set(None),
+            protected_root: Set(None),
+            protected_mode: Set(None),
+            protected_key_slot_id: Set(None),
             created_at: Set(now),
             updated_at: Set(now),
         };
@@ -214,6 +260,24 @@ impl UserSettingsService {
         if let Some(value) = &patch.s3_secret_key {
             update = update.col_expr(
                 user_settings::Column::S3SecretKey,
+                Expr::value(value.as_deref()),
+            );
+        }
+        if let Some(value) = &patch.protected_root {
+            update = update.col_expr(
+                user_settings::Column::ProtectedRoot,
+                Expr::value(value.as_deref()),
+            );
+        }
+        if let Some(value) = &patch.protected_mode {
+            update = update.col_expr(
+                user_settings::Column::ProtectedMode,
+                Expr::value(value.as_deref()),
+            );
+        }
+        if let Some(value) = &patch.protected_key_slot_id {
+            update = update.col_expr(
+                user_settings::Column::ProtectedKeySlotId,
                 Expr::value(value.as_deref()),
             );
         }

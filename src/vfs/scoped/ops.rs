@@ -21,6 +21,32 @@ impl ScopedVfsStorageEngine {
         collect_entries: bool,
     ) -> VfsResult<Option<Vec<VfsFileInfo>>> {
         let normalized = self.validate_file_operation(path).await?;
+        if self.get_protected_plan(&normalized).await?.is_some() {
+            if !collect_entries {
+                return Ok(None);
+            }
+            let db_entries = self
+                .index_service
+                .list_files(&self.user_id, &normalized)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))?;
+            let files = db_entries
+                .into_iter()
+                .map(|e| VfsFileInfo {
+                    name: e.name.into(),
+                    path: e.path.into(),
+                    is_dir: e.is_dir,
+                    size: e.size as u64,
+                    modified: e.file_updated_at.map(|t| t.into()),
+                    favorite_color: e.favorite_color,
+                    has_active_share: None,
+                    has_active_direct: None,
+                    trashed_at: e.file_trashed_at.map(|t| t.into()),
+                    original_path: e.original_path.map(|p| p.into()),
+                })
+                .collect();
+            return Ok(Some(files));
+        }
         let guard = self.pool.sync_guards.get_guard(&self.user_id, &normalized);
         let _lock = guard.lock().await;
         let p_path = self.get_physical_path(&normalized).await?;
@@ -52,7 +78,7 @@ impl ScopedVfsStorageEngine {
         for e in p_entries {
             let backend_key = e.path.to_string();
             let translated = self.translate_file_info(e, false);
-            if self.is_thumbnail_cache_path(translated.path.as_ref()) {
+            if self.is_hidden_storage_path(translated.path.as_ref()) {
                 continue;
             }
             let trans_path = translated.path.as_ref();
@@ -209,6 +235,11 @@ impl ScopedVfsStorageEngine {
     pub(super) async fn move_to_trash_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
+        if self.is_protected_subdir_path(&normalized).await? {
+            return Err(VfsError::Internal(
+                "Recycle bin is disabled for protected subdirectory storage".to_string(),
+            ));
+        }
         if normalized.starts_with("/.recycle_bin/") {
             return Err(VfsError::Internal(
                 "Path is already inside recycle bin".to_string(),

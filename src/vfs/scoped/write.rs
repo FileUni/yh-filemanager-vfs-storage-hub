@@ -9,6 +9,9 @@ impl ScopedVfsStorageEngine {
     pub(super) async fn write_impl(&self, path: &str, data: Bytes) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
+        if let Some(plan) = self.get_protected_plan(&normalized).await? {
+            return self.protected_write_impl(&normalized, data, &plan).await;
+        }
         if self.is_refresh_trigger(&normalized).await {
             return self.stat_impl(&normalized).await;
         }
@@ -95,6 +98,9 @@ impl ScopedVfsStorageEngine {
     pub(super) async fn delete_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
+        if self.get_protected_plan(&normalized).await?.is_some() {
+            return self.protected_delete_impl(&normalized).await;
+        }
         self.flush_pending_write_cache_for_path(&normalized).await?;
         let info = self.stat_impl(&normalized).await?;
         // Record size before deletion for quota update
@@ -181,6 +187,11 @@ impl ScopedVfsStorageEngine {
     ) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
+        if let Some(plan) = self.get_protected_plan(&normalized).await? {
+            return self
+                .protected_write_stream_impl(&normalized, stream, &plan)
+                .await;
+        }
         if self.is_refresh_trigger(&normalized).await {
             let parent = if let Some(parent_path) = std::path::Path::new(&normalized).parent() {
                 parent_path.to_string_lossy().to_string()
@@ -260,6 +271,11 @@ impl ScopedVfsStorageEngine {
     ) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
+        if let Some(plan) = self.get_protected_plan(&normalized).await? {
+            return self
+                .protected_write_at_impl(&normalized, offset, data, &plan)
+                .await;
+        }
         if self.is_refresh_trigger(&normalized).await {
             return self.write_impl(path, data).await;
         }
@@ -342,6 +358,9 @@ impl ScopedVfsStorageEngine {
     pub(super) async fn create_dir_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
+        if self.get_protected_plan(&normalized).await?.is_some() {
+            return self.protected_create_dir_impl(&normalized).await;
+        }
         let wal_id = self
             .begin_wal(
                 WalOperation::CreateDir {
@@ -398,6 +417,22 @@ impl ScopedVfsStorageEngine {
         self.check_maintenance()?;
         let norm_src = self.validate_file_operation(src).await?;
         let norm_dst = self.validate_file_operation(dst).await?;
+        let src_protected = self.get_protected_plan(&norm_src).await?.is_some();
+        let dst_protected = self.get_protected_plan(&norm_dst).await?.is_some();
+        if src_protected || dst_protected {
+            let src_info = self.stat_impl(&norm_src).await?;
+            if src_info.is_dir {
+                return Err(VfsError::Internal(
+                    "Protected directory move is not implemented yet".to_string(),
+                ));
+            }
+            let (data, _) = self.read_impl(&norm_src).await?;
+            let info = self.write_impl(&norm_dst, data).await?;
+            let _ = self.delete_impl(&norm_src).await?;
+            self.journal_log("MOVE", &norm_src, Some(&norm_dst), true, None)
+                .await;
+            return Ok(info);
+        }
         self.flush_pending_write_cache_for_path(&norm_src).await?;
         self.flush_pending_write_cache_for_path(&norm_dst).await?;
         let wal_id = self
@@ -503,6 +538,21 @@ impl ScopedVfsStorageEngine {
         self.check_maintenance()?;
         let norm_src = self.validate_file_operation(src).await?;
         let norm_dst = self.validate_file_operation(dst).await?;
+        let src_protected = self.get_protected_plan(&norm_src).await?.is_some();
+        let dst_protected = self.get_protected_plan(&norm_dst).await?.is_some();
+        if src_protected || dst_protected {
+            let src_info = self.stat_impl(&norm_src).await?;
+            if src_info.is_dir {
+                return Err(VfsError::Internal(
+                    "Protected directory copy is not implemented yet".to_string(),
+                ));
+            }
+            let (data, _) = self.read_impl(&norm_src).await?;
+            let info = self.write_impl(&norm_dst, data).await?;
+            self.journal_log("COPY", &norm_src, Some(&norm_dst), true, None)
+                .await;
+            return Ok(info);
+        }
         self.flush_pending_write_cache_for_path(&norm_src).await?;
         self.flush_pending_write_cache_for_path(&norm_dst).await?;
         // Get source file size for quota check

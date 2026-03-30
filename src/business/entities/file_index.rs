@@ -20,7 +20,10 @@ pub struct Model {
     pub backend_key: Option<String>,
     // Attributes
     pub size: i64,
+    pub physical_size: Option<i64>,
     pub etag: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub protected_meta: Option<String>,
     // File Timestamps
     pub file_created_at: Option<DateTimeWithTimeZone>,
     pub file_updated_at: Option<DateTimeWithTimeZone>,

@@ -153,12 +153,62 @@ pub async fn init_vfs_tables(db: &Arc<sea_orm::DatabaseConnection>) -> Result<()
         .if_not_exists()
         .to_owned();
     db.execute(backend.build(&stmt_file_shares)).await?;
+    ensure_file_index_columns(db).await?;
+    ensure_user_settings_columns(db).await?;
     ensure_file_share_columns(db).await?;
 
     // WAL.
     let wal_manager = crate::vfs::wal::VfsWalManager::new(Arc::clone(db));
     wal_manager.init_tables().await?;
     yhlog("info", "VFS Storage Hub DB initialization completed.");
+    Ok(())
+}
+
+async fn ensure_user_settings_columns(db: &Arc<sea_orm::DatabaseConnection>) -> Result<(), DbErr> {
+    add_user_settings_column_if_missing(
+        db,
+        "protected_root",
+        "protected_root TEXT NULL",
+        "protected_root TEXT NULL",
+        "protected_root TEXT NULL",
+    )
+    .await?;
+    add_user_settings_column_if_missing(
+        db,
+        "protected_mode",
+        "protected_mode TEXT NULL",
+        "protected_mode TEXT NULL",
+        "protected_mode TEXT NULL",
+    )
+    .await?;
+    add_user_settings_column_if_missing(
+        db,
+        "protected_key_slot_id",
+        "protected_key_slot_id TEXT NULL",
+        "protected_key_slot_id TEXT NULL",
+        "protected_key_slot_id TEXT NULL",
+    )
+    .await?;
+    Ok(())
+}
+
+async fn ensure_file_index_columns(db: &Arc<sea_orm::DatabaseConnection>) -> Result<(), DbErr> {
+    add_file_index_column_if_missing(
+        db,
+        "physical_size",
+        "physical_size BIGINT NULL",
+        "physical_size BIGINT NULL",
+        "physical_size BIGINT NULL",
+    )
+    .await?;
+    add_file_index_column_if_missing(
+        db,
+        "protected_meta",
+        "protected_meta TEXT NULL",
+        "protected_meta TEXT NULL",
+        "protected_meta TEXT NULL",
+    )
+    .await?;
     Ok(())
 }
 
@@ -261,6 +311,76 @@ async fn add_file_share_column_if_missing(
             )
         }
         DbBackend::MySql => format!("ALTER TABLE yh_vfs_file_shares ADD COLUMN {}", mysql_def),
+    };
+    match db.execute(Statement::from_string(backend, sql)).await {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            let msg = err.to_string().to_ascii_lowercase();
+            if msg.contains("duplicate column")
+                || msg.contains("duplicate column name")
+                || (msg.contains("already exists")
+                    && msg.contains(&column_name.to_ascii_lowercase()))
+            {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+async fn add_user_settings_column_if_missing(
+    db: &Arc<sea_orm::DatabaseConnection>,
+    column_name: &str,
+    sqlite_def: &str,
+    postgres_def: &str,
+    mysql_def: &str,
+) -> Result<(), DbErr> {
+    let backend = db.get_database_backend();
+    let sql = match backend {
+        DbBackend::Sqlite => format!("ALTER TABLE yh_vfs_user_settings ADD COLUMN {}", sqlite_def),
+        DbBackend::Postgres => {
+            format!(
+                "ALTER TABLE yh_vfs_user_settings ADD COLUMN IF NOT EXISTS {}",
+                postgres_def
+            )
+        }
+        DbBackend::MySql => format!("ALTER TABLE yh_vfs_user_settings ADD COLUMN {}", mysql_def),
+    };
+    match db.execute(Statement::from_string(backend, sql)).await {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            let msg = err.to_string().to_ascii_lowercase();
+            if msg.contains("duplicate column")
+                || msg.contains("duplicate column name")
+                || (msg.contains("already exists")
+                    && msg.contains(&column_name.to_ascii_lowercase()))
+            {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+async fn add_file_index_column_if_missing(
+    db: &Arc<sea_orm::DatabaseConnection>,
+    column_name: &str,
+    sqlite_def: &str,
+    postgres_def: &str,
+    mysql_def: &str,
+) -> Result<(), DbErr> {
+    let backend = db.get_database_backend();
+    let sql = match backend {
+        DbBackend::Sqlite => format!("ALTER TABLE yh_vfs_file_index ADD COLUMN {}", sqlite_def),
+        DbBackend::Postgres => {
+            format!(
+                "ALTER TABLE yh_vfs_file_index ADD COLUMN IF NOT EXISTS {}",
+                postgres_def
+            )
+        }
+        DbBackend::MySql => format!("ALTER TABLE yh_vfs_file_index ADD COLUMN {}", mysql_def),
     };
     match db.execute(Statement::from_string(backend, sql)).await {
         Ok(_) => Ok(()),

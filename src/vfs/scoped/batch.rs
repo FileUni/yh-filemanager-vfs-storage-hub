@@ -132,6 +132,14 @@ impl ScopedVfsStorageEngine {
     }
     pub(super) async fn submit_batch_delete_impl(&self, paths: Vec<String>) -> VfsResult<String> {
         self.check_maintenance()?;
+        for path in &paths {
+            let normalized = self.validate_file_operation(path).await?;
+            if self.is_protected_subdir_path(&normalized).await? {
+                return Err(VfsError::Internal(
+                    "Recycle bin is disabled for protected subdirectory storage".to_string(),
+                ));
+            }
+        }
         let task_handler = self
             .task_handler
             .as_ref()

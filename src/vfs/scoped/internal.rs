@@ -288,6 +288,17 @@ impl ScopedVfsStorageEngine {
         }
         normalized.starts_with("/.thumbs_cache/")
     }
+    pub(super) fn is_protected_blob_path(&self, path: &str) -> bool {
+        let normalized = path.trim_end_matches('/');
+        normalized == crate::vfs::protected::PROTECTED_STORAGE_DIR
+            || normalized.starts_with(&format!(
+                "{}/",
+                crate::vfs::protected::PROTECTED_STORAGE_DIR
+            ))
+    }
+    pub(super) fn is_hidden_storage_path(&self, path: &str) -> bool {
+        self.is_thumbnail_cache_path(path) || self.is_protected_blob_path(path)
+    }
     pub(super) fn get_relative_path(&self, full_path: &str, prefix: &str) -> String {
         if let Some(stripped) = full_path.strip_prefix(prefix) {
             stripped.trim_start_matches('/').to_string()
@@ -339,15 +350,114 @@ impl ScopedVfsStorageEngine {
             Ok((0, None))
         }
     }
-    pub(super) async fn upsert_index_helper(
+    pub(super) async fn get_user_settings_snapshot(
+        &self,
+    ) -> VfsResult<Option<crate::business::services::UserSettingsSnapshot>> {
+        let settings = UserSettingsService::get_user_settings(&self.db, &self.user_id)
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
+        Ok(settings
+            .as_ref()
+            .map(crate::business::services::UserSettingsSnapshot::from))
+    }
+    pub(super) async fn get_index_metadata(
+        &self,
+        path: &str,
+    ) -> VfsResult<Option<crate::business::entities::file_index::Model>> {
+        self.index_service
+            .get_file_metadata(&self.user_id, path)
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))
+    }
+    pub(super) async fn is_protected_subdir_path(&self, path: &str) -> VfsResult<bool> {
+        let Some(settings) = self.get_user_settings_snapshot().await? else {
+            return Ok(false);
+        };
+        if !settings.is_protected_subdir_root() {
+            return Ok(false);
+        }
+        Ok(settings.matches_protected_root(path))
+    }
+    pub(super) async fn get_protected_plan(
+        &self,
+        path: &str,
+    ) -> VfsResult<Option<crate::vfs::protected::ProtectedPathPlan>> {
+        let Some(settings) = self.get_user_settings_snapshot().await? else {
+            return Ok(None);
+        };
+        if !settings.matches_protected_root(path) {
+            return Ok(None);
+        }
+        let root = settings
+            .protected_root_trimmed()
+            .ok_or_else(|| VfsError::Internal("Protected root is missing".to_string()))?
+            .to_string();
+        let mode_raw = settings
+            .protected_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| VfsError::Internal("Protected mode is missing".to_string()))?;
+        let slot_id = settings
+            .protected_key_slot_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| VfsError::Internal("Protected key slot is missing".to_string()))?
+            .to_string();
+        let mode = crate::vfs::protected::ProtectedMode::from_str(mode_raw).ok_or_else(|| {
+            VfsError::Internal(format!("Unsupported protected mode: {}", mode_raw))
+        })?;
+        let config = crate::config::get_vfs_hub_config().await;
+        let protected_cfg = config.get_protected_storage();
+        let global_mode = protected_cfg.get_global_mode().trim().to_ascii_lowercase();
+        if global_mode != mode_raw.to_ascii_lowercase() {
+            return Err(VfsError::Internal(
+                "Protected storage is temporarily unavailable because global mode does not match"
+                    .to_string(),
+            ));
+        }
+        let obfuscation = protected_cfg.get_obfuscation();
+        let prng = crate::vfs::protected::ProtectedPrng::from_str(obfuscation.get_prng())
+            .ok_or_else(|| {
+                VfsError::Internal(format!(
+                    "Unsupported protected storage PRNG: {}",
+                    obfuscation.get_prng()
+                ))
+            })?;
+        Ok(Some(crate::vfs::protected::ProtectedPathPlan {
+            root,
+            mode,
+            key_slot_id: slot_id,
+            block_size: obfuscation.get_block_size_kib() as usize * 1024,
+            prng,
+        }))
+    }
+    pub(super) async fn next_protected_blob_physical_path(
+        &self,
+        key_slot_id: &str,
+    ) -> VfsResult<String> {
+        let logical_blob_path = crate::vfs::protected::next_blob_logical_path(key_slot_id);
+        let physical_blob_path = self.get_physical_path(&logical_blob_path).await?;
+        if let Some(parent) = std::path::Path::new(&physical_blob_path).parent()
+            && let Some(parent_str) = parent.to_str()
+            && !parent_str.is_empty()
+        {
+            let _ = self.pool.create_dir_all(parent_str).await;
+        }
+        Ok(physical_blob_path)
+    }
+    pub(super) async fn upsert_index_helper_with_backend_key(
         &self,
         logical_path: &str,
         info: &VfsFileInfo,
+        backend_key: Option<&str>,
+        physical_size: Option<i64>,
+        protected_meta: Option<&str>,
     ) -> VfsResult<()> {
-        if self.is_thumbnail_cache_path(logical_path) {
+        if self.is_hidden_storage_path(logical_path) {
             return Ok(());
         }
-        let physical_path = self.get_physical_path(logical_path).await?;
         let backend_type = self.pool.get_backend_type();
         if let Err(e) = self
             .index_service
@@ -357,12 +467,12 @@ impl ScopedVfsStorageEngine {
                 info,
                 Some(self.pool.config.get_name()),
                 Some(backend_type.as_str()),
-                Some(physical_path.as_str()),
+                backend_key,
+                physical_size,
+                protected_meta,
             )
             .await
         {
-            // Governance rule: do not rollback physical IO when DB update fails.
-            // Still log loudly to make the issue observable.
             yh_console_log::yhlog(
                 "error",
                 &format!(
@@ -370,10 +480,26 @@ impl ScopedVfsStorageEngine {
                     self.user_id, logical_path, e
                 ),
             );
+            return Err(VfsError::Internal(e.to_string()));
         }
         self.cache.invalidate_parent_ls(logical_path).await;
         self.cache.invalidate("stat", logical_path).await;
         Ok(())
+    }
+    pub(super) async fn upsert_index_helper(
+        &self,
+        logical_path: &str,
+        info: &VfsFileInfo,
+    ) -> VfsResult<()> {
+        let physical_path = self.get_physical_path(logical_path).await?;
+        self.upsert_index_helper_with_backend_key(
+            logical_path,
+            info,
+            Some(physical_path.as_str()),
+            None,
+            None,
+        )
+        .await
     }
     pub(super) async fn get_file_size(&self, path: &str) -> i64 {
         match self.stat_impl(path).await {

@@ -81,6 +81,9 @@ impl ScopedVfsStorageEngine {
                     .map_err(VfsError::Io)?;
             Ok((Bytes::from(data), info))
         } else {
+            if let Some(plan) = self.get_protected_plan(&normalized).await? {
+                return self.protected_read_all_impl(&normalized, &plan).await;
+            }
             if let Some(info) = self.pending_stat(&normalized).await {
                 let (data, _) = self
                     .pool
@@ -102,6 +105,9 @@ impl ScopedVfsStorageEngine {
         &self,
         normalized_path: &str,
     ) -> VfsResult<Option<Vec<VfsFileInfo>>> {
+        if self.get_protected_plan(normalized_path).await?.is_some() {
+            return Ok(None);
+        }
         let vfs_cfg = crate::config::get_vfs_hub_config().await;
         let mode = vfs_cfg.get_file_index().get_vfs_sync_index_mode();
         match mode {
@@ -207,6 +213,28 @@ impl ScopedVfsStorageEngine {
             }
             return Ok(results);
         }
+        if self.get_protected_plan(&normalized).await?.is_some() {
+            let db_entries = self
+                .index_service
+                .list_files(&self.user_id, &normalized)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))?;
+            return Ok(db_entries
+                .into_iter()
+                .map(|e| VfsFileInfo {
+                    name: e.name.into(),
+                    path: e.path.into(),
+                    is_dir: e.is_dir,
+                    size: e.size as u64,
+                    modified: e.file_updated_at.map(|t| t.into()),
+                    favorite_color: e.favorite_color,
+                    has_active_share: None,
+                    has_active_direct: None,
+                    trashed_at: e.file_trashed_at.map(|t| t.into()),
+                    original_path: e.original_path.map(|p| p.into()),
+                })
+                .collect());
+        }
         let physical = self.get_physical_path(&normalized).await?;
         let use_index = !self.pool.is_dirty_dir(&physical);
         if use_index {
@@ -246,7 +274,7 @@ impl ScopedVfsStorageEngine {
                     .into_iter()
                     .map(|e| self.translate_file_info(e, false))
                     .filter(|translated| {
-                        if self.is_thumbnail_cache_path(translated.path.as_ref()) {
+                        if self.is_hidden_storage_path(translated.path.as_ref()) {
                             return false;
                         }
                         let trans_path = translated.path.as_ref();
@@ -276,7 +304,7 @@ impl ScopedVfsStorageEngine {
                 .into_iter()
                 .map(|e| self.translate_file_info(e, false))
                 .filter(|translated| {
-                    if self.is_thumbnail_cache_path(translated.path.as_ref()) {
+                    if self.is_hidden_storage_path(translated.path.as_ref()) {
                         return false;
                     }
                     let trans_path = translated.path.as_ref();
@@ -321,6 +349,10 @@ impl ScopedVfsStorageEngine {
             futures::stream::once(async move {
                 let normalized = self_clone.validate_file_operation(&path_clone).await?;
                 if self_clone.is_temp_path(&normalized) {
+                    let entries = self_clone.list_impl(&normalized).await?;
+                    return Ok(ListStreamSource::Materialized(entries));
+                }
+                if self_clone.get_protected_plan(&normalized).await?.is_some() {
                     let entries = self_clone.list_impl(&normalized).await?;
                     return Ok(ListStreamSource::Materialized(entries));
                 }
@@ -410,6 +442,14 @@ impl ScopedVfsStorageEngine {
                 .join(rel)
                 .exists())
         } else {
+            if self.get_index_metadata(&normalized).await?.is_some() {
+                return Ok(true);
+            }
+            if let Some(plan) = self.get_protected_plan(&normalized).await?
+                && normalized == plan.root
+            {
+                return Ok(true);
+            }
             self.pool
                 .exists(&self.get_physical_path(&normalized).await?)
                 .await
@@ -438,6 +478,25 @@ impl ScopedVfsStorageEngine {
         }
         if let Some(info) = self.pending_stat(&normalized).await {
             return Ok(info);
+        }
+        if let Some(plan) = self.get_protected_plan(&normalized).await? {
+            if let Some(e) = self.get_index_metadata(&normalized).await? {
+                return Ok(VfsFileInfo {
+                    name: e.name.into(),
+                    path: e.path.into(),
+                    is_dir: e.is_dir,
+                    size: e.size as u64,
+                    modified: e.file_updated_at.map(|t| t.into()),
+                    favorite_color: e.favorite_color,
+                    has_active_share: None,
+                    has_active_direct: None,
+                    trashed_at: e.file_trashed_at.map(|t| t.into()),
+                    original_path: e.original_path.map(|p| p.into()),
+                });
+            }
+            if normalized != plan.root {
+                return Err(VfsError::NotFound(normalized));
+            }
         }
         let physical = self.get_physical_path(&normalized).await?;
         if !self.pool.is_dirty_path(&physical)
@@ -481,6 +540,29 @@ impl ScopedVfsStorageEngine {
         page_size: i64,
     ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
         let normalized = self.validate_file_operation(parent_path).await?;
+        if self.get_protected_plan(&normalized).await?.is_some() {
+            let (entries, total) = self
+                .index_service
+                .list_files_paginated(&self.user_id, &normalized, page, page_size)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))?;
+            let files = entries
+                .into_iter()
+                .map(|e| VfsFileInfo {
+                    name: e.name.into(),
+                    path: e.path.into(),
+                    is_dir: e.is_dir,
+                    size: e.size as u64,
+                    modified: e.file_updated_at.map(|t| t.into()),
+                    favorite_color: e.favorite_color,
+                    has_active_share: None,
+                    has_active_direct: None,
+                    trashed_at: e.file_trashed_at.map(|t| t.into()),
+                    original_path: e.original_path.map(|p| p.into()),
+                })
+                .collect();
+            return Ok((files, total));
+        }
         let physical = self.get_physical_path(&normalized).await?;
         if !self.pending_children(&normalized).await?.is_empty()
             || self.pool.is_dirty_dir(&physical)
@@ -543,6 +625,29 @@ impl ScopedVfsStorageEngine {
         params: VfsPaginationParams<'_>,
     ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
         let normalized = self.validate_file_operation(parent_path).await?;
+        if self.get_protected_plan(&normalized).await?.is_some() {
+            let (entries, total) = self
+                .index_service
+                .list_files_paginated_with_sort(&self.user_id, &normalized, params)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))?;
+            let files = entries
+                .into_iter()
+                .map(|e| VfsFileInfo {
+                    name: e.name.into(),
+                    path: e.path.into(),
+                    is_dir: e.is_dir,
+                    size: e.size as u64,
+                    modified: e.file_updated_at.map(|t| t.into()),
+                    favorite_color: e.favorite_color,
+                    has_active_share: None,
+                    has_active_direct: None,
+                    trashed_at: e.file_trashed_at.map(|t| t.into()),
+                    original_path: e.original_path.map(|p| p.into()),
+                })
+                .collect();
+            return Ok((files, total));
+        }
         let params_for_fallback = params.clone();
         let physical = self.get_physical_path(&normalized).await?;
         if !self.pending_children(&normalized).await?.is_empty()
@@ -740,6 +845,11 @@ impl ScopedVfsStorageEngine {
         VfsFileInfo,
     )> {
         let normalized = self.validate_file_operation(path).await?;
+        if let Some(plan) = self.get_protected_plan(&normalized).await? {
+            return self
+                .protected_read_stream_range_impl(&normalized, range, &plan)
+                .await;
+        }
         let info = if let Some(info) = self.pending_stat(&normalized).await {
             info
         } else {
@@ -752,8 +862,16 @@ impl ScopedVfsStorageEngine {
         Ok((stream, info))
     }
     pub(super) async fn metadata_impl(&self, path: &str) -> VfsResult<VfsMetadata> {
-        let physical = self.get_physical_path(path).await?;
-        self.pool.metadata(&physical).await
+        let normalized = self.validate_file_operation(path).await?;
+        let info = self.stat_impl(&normalized).await?;
+        Ok(VfsMetadata {
+            path: info.path,
+            is_dir: info.is_dir,
+            size: info.size,
+            modified: info.modified,
+            content_type: None,
+            etag: None,
+        })
     }
     pub(super) async fn read_range_impl(
         &self,
@@ -762,6 +880,11 @@ impl ScopedVfsStorageEngine {
         end: u64,
     ) -> VfsResult<(Bytes, VfsFileInfo)> {
         let normalized = self.validate_file_operation(path).await?;
+        if let Some(plan) = self.get_protected_plan(&normalized).await? {
+            return self
+                .protected_read_range_impl(&normalized, start, end, &plan)
+                .await;
+        }
         let info = if let Some(info) = self.pending_stat(&normalized).await {
             info
         } else {

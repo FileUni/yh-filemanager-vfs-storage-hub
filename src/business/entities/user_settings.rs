@@ -21,6 +21,9 @@ pub struct Model {
     pub sftp_enable_password: bool, // Whether to allow SFTP password login
     pub s3_access_key: Option<String>, // S3 independent access key ID
     pub s3_secret_key: Option<String>, // S3 independent access key Secret
+    pub protected_root: Option<String>,
+    pub protected_mode: Option<String>,
+    pub protected_key_slot_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }

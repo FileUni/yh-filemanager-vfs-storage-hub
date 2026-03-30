@@ -21,6 +21,7 @@ pub mod hub;
 pub mod maintenance;
 pub mod mounted;
 pub mod pool;
+pub mod protected;
 pub mod scoped;
 pub mod task;
 pub mod wal;
