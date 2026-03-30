@@ -1,5 +1,7 @@
 pub mod db_init;
 pub mod file_index_service;
+pub mod media_transcode;
+mod media_transcode_runtime;
 pub mod nextcloud;
 pub mod remote_mounts;
 pub mod search;
@@ -13,6 +15,14 @@ pub mod types;
 pub mod user_settings;
 pub use db_init::init_vfs_tables;
 pub use file_index_service::FileIndexService;
+pub use media_transcode::{
+    VideoTranscodeAsset, VideoTranscodeSessionSnapshot, VideoTranscodeSessionState,
+    ensure_web_video_hls_session, resolve_web_video_hls_asset,
+};
+pub use media_transcode_runtime::{
+    MediaHardwareAccelerationRuntimeConfig, MediaTranscodingRuntimeConfig,
+    MediaTranscodingVideoRuntimeConfig,
+};
 pub use remote_mounts::{
     NewRemoteMount, RemoteMountService, RemoteMountSnapshot, RemoteMountSyncMode,
     RemoteMountUpdatePatch,
