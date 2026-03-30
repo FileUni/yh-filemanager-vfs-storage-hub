@@ -45,21 +45,47 @@ async fn render_video_thumbnail_ffmpeg(
     };
     let quality = cfg.get_thumb_quality() as i32;
     let qscale = ((100 - quality) / 4).clamp(2, 31);
-    let mut cmd = Command::new(ffmpeg_path);
-    cmd.arg("-y")
-        .arg("-ss")
-        .arg(seek.to_string())
-        .arg("-i")
-        .arg(input)
-        .arg("-frames:v")
-        .arg("1")
-        .arg("-vf")
-        .arg(format!("scale={}:-1", size))
-        .arg("-q:v")
-        .arg(qscale.to_string())
-        .arg(output);
     let timeout = video_cfg.get_timeout_secs();
-    match run_command_with_timeout(cmd, timeout).await {
+    if let Some(hardware) = resolve_thumbnail_hardware_mode(cfg) {
+        match run_thumbnail_command(
+            ThumbnailCommandSpec {
+                ffmpeg_path,
+                input,
+                output,
+                seek,
+                size: &size,
+                qscale,
+                hardware_mode: Some(hardware),
+                timeout,
+            },
+        )
+        .await
+        {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                yhlog(
+                    "warn",
+                    &format!(
+                        "Thumbnail hardware acceleration fallback triggered (ffmpeg, path='{}'): {}",
+                        ffmpeg_path, err
+                    ),
+                );
+            }
+        }
+    }
+
+    match run_thumbnail_command(ThumbnailCommandSpec {
+        ffmpeg_path,
+        input,
+        output,
+        seek,
+        size: &size,
+        qscale,
+        hardware_mode: None,
+        timeout,
+    })
+    .await
+    {
         Ok(value) => Ok(value),
         Err(err) => {
             yhlog(
@@ -72,6 +98,98 @@ async fn render_video_thumbnail_ffmpeg(
             Err(err)
         }
     }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone)]
+enum ThumbnailHardwareMode {
+    Vaapi { device: String },
+    Qsv { device: Option<String> },
+    VideoToolbox,
+    Auto,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn resolve_thumbnail_hardware_mode(cfg: &ThumbnailRuntimeConfig) -> Option<ThumbnailHardwareMode> {
+    let hardware = cfg.get_media_hardware();
+    if !hardware.is_enabled() {
+        return None;
+    }
+    match hardware.get_backend() {
+        "vaapi" => {
+            let device = hardware.get_device().trim();
+            if device.is_empty() {
+                None
+            } else {
+                Some(ThumbnailHardwareMode::Vaapi {
+                    device: device.to_string(),
+                })
+            }
+        }
+        "qsv" => Some(ThumbnailHardwareMode::Qsv {
+            device: (!hardware.get_device().trim().is_empty())
+                .then(|| hardware.get_device().trim().to_string()),
+        }),
+        "videotoolbox" => Some(ThumbnailHardwareMode::VideoToolbox),
+        "nvenc" | "amf" => Some(ThumbnailHardwareMode::Auto),
+        _ => None,
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn run_thumbnail_command(
+    spec: ThumbnailCommandSpec<'_>,
+) -> Result<bool> {
+    let mut cmd = Command::new(spec.ffmpeg_path);
+    cmd.arg("-y");
+
+    if let Some(mode) = spec.hardware_mode {
+        match mode {
+            ThumbnailHardwareMode::Vaapi { device } => {
+                cmd.arg("-hwaccel")
+                    .arg("vaapi")
+                    .arg("-hwaccel_device")
+                    .arg(device);
+            }
+            ThumbnailHardwareMode::Qsv { device } => {
+                cmd.arg("-hwaccel").arg("qsv");
+                if let Some(device) = device {
+                    cmd.arg("-qsv_device").arg(device);
+                }
+            }
+            ThumbnailHardwareMode::VideoToolbox => {
+                cmd.arg("-hwaccel").arg("videotoolbox");
+            }
+            ThumbnailHardwareMode::Auto => {
+                cmd.arg("-hwaccel").arg("auto");
+            }
+        }
+    }
+
+    cmd.arg("-ss")
+        .arg(spec.seek.to_string())
+        .arg("-i")
+        .arg(spec.input)
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-vf")
+        .arg(format!("scale={}:-1", spec.size))
+        .arg("-q:v")
+        .arg(spec.qscale.to_string())
+        .arg(spec.output);
+    run_command_with_timeout(cmd, spec.timeout).await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+struct ThumbnailCommandSpec<'a> {
+    ffmpeg_path: &'a str,
+    input: &'a PathBuf,
+    output: &'a PathBuf,
+    seek: u64,
+    size: &'a str,
+    qscale: i32,
+    hardware_mode: Option<ThumbnailHardwareMode>,
+    timeout: u64,
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]

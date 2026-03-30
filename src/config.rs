@@ -1598,7 +1598,11 @@ impl VfsThumbnailConfig {
         )
     }
 
-    pub fn to_runtime_config(&self, ffmpeg_path: &str) -> crate::business::services::ThumbnailRuntimeConfig {
+    pub fn to_runtime_config(
+        &self,
+        ffmpeg_path: &str,
+        media_hardware: crate::business::services::MediaHardwareAccelerationRuntimeConfig,
+    ) -> crate::business::services::ThumbnailRuntimeConfig {
         crate::business::services::ThumbnailRuntimeConfig {
             enabled: self.is_enabled(),
             cache_mode: self.get_cache_mode().to_string(),
@@ -1612,6 +1616,7 @@ impl VfsThumbnailConfig {
             pdf: self.get_pdf().to_runtime_config(),
             office: self.get_office().to_runtime_config(),
             text: self.get_text().to_runtime_config(),
+            media_hardware,
         }
     }
 }
@@ -2665,9 +2670,9 @@ impl VfsStorageHubConfig {
                             .map(|r| r.is_finite() && r > 0.0 && r <= 1.0)
                             .unwrap_or(false);
                         let secs_ok = seek_seconds.map(|v| v > 0).unwrap_or(false);
-                        if !ratio_ok && !secs_ok {
+                        if ratio_ok == secs_ok {
                             errors.push(format!(
-                                "[{}] thumbnail.video.seek_ratio or thumbnail.video.seek_seconds is required",
+                                "[{}] thumbnail.video.seek_ratio and thumbnail.video.seek_seconds must be exactly one active option",
                                 s
                             ));
                         }

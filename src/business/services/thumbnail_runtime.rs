@@ -3,6 +3,8 @@ use sea_orm::DatabaseConnection;
 use std::path::Path;
 use std::sync::Arc;
 
+use super::MediaHardwareAccelerationRuntimeConfig;
+
 #[derive(Debug, Clone)]
 pub struct ThumbnailRuntimeToolConfig {
     pub vips_path: String,
@@ -125,6 +127,7 @@ pub struct ThumbnailRuntimeConfig {
     pub pdf: ThumbnailRuntimeTypeConfig,
     pub office: ThumbnailRuntimeTypeConfig,
     pub text: ThumbnailRuntimeTypeConfig,
+    pub media_hardware: MediaHardwareAccelerationRuntimeConfig,
 }
 
 impl ThumbnailRuntimeConfig {
@@ -174,6 +177,10 @@ impl ThumbnailRuntimeConfig {
 
     pub fn get_thumb_format(&self) -> &str {
         self.thumb_format.as_str()
+    }
+
+    pub fn get_media_hardware(&self) -> &MediaHardwareAccelerationRuntimeConfig {
+        &self.media_hardware
     }
 }
 
