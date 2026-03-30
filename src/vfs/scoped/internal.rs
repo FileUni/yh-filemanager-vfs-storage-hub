@@ -458,6 +458,7 @@ impl ScopedVfsStorageEngine {
             block_size: obfuscation.get_block_size_kib() as usize * 1024,
             prng,
             encrypt_key,
+            workers: obfuscation.get_workers(),
         }))
     }
     pub(super) async fn next_protected_blob_physical_path(

@@ -1,6 +1,7 @@
 use aes::Aes256;
 use bytes::{Bytes, BytesMut};
 use ctr::cipher::{KeyIvInit, StreamCipher};
+use hmac::{Hmac, Mac};
 use rand::RngCore;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -10,8 +11,13 @@ pub const PROTECTED_STORAGE_DIR: &str = "/.protected";
 const PROTECTED_MAGIC: [u8; 4] = *b"FUPR";
 const PROTECTED_VERSION: u8 = 1;
 pub const PROTECTED_HEADER_LEN: usize = 36;
+pub const PROTECTED_INTEGRITY_NONE: &str = "none";
+pub const PROTECTED_INTEGRITY_HMAC_SHA256_CHUNKED: &str = "hmac-sha256-chunked";
+pub const PROTECTED_MAC_LEN: usize = 32;
+pub const DEFAULT_ENCRYPT_INTEGRITY_CHUNK_SIZE: u32 = 1024 * 1024;
 
 type Aes256Ctr = ctr::Ctr128BE<Aes256>;
+type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtectedMode {
@@ -193,10 +199,28 @@ pub fn encode_payload(
         logical_size,
         seed_or_nonce,
     };
-    let mut out = BytesMut::with_capacity(PROTECTED_HEADER_LEN + payload.len());
+    let mut meta_record = ProtectedMetaRecord::from_header(&header);
+    let mut mac_table = Vec::new();
+    if plan.mode == ProtectedMode::Encrypt {
+        let encrypt_key = plan
+            .encrypt_key
+            .as_ref()
+            .ok_or_else(|| "Protected encrypt key is missing".to_string())?;
+        mac_table = build_encrypt_mac_table(
+            encrypt_key,
+            DEFAULT_ENCRYPT_INTEGRITY_CHUNK_SIZE as usize,
+            &payload,
+        )?;
+        meta_record.integrity = PROTECTED_INTEGRITY_HMAC_SHA256_CHUNKED.to_string();
+        meta_record.integrity_chunk_size = Some(DEFAULT_ENCRYPT_INTEGRITY_CHUNK_SIZE);
+    }
+    let mut out = BytesMut::with_capacity(PROTECTED_HEADER_LEN + payload.len() + mac_table.len());
     out.extend_from_slice(&header.encode());
     out.extend_from_slice(&payload);
-    let meta_json = serde_json::to_string(&ProtectedMetaRecord::from_header(&header))
+    if !mac_table.is_empty() {
+        out.extend_from_slice(&mac_table);
+    }
+    let meta_json = serde_json::to_string(&meta_record)
         .map_err(|e| format!("serialize protected meta failed: {}", e))?;
     Ok((out.freeze(), header, meta_json))
 }
@@ -261,7 +285,7 @@ impl ProtectedMetaRecord {
             block_size: header.block_size,
             logical_size: header.logical_size,
             seed_or_nonce_hex: hex::encode(header.seed_or_nonce),
-            integrity: "none".to_string(),
+            integrity: PROTECTED_INTEGRITY_NONE.to_string(),
             integrity_chunk_size: None,
         }
     }
@@ -313,17 +337,82 @@ fn obfuscate_in_place(
     seed: [u8; 16],
     block_size: usize,
     prng: ProtectedPrng,
+    workers: usize,
 ) {
-    for (block_index, chunk) in buf.chunks_mut(block_size).enumerate() {
-        match prng {
-            ProtectedPrng::Xorshift => {
-                apply_xorshift_mask(chunk, user_id, key_slot_id, seed, block_index as u64)
-            }
-            ProtectedPrng::Pcg => {
-                apply_pcg_mask(chunk, user_id, key_slot_id, seed, block_index as u64)
+    obfuscate_in_place_from_block(
+        buf,
+        user_id,
+        key_slot_id,
+        seed,
+        block_size,
+        prng,
+        0,
+        workers,
+    )
+}
+
+fn effective_parallel_workers(requested: usize) -> usize {
+    if requested == 0 {
+        std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(1)
+    } else {
+        requested.max(1)
+    }
+}
+
+fn obfuscate_in_place_from_block(
+    buf: &mut [u8],
+    user_id: &str,
+    key_slot_id: &str,
+    seed: [u8; 16],
+    block_size: usize,
+    prng: ProtectedPrng,
+    start_block_index: u64,
+    workers: usize,
+) {
+    let block_size = block_size.max(1);
+    let chunk_count = buf.len().div_ceil(block_size);
+    let effective_workers = effective_parallel_workers(workers);
+    if effective_workers <= 1 || chunk_count < 4 {
+        for (block_index, chunk) in buf.chunks_mut(block_size).enumerate() {
+            let absolute_index = start_block_index + block_index as u64;
+            match prng {
+                ProtectedPrng::Xorshift => {
+                    apply_xorshift_mask(chunk, user_id, key_slot_id, seed, absolute_index)
+                }
+                ProtectedPrng::Pcg => {
+                    apply_pcg_mask(chunk, user_id, key_slot_id, seed, absolute_index)
+                }
             }
         }
+        return;
     }
+
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(effective_workers)
+        .build()
+        .map(|pool| {
+            pool.install(|| {
+                buf.par_chunks_mut(block_size)
+                    .enumerate()
+                    .for_each(|(block_index, chunk)| {
+                        let absolute_index = start_block_index + block_index as u64;
+                        match prng {
+                            ProtectedPrng::Xorshift => apply_xorshift_mask(
+                                chunk,
+                                user_id,
+                                key_slot_id,
+                                seed,
+                                absolute_index,
+                            ),
+                            ProtectedPrng::Pcg => {
+                                apply_pcg_mask(chunk, user_id, key_slot_id, seed, absolute_index)
+                            }
+                        }
+                    });
+            })
+        });
 }
 
 fn derive_block_material(
@@ -393,6 +482,7 @@ fn apply_pcg_mask(
 fn decode_obfuscate_range(
     user_id: &str,
     key_slot_id: &str,
+    workers: usize,
     header: &ProtectedHeader,
     payload: Bytes,
     start: u64,
@@ -404,25 +494,16 @@ fn decode_obfuscate_range(
     let clamped_end = aligned_end.min(header.logical_size as usize);
     let mut buf = payload.to_vec();
     let first_block_index = aligned_start / block_size;
-    for (idx, chunk) in buf.chunks_mut(block_size).enumerate() {
-        let block_index = first_block_index as u64 + idx as u64;
-        match header.prng {
-            ProtectedPrng::Xorshift => apply_xorshift_mask(
-                chunk,
-                user_id,
-                key_slot_id,
-                header.seed_or_nonce,
-                block_index,
-            ),
-            ProtectedPrng::Pcg => apply_pcg_mask(
-                chunk,
-                user_id,
-                key_slot_id,
-                header.seed_or_nonce,
-                block_index,
-            ),
-        }
-    }
+    obfuscate_in_place_from_block(
+        &mut buf,
+        user_id,
+        key_slot_id,
+        header.seed_or_nonce,
+        block_size,
+        header.prng,
+        first_block_index as u64,
+        workers,
+    );
     let slice_start = (start as usize).saturating_sub(aligned_start);
     let slice_end = slice_start + (end - start) as usize;
     let logical_window = &buf[..clamped_end.saturating_sub(aligned_start)];

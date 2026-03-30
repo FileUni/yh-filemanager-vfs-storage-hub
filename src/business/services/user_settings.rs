@@ -112,6 +112,9 @@ impl UserSettingsSnapshot {
         } else {
             normalized_root
         };
+        if normalized_root == "/" {
+            return true;
+        }
         normalized_path == normalized_root
             || normalized_path.starts_with(&format!("{}/", normalized_root))
     }
