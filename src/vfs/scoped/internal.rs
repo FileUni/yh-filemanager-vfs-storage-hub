@@ -425,12 +425,39 @@ impl ScopedVfsStorageEngine {
                     obfuscation.get_prng()
                 ))
             })?;
+        let encrypt_key = if mode == crate::vfs::protected::ProtectedMode::Encrypt {
+            let wrapped = settings
+                .protected_wrapped_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    VfsError::Internal("Protected wrapped key is missing".to_string())
+                })?;
+            let wrap_key = protected_cfg.get_encrypt().get_binary_wrap_key();
+            let plaintext = yh_config_infra::aead::decrypt_from_string_v1(wrapped, &wrap_key)
+                .map_err(VfsError::Internal)?;
+            let raw = hex::decode(plaintext.trim()).map_err(|e| {
+                VfsError::Internal(format!("Decode protected wrapped key failed: {}", e))
+            })?;
+            if raw.len() != 32 {
+                return Err(VfsError::Internal(
+                    "Protected wrapped key size is invalid".to_string(),
+                ));
+            }
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&raw);
+            Some(key)
+        } else {
+            None
+        };
         Ok(Some(crate::vfs::protected::ProtectedPathPlan {
             root,
             mode,
             key_slot_id: slot_id,
             block_size: obfuscation.get_block_size_kib() as usize * 1024,
             prng,
+            encrypt_key,
         }))
     }
     pub(super) async fn next_protected_blob_physical_path(
