@@ -231,6 +231,22 @@ pub fn header_from_meta_json(raw: &str) -> Result<ProtectedHeader, String> {
     meta.into_header()
 }
 
+pub fn meta_from_json(raw: &str) -> Result<ProtectedMetaRecord, String> {
+    serde_json::from_str(raw).map_err(|e| format!("parse protected meta failed: {}", e))
+}
+
+pub fn encrypt_mac_table_len(logical_size: u64, chunk_size: u32) -> usize {
+    integrity_chunk_count(logical_size, chunk_size) * PROTECTED_MAC_LEN
+}
+
+pub fn integrity_chunk_count(logical_size: u64, chunk_size: u32) -> usize {
+    if logical_size == 0 {
+        0
+    } else {
+        logical_size.div_ceil(chunk_size.max(1) as u64) as usize
+    }
+}
+
 pub fn decode_range(
     user_id: &str,
     key_slot_id: &str,
