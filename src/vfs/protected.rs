@@ -346,6 +346,44 @@ fn encrypt_range_in_place(buf: &mut [u8], key: &[u8; 32], nonce: [u8; 16], logic
     cipher.apply_keystream(buf);
 }
 
+fn derive_encrypt_mac_key(encrypt_key: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"fileuni:protected:encrypt:mac:v1:");
+    hasher.update(encrypt_key);
+    hasher.finalize().into()
+}
+
+fn compute_encrypt_chunk_mac(
+    encrypt_key: &[u8; 32],
+    chunk_index: u64,
+    ciphertext: &[u8],
+) -> Result<[u8; PROTECTED_MAC_LEN], String> {
+    let mac_key = derive_encrypt_mac_key(encrypt_key);
+    let mut mac =
+        HmacSha256::new_from_slice(&mac_key).map_err(|e| format!("invalid mac key: {}", e))?;
+    mac.update(&chunk_index.to_le_bytes());
+    mac.update(ciphertext);
+    let out = mac.finalize().into_bytes();
+    let mut tag = [0u8; PROTECTED_MAC_LEN];
+    tag.copy_from_slice(&out);
+    Ok(tag)
+}
+
+fn build_encrypt_mac_table(
+    encrypt_key: &[u8; 32],
+    chunk_size: usize,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(
+        integrity_chunk_count(ciphertext.len() as u64, chunk_size as u32) * PROTECTED_MAC_LEN,
+    );
+    for (chunk_index, chunk) in ciphertext.chunks(chunk_size.max(1)).enumerate() {
+        let tag = compute_encrypt_chunk_mac(encrypt_key, chunk_index as u64, chunk)?;
+        out.extend_from_slice(&tag);
+    }
+    Ok(out)
+}
+
 fn obfuscate_in_place(
     buf: &mut [u8],
     user_id: &str,
@@ -543,6 +581,34 @@ fn decode_encrypt_range(
         return Err("protected encrypt range size mismatch".to_string());
     }
     Ok(Bytes::from(buf))
+}
+
+pub fn verify_encrypt_window(
+    encrypt_key: &[u8; 32],
+    chunk_size: u32,
+    payload_logical_start: u64,
+    ciphertext_window: &[u8],
+    mac_table: &[u8],
+) -> Result<(), String> {
+    let chunk_size = chunk_size.max(1) as u64;
+    let start_chunk = payload_logical_start / chunk_size;
+    let expected_chunks = integrity_chunk_count(ciphertext_window.len() as u64, chunk_size as u32);
+    if mac_table.len() != expected_chunks * PROTECTED_MAC_LEN {
+        return Err("protected MAC table window size mismatch".to_string());
+    }
+    for (idx, chunk) in ciphertext_window.chunks(chunk_size as usize).enumerate() {
+        let chunk_index = start_chunk + idx as u64;
+        let expected = compute_encrypt_chunk_mac(encrypt_key, chunk_index, chunk)?;
+        let offset = idx * PROTECTED_MAC_LEN;
+        let actual = &mac_table[offset..offset + PROTECTED_MAC_LEN];
+        if actual != expected {
+            return Err(format!(
+                "protected MAC verification failed at chunk {}",
+                chunk_index
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn xorshift64star_next(state: &mut u64) -> u64 {
