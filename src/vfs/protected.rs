@@ -254,6 +254,7 @@ pub fn decode_range(
     workers: usize,
     header: &ProtectedHeader,
     payload: Bytes,
+    payload_logical_start: u64,
     start: u64,
     end: u64,
 ) -> Result<Bytes, String> {
@@ -270,12 +271,18 @@ pub fn decode_range(
             workers,
             header,
             payload,
+            payload_logical_start,
             start,
             logical_end,
         ),
-        ProtectedMode::Encrypt => {
-            decode_encrypt_range(encrypt_key, header, payload, start, logical_end)
-        }
+        ProtectedMode::Encrypt => decode_encrypt_range(
+            encrypt_key,
+            header,
+            payload,
+            payload_logical_start,
+            start,
+            logical_end,
+        ),
     }
 }
 
@@ -539,13 +546,13 @@ fn decode_obfuscate_range(
     workers: usize,
     header: &ProtectedHeader,
     payload: Bytes,
+    payload_logical_start: u64,
     start: u64,
     end: u64,
 ) -> Result<Bytes, String> {
     let block_size = (header.block_size as usize).max(1);
-    let aligned_start = ((start as usize) / block_size) * block_size;
-    let aligned_end = (((end as usize) + block_size - 1) / block_size) * block_size;
-    let clamped_end = aligned_end.min(header.logical_size as usize);
+    let aligned_start = payload_logical_start as usize;
+    let clamped_end = (payload_logical_start as usize).saturating_add(payload.len());
     let mut buf = payload.to_vec();
     let first_block_index = aligned_start / block_size;
     obfuscate_in_place_from_block(
@@ -570,17 +577,16 @@ fn decode_encrypt_range(
     encrypt_key: Option<[u8; 32]>,
     header: &ProtectedHeader,
     payload: Bytes,
+    payload_logical_start: u64,
     start: u64,
     end: u64,
 ) -> Result<Bytes, String> {
     let mut buf = payload.to_vec();
     let key = encrypt_key.ok_or_else(|| "Protected encrypt key is missing".to_string())?;
-    encrypt_range_in_place(&mut buf, &key, header.seed_or_nonce, start);
-    let expected = (end - start) as usize;
-    if buf.len() != expected {
-        return Err("protected encrypt range size mismatch".to_string());
-    }
-    Ok(Bytes::from(buf))
+    encrypt_range_in_place(&mut buf, &key, header.seed_or_nonce, payload_logical_start);
+    let slice_start = (start - payload_logical_start) as usize;
+    let slice_end = slice_start + (end - start) as usize;
+    Ok(Bytes::copy_from_slice(&buf[slice_start..slice_end]))
 }
 
 pub fn verify_encrypt_window(

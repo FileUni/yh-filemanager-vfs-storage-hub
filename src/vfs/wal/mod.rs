@@ -1,4 +1,5 @@
 //! Write-ahead log / operation journal.
+use crate::business::services::{UserSettingsService, UserSettingsSnapshot};
 use crate::vfs::scoped::ScopedVfsStorageEngine;
 use crate::vfs::{VfsFileInfo, VfsStorage, VfsStorageHub};
 use sea_orm::sea_query::{Expr, Index};
@@ -636,6 +637,52 @@ impl VfsWalManager {
         Ok(Arc::new(engine))
     }
 
+    async fn load_user_settings(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+    ) -> Result<Option<UserSettingsSnapshot>, String> {
+        UserSettingsService::get_user_settings(&self.db, engine.user_id.as_ref())
+            .await
+            .map(|settings| settings.as_ref().map(UserSettingsSnapshot::from))
+            .map_err(|e| e.to_string())
+    }
+
+    async fn protected_root_for_path(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        path: &str,
+    ) -> Result<Option<String>, String> {
+        let Some(settings) = self.load_user_settings(engine).await? else {
+            return Ok(None);
+        };
+        Ok(settings
+            .protected_root_trimmed()
+            .filter(|_| settings.matches_protected_root(path))
+            .map(str::to_string))
+    }
+
+    async fn is_root_protected_path(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        path: &str,
+    ) -> Result<bool, String> {
+        Ok(self
+            .protected_root_for_path(engine, path)
+            .await?
+            .is_some_and(|root| root == "/"))
+    }
+
+    async fn same_protected_domain(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        src: &str,
+        dst: &str,
+    ) -> Result<bool, String> {
+        let src_root = self.protected_root_for_path(engine, src).await?;
+        let dst_root = self.protected_root_for_path(engine, dst).await?;
+        Ok(src_root.is_some() && src_root == dst_root)
+    }
+
     fn to_physical_user_path(user_id: &str, logical_path: &str) -> String {
         let relative = logical_path.trim_start_matches('/');
         format!("{}/{}", user_id, relative)
@@ -700,6 +747,33 @@ impl VfsWalManager {
         path: &str,
         status: WalStatus,
     ) -> Result<(), String> {
+        let protected_root = self.protected_root_for_path(engine, path).await?;
+        if protected_root.is_some() {
+            let index_row = engine
+                .index_service
+                .get_file_metadata(engine.user_id.as_ref(), path)
+                .await
+                .map_err(|e| e.to_string())?;
+            if status.has_metadata_done() {
+                return Ok(());
+            }
+            if status.has_physical_done() {
+                if index_row.is_some() {
+                    return Ok(());
+                }
+                return Err(
+                    "Protected write recovery requires manual backend_key repair because index metadata is missing"
+                        .to_string(),
+                );
+            }
+            if index_row.is_some() {
+                return Ok(());
+            }
+            return Err(
+                "Protected write recovery requires manual backend_key repair because WAL does not store blob locator"
+                    .to_string(),
+            );
+        }
         let tmp_path = format!("{}.tmp", path);
         let target_exists = engine.exists(path).await.map_err(|e| e.to_string())?;
         let temp_exists = engine.exists(&tmp_path).await.map_err(|e| e.to_string())?;
@@ -770,6 +844,29 @@ impl VfsWalManager {
         dst: &str,
         status: WalStatus,
     ) -> Result<(), String> {
+        if self.same_protected_domain(engine, src, dst).await? {
+            if status.has_metadata_done() {
+                return Ok(());
+            }
+            let src_exists = engine.exists(src).await.map_err(|e| e.to_string())?;
+            let dst_exists = engine.exists(dst).await.map_err(|e| e.to_string())?;
+            return match (src_exists, dst_exists) {
+                (true, false) => engine
+                    .index_service
+                    .move_file(engine.user_id.as_ref(), src, dst)
+                    .await
+                    .map_err(|e| e.to_string()),
+                (false, true) => Ok(()),
+                (false, false) => Err(format!(
+                    "PROTECTED MOVE recovery ambiguous: both source '{}' and destination '{}' are missing",
+                    src, dst
+                )),
+                (true, true) => Err(format!(
+                    "PROTECTED MOVE recovery ambiguous: both source '{}' and destination '{}' exist",
+                    src, dst
+                )),
+            };
+        }
         if status.has_metadata_done() {
             return Ok(());
         }
@@ -829,6 +926,29 @@ impl VfsWalManager {
         trash_path: &str,
         status: WalStatus,
     ) -> Result<(), String> {
+        if self.is_root_protected_path(engine, path).await? {
+            if status.has_metadata_done() {
+                return Ok(());
+            }
+            let src_exists = engine.exists(path).await.map_err(|e| e.to_string())?;
+            let trash_exists = engine.exists(trash_path).await.map_err(|e| e.to_string())?;
+            return match (src_exists, trash_exists) {
+                (true, false) => engine
+                    .index_service
+                    .trash_file(engine.user_id.as_ref(), path, trash_path)
+                    .await
+                    .map_err(|e| e.to_string()),
+                (false, true) => Ok(()),
+                (false, false) => Err(format!(
+                    "PROTECTED MOVE_TO_TRASH recovery ambiguous: both source '{}' and trash '{}' are missing",
+                    path, trash_path
+                )),
+                (true, true) => Err(format!(
+                    "PROTECTED MOVE_TO_TRASH recovery ambiguous: both source '{}' and trash '{}' exist",
+                    path, trash_path
+                )),
+            };
+        }
         if status.has_metadata_done() {
             return Ok(());
         }
@@ -874,6 +994,32 @@ impl VfsWalManager {
         original_path: &str,
         status: WalStatus,
     ) -> Result<(), String> {
+        if self.is_root_protected_path(engine, original_path).await? {
+            if status.has_metadata_done() {
+                return Ok(());
+            }
+            let trash_exists = engine.exists(trash_path).await.map_err(|e| e.to_string())?;
+            let original_exists = engine
+                .exists(original_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            return match (trash_exists, original_exists) {
+                (true, false) => engine
+                    .index_service
+                    .restore_file(engine.user_id.as_ref(), trash_path, original_path)
+                    .await
+                    .map_err(|e| e.to_string()),
+                (false, true) => Ok(()),
+                (false, false) => Err(format!(
+                    "PROTECTED RESTORE_TRASH recovery ambiguous: both '{}' and '{}' are missing",
+                    trash_path, original_path
+                )),
+                (true, true) => Err(format!(
+                    "PROTECTED RESTORE_TRASH recovery ambiguous: both '{}' and '{}' exist",
+                    trash_path, original_path
+                )),
+            };
+        }
         if status.has_metadata_done() {
             return Ok(());
         }

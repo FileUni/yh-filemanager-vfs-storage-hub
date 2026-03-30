@@ -417,9 +417,16 @@ impl ScopedVfsStorageEngine {
         self.check_maintenance()?;
         let norm_src = self.validate_file_operation(src).await?;
         let norm_dst = self.validate_file_operation(dst).await?;
-        let src_protected = self.get_protected_plan(&norm_src).await?.is_some();
-        let dst_protected = self.get_protected_plan(&norm_dst).await?.is_some();
-        if src_protected || dst_protected {
+        let src_plan = self.get_protected_plan(&norm_src).await?;
+        let dst_plan = self.get_protected_plan(&norm_dst).await?;
+        if let (Some(src_plan), Some(dst_plan)) = (&src_plan, &dst_plan)
+            && self.same_protected_domain(src_plan, dst_plan)
+        {
+            return self
+                .protected_move_same_domain_impl(&norm_src, &norm_dst)
+                .await;
+        }
+        if src_plan.is_some() || dst_plan.is_some() {
             let src_info = self.stat_impl(&norm_src).await?;
             if src_info.is_dir {
                 return Err(VfsError::Internal(
@@ -538,9 +545,16 @@ impl ScopedVfsStorageEngine {
         self.check_maintenance()?;
         let norm_src = self.validate_file_operation(src).await?;
         let norm_dst = self.validate_file_operation(dst).await?;
-        let src_protected = self.get_protected_plan(&norm_src).await?.is_some();
-        let dst_protected = self.get_protected_plan(&norm_dst).await?.is_some();
-        if src_protected || dst_protected {
+        let src_plan = self.get_protected_plan(&norm_src).await?;
+        let dst_plan = self.get_protected_plan(&norm_dst).await?;
+        if let (Some(src_plan), Some(dst_plan)) = (&src_plan, &dst_plan)
+            && self.same_protected_domain(src_plan, dst_plan)
+        {
+            return self
+                .protected_copy_same_domain_impl(&norm_src, &norm_dst, src_plan)
+                .await;
+        }
+        if src_plan.is_some() || dst_plan.is_some() {
             let src_info = self.stat_impl(&norm_src).await?;
             if src_info.is_dir {
                 return Err(VfsError::Internal(

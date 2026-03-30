@@ -25,6 +25,34 @@ fn file_info_from_index(row: &file_index::Model) -> VfsFileInfo {
     }
 }
 
+fn file_info_from_index_with_path(row: &file_index::Model, path: &str) -> VfsFileInfo {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_string();
+    VfsFileInfo {
+        name: name.into(),
+        path: path.to_string().into(),
+        is_dir: row.is_dir,
+        size: row.size.max(0) as u64,
+        modified: row.file_updated_at.map(|t| t.into()),
+        favorite_color: row.favorite_color,
+        has_active_share: None,
+        has_active_direct: None,
+        trashed_at: row.file_trashed_at.map(|t| t.into()),
+        original_path: row.original_path.clone().map(Into::into),
+    }
+}
+
+fn map_subtree_path(src_root: &str, dst_root: &str, current_path: &str) -> String {
+    if current_path == src_root {
+        dst_root.to_string()
+    } else {
+        format!("{}{}", dst_root, &current_path[src_root.len()..])
+    }
+}
+
 fn header_from_index(
     row: &file_index::Model,
 ) -> Result<crate::vfs::protected::ProtectedHeader, VfsError> {
@@ -35,20 +63,62 @@ fn header_from_index(
     crate::vfs::protected::header_from_meta_json(raw).map_err(VfsError::Internal)
 }
 
+fn meta_from_index(
+    row: &file_index::Model,
+) -> Result<crate::vfs::protected::ProtectedMetaRecord, VfsError> {
+    let raw = row
+        .protected_meta
+        .as_deref()
+        .ok_or_else(|| VfsError::Internal("Protected metadata is missing".to_string()))?;
+    crate::vfs::protected::meta_from_json(raw).map_err(VfsError::Internal)
+}
+
 impl ScopedVfsStorageEngine {
+    pub(super) fn same_protected_domain(
+        &self,
+        src: &crate::vfs::protected::ProtectedPathPlan,
+        dst: &crate::vfs::protected::ProtectedPathPlan,
+    ) -> bool {
+        src.root == dst.root && src.mode == dst.mode && src.key_slot_id == dst.key_slot_id
+    }
+
+    async fn protected_subtree_rows(&self, root: &str) -> VfsResult<Vec<file_index::Model>> {
+        let prefix = format!("{}/", root.trim_end_matches('/'));
+        let mut rows = file_index::Entity::find()
+            .filter(file_index::Column::UserId.eq(self.user_id.as_ref()))
+            .filter(
+                file_index::Column::Path
+                    .eq(root)
+                    .or(file_index::Column::Path.starts_with(prefix.as_str())),
+            )
+            .filter(file_index::Column::RowDeletedAt.is_null())
+            .all(self.db.as_ref())
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
+        rows.sort_by_key(|row| row.path.len());
+        Ok(rows)
+    }
+
     async fn protected_read_payload_range(
         &self,
         row: &file_index::Model,
         start: u64,
         end: u64,
-    ) -> VfsResult<(crate::vfs::protected::ProtectedHeader, Bytes)> {
+    ) -> VfsResult<(
+        crate::vfs::protected::ProtectedHeader,
+        crate::vfs::protected::ProtectedMetaRecord,
+        u64,
+        Bytes,
+        Option<Bytes>,
+    )> {
         let backend_key = row.backend_key.clone().ok_or_else(|| {
             VfsError::Internal("Protected file backend key is missing".to_string())
         })?;
         let header = header_from_index(row)?;
+        let meta = meta_from_index(row)?;
         let physical_size = row.physical_size.unwrap_or_default().max(0) as u64;
         let logical_end = end.min(header.logical_size);
-        let payload = match header.mode {
+        let (payload_logical_start, payload, mac_bytes) = match header.mode {
             crate::vfs::protected::ProtectedMode::Obfuscate => {
                 let block_size = (header.block_size as u64).max(1);
                 let aligned_start = (start / block_size) * block_size;
@@ -58,30 +128,75 @@ impl ScopedVfsStorageEngine {
                     .unwrap_or(0)
                     * block_size;
                 let clamped_end = aligned_end.min(header.logical_size);
-                self.pool
+                let payload = self
+                    .pool
                     .read_range(
                         &backend_key,
                         crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + aligned_start,
                         crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + clamped_end,
                     )
                     .await?
-                    .0
+                    .0;
+                (aligned_start, payload, None)
             }
             crate::vfs::protected::ProtectedMode::Encrypt => {
-                let physical_end = (crate::vfs::protected::PROTECTED_HEADER_LEN as u64
-                    + logical_end)
-                    .min(physical_size.max(crate::vfs::protected::PROTECTED_HEADER_LEN as u64));
-                self.pool
-                    .read_range(
-                        &backend_key,
-                        crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + start,
-                        physical_end,
-                    )
-                    .await?
-                    .0
+                if meta.integrity == crate::vfs::protected::PROTECTED_INTEGRITY_HMAC_SHA256_CHUNKED
+                {
+                    let chunk_size = meta
+                        .integrity_chunk_size
+                        .unwrap_or(crate::vfs::protected::DEFAULT_ENCRYPT_INTEGRITY_CHUNK_SIZE)
+                        as u64;
+                    let aligned_start = (start / chunk_size) * chunk_size;
+                    let aligned_end = logical_end
+                        .saturating_add(chunk_size - 1)
+                        .checked_div(chunk_size)
+                        .unwrap_or(0)
+                        * chunk_size;
+                    let clamped_end = aligned_end.min(header.logical_size);
+                    let payload = self
+                        .pool
+                        .read_range(
+                            &backend_key,
+                            crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + aligned_start,
+                            crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + clamped_end,
+                        )
+                        .await?
+                        .0;
+                    let start_chunk = aligned_start / chunk_size;
+                    let covered_chunks = crate::vfs::protected::integrity_chunk_count(
+                        clamped_end.saturating_sub(aligned_start),
+                        chunk_size as u32,
+                    ) as u64;
+                    let mac_table_offset =
+                        crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + header.logical_size;
+                    let mac_start = mac_table_offset
+                        + start_chunk * crate::vfs::protected::PROTECTED_MAC_LEN as u64;
+                    let mac_end = mac_start
+                        + covered_chunks * crate::vfs::protected::PROTECTED_MAC_LEN as u64;
+                    let mac_bytes = self
+                        .pool
+                        .read_range(&backend_key, mac_start, mac_end.min(physical_size))
+                        .await?
+                        .0;
+                    (aligned_start, payload, Some(mac_bytes))
+                } else {
+                    let physical_end = (crate::vfs::protected::PROTECTED_HEADER_LEN as u64
+                        + logical_end)
+                        .min(physical_size.max(crate::vfs::protected::PROTECTED_HEADER_LEN as u64));
+                    let payload = self
+                        .pool
+                        .read_range(
+                            &backend_key,
+                            crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + start,
+                            physical_end,
+                        )
+                        .await?
+                        .0;
+                    (start, payload, None)
+                }
             }
         };
-        Ok((header, payload))
+        Ok((header, meta, payload_logical_start, payload, mac_bytes))
     }
 
     pub(super) async fn protected_read_all_impl(
@@ -98,9 +213,32 @@ impl ScopedVfsStorageEngine {
                 "Protected directories cannot be read as files".to_string(),
             ));
         }
-        let (header, payload) = self
+        let (header, meta, payload_logical_start, payload, mac_bytes) = self
             .protected_read_payload_range(&row, 0, row.size.max(0) as u64)
             .await?;
+        if header.mode == crate::vfs::protected::ProtectedMode::Encrypt
+            && meta.integrity == crate::vfs::protected::PROTECTED_INTEGRITY_HMAC_SHA256_CHUNKED
+        {
+            let key = plan.encrypt_key.as_ref().ok_or_else(|| {
+                VfsError::Internal("Protected encrypt key is missing".to_string())
+            })?;
+            let chunk_size = meta
+                .integrity_chunk_size
+                .unwrap_or(crate::vfs::protected::DEFAULT_ENCRYPT_INTEGRITY_CHUNK_SIZE);
+            crate::vfs::protected::verify_encrypt_window(
+                key,
+                chunk_size,
+                payload_logical_start,
+                payload.as_ref(),
+                mac_bytes
+                    .as_ref()
+                    .ok_or_else(|| {
+                        VfsError::Internal("Protected MAC bytes are missing".to_string())
+                    })?
+                    .as_ref(),
+            )
+            .map_err(VfsError::Internal)?;
+        }
         let data = crate::vfs::protected::decode_range(
             &self.user_id,
             &plan.key_slot_id,
@@ -108,6 +246,7 @@ impl ScopedVfsStorageEngine {
             plan.workers,
             &header,
             payload,
+            payload_logical_start,
             0,
             row.size.max(0) as u64,
         )
@@ -130,9 +269,32 @@ impl ScopedVfsStorageEngine {
         if start >= logical_end {
             return Ok((Bytes::new(), file_info_from_index(&row)));
         }
-        let (header, payload) = self
+        let (header, meta, payload_logical_start, payload, mac_bytes) = self
             .protected_read_payload_range(&row, start, logical_end)
             .await?;
+        if header.mode == crate::vfs::protected::ProtectedMode::Encrypt
+            && meta.integrity == crate::vfs::protected::PROTECTED_INTEGRITY_HMAC_SHA256_CHUNKED
+        {
+            let key = plan.encrypt_key.as_ref().ok_or_else(|| {
+                VfsError::Internal("Protected encrypt key is missing".to_string())
+            })?;
+            let chunk_size = meta
+                .integrity_chunk_size
+                .unwrap_or(crate::vfs::protected::DEFAULT_ENCRYPT_INTEGRITY_CHUNK_SIZE);
+            crate::vfs::protected::verify_encrypt_window(
+                key,
+                chunk_size,
+                payload_logical_start,
+                payload.as_ref(),
+                mac_bytes
+                    .as_ref()
+                    .ok_or_else(|| {
+                        VfsError::Internal("Protected MAC bytes are missing".to_string())
+                    })?
+                    .as_ref(),
+            )
+            .map_err(VfsError::Internal)?;
+        }
         let data = crate::vfs::protected::decode_range(
             &self.user_id,
             &plan.key_slot_id,
@@ -140,6 +302,7 @@ impl ScopedVfsStorageEngine {
             plan.workers,
             &header,
             payload,
+            payload_logical_start,
             start,
             logical_end,
         )
@@ -377,5 +540,94 @@ impl ScopedVfsStorageEngine {
         self.journal_log("PROTECTED_MKDIR", normalized, None, true, None)
             .await;
         Ok(info)
+    }
+
+    pub(super) async fn protected_move_same_domain_impl(
+        &self,
+        src: &str,
+        dst: &str,
+    ) -> VfsResult<VfsFileInfo> {
+        if self.get_index_metadata(dst).await?.is_some() {
+            return Err(VfsError::Internal(
+                "Protected move target already exists".to_string(),
+            ));
+        }
+        let wal_id = self
+            .begin_wal(
+                crate::vfs::wal::WalOperation::Move {
+                    src: src.to_string(),
+                    dst: dst.to_string(),
+                },
+                self.should_skip_wal_for_path(src).await,
+            )
+            .await?;
+        self.mark_wal_physical_done(wal_id).await;
+        self.index_service
+            .move_file(&self.user_id, src, dst)
+            .await
+            .map_err(|e| VfsError::Internal(e.to_string()))?;
+        self.complete_wal(wal_id).await;
+        self.cache.invalidate_parent_ls(src).await;
+        self.cache.invalidate_parent_ls(dst).await;
+        self.cache.invalidate("stat", src).await;
+        self.cache.invalidate("stat", dst).await;
+        self.journal_log("PROTECTED_MOVE", src, Some(dst), true, None)
+            .await;
+        self.stat_impl(dst).await
+    }
+
+    pub(super) async fn protected_copy_same_domain_impl(
+        &self,
+        src: &str,
+        dst: &str,
+        plan: &crate::vfs::protected::ProtectedPathPlan,
+    ) -> VfsResult<VfsFileInfo> {
+        if self.get_index_metadata(dst).await?.is_some() {
+            return Err(VfsError::Internal(
+                "Protected copy target already exists".to_string(),
+            ));
+        }
+        let rows = self.protected_subtree_rows(src).await?;
+        if rows.is_empty() {
+            return Err(VfsError::NotFound(src.to_string()));
+        }
+        let total_size: i64 = rows
+            .iter()
+            .filter(|row| !row.is_dir)
+            .map(|row| row.size.max(0))
+            .sum();
+        if total_size > 0 {
+            self.check_quota(total_size).await?;
+        }
+        for row in &rows {
+            let new_path = map_subtree_path(src, dst, &row.path);
+            let info = file_info_from_index_with_path(row, &new_path);
+            if row.is_dir {
+                self.upsert_index_helper_with_backend_key(&new_path, &info, None, None, None)
+                    .await?;
+                continue;
+            }
+            let src_backend = row.backend_key.as_deref().ok_or_else(|| {
+                VfsError::Internal("Protected source backend key is missing".to_string())
+            })?;
+            let dst_backend = self
+                .next_protected_blob_physical_path(&plan.key_slot_id)
+                .await?;
+            self.pool.copy_file(src_backend, &dst_backend).await?;
+            self.upsert_index_helper_with_backend_key(
+                &new_path,
+                &info,
+                Some(&dst_backend),
+                row.physical_size,
+                row.protected_meta.as_deref(),
+            )
+            .await?;
+        }
+        if total_size > 0 {
+            let _ = self.update_quota(total_size).await;
+        }
+        self.journal_log("PROTECTED_COPY", src, Some(dst), true, None)
+            .await;
+        self.stat_impl(dst).await
     }
 }
