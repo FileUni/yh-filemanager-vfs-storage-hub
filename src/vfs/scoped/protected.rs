@@ -24,7 +24,62 @@ fn file_info_from_index(row: &file_index::Model) -> VfsFileInfo {
     }
 }
 
+fn header_from_index(row: &file_index::Model) -> Result<crate::vfs::protected::ProtectedHeader, VfsError> {
+    let raw = row
+        .protected_meta
+        .as_deref()
+        .ok_or_else(|| VfsError::Internal("Protected metadata is missing".to_string()))?;
+    crate::vfs::protected::header_from_meta_json(raw).map_err(VfsError::Internal)
+}
+
 impl ScopedVfsStorageEngine {
+    async fn protected_read_payload_range(
+        &self,
+        row: &file_index::Model,
+        start: u64,
+        end: u64,
+    ) -> VfsResult<(crate::vfs::protected::ProtectedHeader, Bytes)> {
+        let backend_key = row.backend_key.clone().ok_or_else(|| {
+            VfsError::Internal("Protected file backend key is missing".to_string())
+        })?;
+        let header = header_from_index(row)?;
+        let physical_size = row.physical_size.unwrap_or_default().max(0) as u64;
+        let logical_end = end.min(header.logical_size);
+        let payload = match header.mode {
+            crate::vfs::protected::ProtectedMode::Obfuscate => {
+                let block_size = (header.block_size as u64).max(1);
+                let aligned_start = (start / block_size) * block_size;
+                let aligned_end = logical_end
+                    .saturating_add(block_size - 1)
+                    .checked_div(block_size)
+                    .unwrap_or(0)
+                    * block_size;
+                let clamped_end = aligned_end.min(header.logical_size);
+                self.pool
+                    .read_range(
+                        &backend_key,
+                        crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + aligned_start,
+                        crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + clamped_end,
+                    )
+                    .await?
+                    .0
+            }
+            crate::vfs::protected::ProtectedMode::Encrypt => {
+                let physical_end = (crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + logical_end)
+                    .min(physical_size.max(crate::vfs::protected::PROTECTED_HEADER_LEN as u64));
+                self.pool
+                    .read_range(
+                        &backend_key,
+                        crate::vfs::protected::PROTECTED_HEADER_LEN as u64 + start,
+                        physical_end,
+                    )
+                    .await?
+                    .0
+            }
+        };
+        Ok((header, payload))
+    }
+
     pub(super) async fn protected_read_all_impl(
         &self,
         normalized: &str,
@@ -39,13 +94,18 @@ impl ScopedVfsStorageEngine {
                 "Protected directories cannot be read as files".to_string(),
             ));
         }
-        let backend_key = row.backend_key.clone().ok_or_else(|| {
-            VfsError::Internal("Protected file backend key is missing".to_string())
-        })?;
-        let raw = self.pool.read(&backend_key).await?.0;
-        let (_, data) =
-            crate::vfs::protected::decode_payload(&self.user_id, &plan.key_slot_id, raw)
-                .map_err(VfsError::Internal)?;
+        let (header, payload) = self
+            .protected_read_payload_range(&row, 0, row.size.max(0) as u64)
+            .await?;
+        let data = crate::vfs::protected::decode_range(
+            &self.user_id,
+            &plan.key_slot_id,
+            &header,
+            payload,
+            0,
+            row.size.max(0) as u64,
+        )
+        .map_err(VfsError::Internal)?;
         Ok((data, file_info_from_index(&row)))
     }
 
@@ -56,11 +116,27 @@ impl ScopedVfsStorageEngine {
         end: u64,
         plan: &crate::vfs::protected::ProtectedPathPlan,
     ) -> VfsResult<(Bytes, VfsFileInfo)> {
-        let (data, info) = self.protected_read_all_impl(normalized, plan).await?;
-        Ok((
-            crate::vfs::protected::slice_logical_range(data, start, end),
-            info,
-        ))
+        let row = self
+            .get_index_metadata(normalized)
+            .await?
+            .ok_or_else(|| VfsError::NotFound(normalized.to_string()))?;
+        let logical_end = end.min(row.size.max(0) as u64);
+        if start >= logical_end {
+            return Ok((Bytes::new(), file_info_from_index(&row)));
+        }
+        let (header, payload) = self
+            .protected_read_payload_range(&row, start, logical_end)
+            .await?;
+        let data = crate::vfs::protected::decode_range(
+            &self.user_id,
+            &plan.key_slot_id,
+            &header,
+            payload,
+            start,
+            logical_end,
+        )
+        .map_err(VfsError::Internal)?;
+        Ok((data, file_info_from_index(&row)))
     }
 
     pub(super) async fn protected_read_stream_range_impl(
@@ -72,8 +148,9 @@ impl ScopedVfsStorageEngine {
         Pin<Box<dyn Stream<Item = VfsResult<Bytes>> + Send + Sync>>,
         VfsFileInfo,
     )> {
-        let (data, info) = self.protected_read_all_impl(normalized, plan).await?;
-        let payload = crate::vfs::protected::slice_logical_range(data, range.start, range.end);
+        let (payload, info) = self
+            .protected_read_range_impl(normalized, range.start, range.end, plan)
+            .await?;
         let stream = futures::stream::once(async move { Ok(payload) });
         Ok((Box::pin(stream), info))
     }
@@ -108,8 +185,10 @@ impl ScopedVfsStorageEngine {
                 self.next_protected_blob_physical_path(&plan.key_slot_id)
                     .await?,
             );
-        let encoded = crate::vfs::protected::encode_payload(&self.user_id, plan, data.clone())
+        let (encoded, _header, protected_meta) =
+            crate::vfs::protected::encode_payload(&self.user_id, plan, data.clone())
             .map_err(VfsError::Internal)?;
+        let physical_size = encoded.len() as i64;
         let write_result = self.pool.write(&backend_key, encoded).await;
         match write_result {
             Ok(_) => {
@@ -131,8 +210,14 @@ impl ScopedVfsStorageEngine {
                     trashed_at: None,
                     original_path: None,
                 };
-                self.upsert_index_helper_with_backend_key(normalized, &info, Some(&backend_key))
-                    .await?;
+                self.upsert_index_helper_with_backend_key(
+                    normalized,
+                    &info,
+                    Some(&backend_key),
+                    Some(physical_size),
+                    Some(&protected_meta),
+                )
+                .await?;
                 self.complete_wal(wal_id).await;
                 if diff != 0 {
                     let _ = self.update_quota(diff).await;
