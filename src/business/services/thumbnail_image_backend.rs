@@ -19,13 +19,15 @@ pub async fn render_image_thumbnail(
     if image_cfg.is_builtin_backend() {
         let input = input.clone();
         let output = output.clone();
+        let builtin_input = input.clone();
+        let builtin_output = output.clone();
         let thumb_size = cfg.get_thumb_size_px();
         let thumb_quality = cfg.get_thumb_quality();
         let thumb_format = normalize_output_format(cfg.get_thumb_format()).to_string();
         let result = tokio::task::spawn_blocking(move || {
             render_builtin_image_thumbnail_sync(
-                &input,
-                &output,
+                &builtin_input,
+                &builtin_output,
                 thumb_size,
                 thumb_quality,
                 thumb_format.as_str(),
@@ -39,11 +41,23 @@ pub async fn render_image_thumbnail(
                 "warn",
                 &format!("Thumbnail tool failed (builtin image backend): {}", err),
             );
+            if has_external_image_tools(cfg) {
+                yhlog(
+                    "info",
+                    "Builtin image thumbnail backend failed, falling back to external raster tools",
+                );
+                return render_external_image_thumbnail(image_cfg, cfg, &input, &output).await;
+            }
         }
         return result.map(|_| true);
     }
 
     render_external_image_thumbnail(image_cfg, cfg, input, output).await
+}
+
+fn has_external_image_tools(cfg: &ThumbnailRuntimeConfig) -> bool {
+    let tools = cfg.get_tools();
+    !tools.get_vips_path().trim().is_empty() || !tools.get_imagemagick_path().trim().is_empty()
 }
 
 pub(crate) fn encode_dynamic_image_bytes(

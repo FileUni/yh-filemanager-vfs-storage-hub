@@ -1215,6 +1215,12 @@ pub struct VfsThumbnailToolConfig {
         example = "soffice"
     )]
     pub libreoffice_path: Option<String>,
+    #[config(
+        desc_zh = "Blender 可执行命令或绝对路径（用于 3D 模型缩略图，如 obj/stl/gltf/glb）。默认建议使用命令名 \"blender\"（依赖系统 PATH）",
+        desc_en = "Blender executable command or absolute path (for 3D model thumbnails such as obj/stl/gltf/glb). Default recommended value is command name \"blender\" (resolved via system PATH)",
+        example = "blender"
+    )]
+    pub blender_path: Option<String>,
 }
 
 impl VfsThumbnailToolConfig {
@@ -1246,6 +1252,14 @@ impl VfsThumbnailToolConfig {
         )
     }
 
+    pub fn get_blender_path(&self) -> &str {
+        yh_config_infra::config_require_str!(
+            self.blender_path,
+            "vfs_storage_hub",
+            "thumbnail.tools.blender_path"
+        )
+    }
+
     pub fn to_runtime_config(
         &self,
         ffmpeg_path: &str,
@@ -1255,6 +1269,7 @@ impl VfsThumbnailToolConfig {
             imagemagick_path: self.get_imagemagick_path().to_string(),
             ffmpeg_path: ffmpeg_path.to_string(),
             libreoffice_path: self.get_libreoffice_path().to_string(),
+            blender_path: self.get_blender_path().to_string(),
         }
     }
 }
@@ -1538,6 +1553,11 @@ pub struct VfsThumbnailConfig {
         desc_en = "Text thumbnail configuration"
     )]
     pub text: Option<VfsThumbnailTypeConfig>,
+    #[config(
+        desc_zh = "3D模型缩略图配置",
+        desc_en = "3D model thumbnail configuration"
+    )]
+    pub model3d: Option<VfsThumbnailTypeConfig>,
 }
 
 impl VfsThumbnailConfig {
@@ -1561,6 +1581,9 @@ impl VfsThumbnailConfig {
     }
     pub fn get_text(&self) -> &VfsThumbnailTypeConfig {
         yh_config_infra::config_require_ref!(self.text, "vfs_storage_hub", "thumbnail.text")
+    }
+    pub fn get_model3d(&self) -> &VfsThumbnailTypeConfig {
+        yh_config_infra::config_require_ref!(self.model3d, "vfs_storage_hub", "thumbnail.model3d")
     }
     pub fn get_thumb_size_px(&self) -> u32 {
         yh_config_infra::config_require_clone!(
@@ -1616,6 +1639,7 @@ impl VfsThumbnailConfig {
             pdf: self.get_pdf().to_runtime_config(),
             office: self.get_office().to_runtime_config(),
             text: self.get_text().to_runtime_config(),
+            model3d: self.get_model3d().to_runtime_config(),
             media_hardware,
         }
     }
@@ -2594,6 +2618,12 @@ impl VfsStorageHubConfig {
                     "thumbnail.tools.libreoffice_path",
                     errors
                 );
+                yh_config_infra::config_collect_any!(
+                    tools.blender_path,
+                    s,
+                    "thumbnail.tools.blender_path",
+                    errors
+                );
             } else {
                 errors.push(format!("[{}] thumbnail.tools is required (section)", s));
             }
@@ -2641,6 +2671,7 @@ impl VfsStorageHubConfig {
                 (&thumb.pdf, "pdf"),
                 (&thumb.office, "office"),
                 (&thumb.text, "text"),
+                (&thumb.model3d, "model3d"),
             ];
             for (t, name) in types {
                 if let Some(tc) = t {
@@ -2705,18 +2736,20 @@ impl VfsStorageHubConfig {
                 }
             }
 
-            if let (Some(tools), Some(image), Some(video), Some(pdf), Some(office), Some(text)) = (
+            if let (Some(tools), Some(image), Some(video), Some(pdf), Some(office), Some(text), Some(model3d)) = (
                 thumb.tools.as_ref(),
                 thumb.image.as_ref(),
                 thumb.video.as_ref(),
                 thumb.pdf.as_ref(),
                 thumb.office.as_ref(),
                 thumb.text.as_ref(),
+                thumb.model3d.as_ref(),
             ) {
                 let vips = tools.vips_path.as_deref().unwrap_or("").trim();
                 let magick = tools.imagemagick_path.as_deref().unwrap_or("").trim();
                 let ffmpeg = self.get_effective_ffmpeg_path();
                 let libreoffice = tools.libreoffice_path.as_deref().unwrap_or("").trim();
+                let blender = tools.blender_path.as_deref().unwrap_or("").trim();
                 let image_backend_is_builtin = image
                     .backend
                     .as_deref()
@@ -2762,6 +2795,12 @@ impl VfsStorageHubConfig {
                 if text.enabled == Some(true) && magick.is_empty() {
                     errors.push(format!(
                         "[{}] thumbnail.tools.imagemagick_path must be set for text thumbnails",
+                        s
+                    ));
+                }
+                if model3d.enabled == Some(true) && blender.is_empty() {
+                    errors.push(format!(
+                        "[{}] thumbnail.tools.blender_path must be set for 3D model thumbnails",
                         s
                     ));
                 }

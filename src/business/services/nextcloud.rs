@@ -64,9 +64,24 @@ pub fn nextcloud_is_image(path: &str) -> bool {
             | Some("webp")
             | Some("bmp")
             | Some("svg")
+            | Some("psd")
+            | Some("ai")
             | Some("heic")
             | Some("heif")
             | Some("avif")
+    )
+}
+
+pub fn nextcloud_supports_generated_preview(path: &str) -> bool {
+    matches!(
+        nextcloud_extension(path).as_deref(),
+        Some("pdf")
+            | Some("psd")
+            | Some("ai")
+            | Some("obj")
+            | Some("stl")
+            | Some("gltf")
+            | Some("glb")
     )
 }
 
@@ -90,7 +105,7 @@ pub fn nextcloud_is_media(path: &str) -> bool {
 }
 
 pub fn nextcloud_supports_preview(path: &str) -> bool {
-    nextcloud_is_media(path) || matches!(nextcloud_extension(path).as_deref(), Some("pdf"))
+    nextcloud_is_media(path) || nextcloud_supports_generated_preview(path)
 }
 
 pub fn nextcloud_supports_image_preview_fallback(path: &str) -> bool {
@@ -110,7 +125,11 @@ fn stable_hash_u64(bytes: &[u8]) -> u64 {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
-    if hash == 0 { 1 } else { hash }
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +170,8 @@ mod tests {
         assert!(nextcloud_is_video("/Videos/b.mpeg"));
         assert!(nextcloud_is_media("/Videos/b.mpeg"));
         assert!(nextcloud_supports_preview("/Docs/file.pdf"));
+        assert!(nextcloud_supports_preview("/Design/model.stl"));
+        assert!(nextcloud_supports_preview("/Design/mockup.psd"));
         assert!(nextcloud_supports_image_preview_fallback(
             "/Photos/icon.svg"
         ));

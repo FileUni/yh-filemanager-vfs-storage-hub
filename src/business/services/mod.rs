@@ -9,6 +9,7 @@ pub mod shares;
 pub mod ssh_keys;
 pub mod thumbnail;
 mod thumbnail_image_backend;
+mod thumbnail_model3d_backend;
 mod thumbnail_runtime;
 mod thumbnail_video_backend;
 pub mod types;

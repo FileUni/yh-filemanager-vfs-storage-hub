@@ -11,6 +11,7 @@ use yh_console_log::yhlog;
 
 use super::UserSettingsSnapshot;
 use super::thumbnail_image_backend::render_image_thumbnail;
+use super::thumbnail_model3d_backend::render_model3d_thumbnail;
 use super::thumbnail_runtime::{
     LatexPreviewRuntimeConfig, ThumbnailRuntimeConfig, ThumbnailRuntimeTypeConfig,
     ThumbnailServiceContext, guess_mime_type, normalize_logical_path,
@@ -25,6 +26,7 @@ enum ThumbnailKind {
     Office,
     Text,
     Latex,
+    Model3d,
 }
 struct ThumbnailPaths {
     dir: String,
@@ -38,11 +40,12 @@ enum ThumbnailCacheMode {
     None,
 }
 const IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff", "tif", "svg",
+    "jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff", "tif", "svg", "psd", "ai",
 ];
 const VIDEO_EXTS: &[&str] = &["mp4", "mov", "mkv", "avi", "webm", "m4v", "mpg", "mpeg"];
 const PDF_EXTS: &[&str] = &["pdf"];
 const LATEX_EXTS: &[&str] = &["tex", "latex"];
+const MODEL3D_EXTS: &[&str] = &["obj", "stl", "gltf", "glb"];
 const OFFICE_EXTS: &[&str] = &[
     "doc", "docx", "dot", "dotx", "docm", "dotm", "xls", "xlsx", "xltx", "xlsm", "xltm", "ppt",
     "pptx", "potx", "pptm", "pps", "ppsx",
@@ -216,6 +219,15 @@ impl ThumbnailServiceContext {
                         )
                         .await
                     }
+                    ThumbnailKind::Model3d => {
+                        render_model3d_thumbnail(
+                            thumb_cfg.get_model3d(),
+                            thumb_cfg,
+                            &input_path,
+                            &output_path,
+                        )
+                        .await
+                    }
                 }
             })
             .await?;
@@ -337,6 +349,7 @@ fn is_user_thumbnail_disabled(
             }
         }
         ThumbnailKind::Latex => settings.thumbnail_disable_tex,
+        ThumbnailKind::Model3d => settings.thumbnail_disable_image,
     }
 }
 pub enum ThumbnailClearScope {
@@ -355,6 +368,8 @@ fn detect_kind(ext: &str) -> Option<ThumbnailKind> {
         Some(ThumbnailKind::Office)
     } else if LATEX_EXTS.contains(&ext.as_str()) {
         Some(ThumbnailKind::Latex)
+    } else if MODEL3D_EXTS.contains(&ext.as_str()) {
+        Some(ThumbnailKind::Model3d)
     } else if TEXT_EXTS.contains(&ext.as_str()) {
         Some(ThumbnailKind::Text)
     } else {
@@ -373,6 +388,7 @@ fn is_kind_enabled(
         ThumbnailKind::Office => cfg.get_office().is_enabled(),
         ThumbnailKind::Text => cfg.get_text().is_enabled(),
         ThumbnailKind::Latex => cfg.get_text().is_enabled() && latex_cfg.is_enable_latexmk(),
+        ThumbnailKind::Model3d => cfg.get_model3d().is_enabled(),
     };
     Ok(enabled)
 }
@@ -472,6 +488,7 @@ fn max_size_bytes(
         ThumbnailKind::Office => cfg.get_office().get_max_size_mb(),
         ThumbnailKind::Text => cfg.get_text().get_max_size_mb(),
         ThumbnailKind::Latex => latex_cfg.get_max_input_size_mb(),
+        ThumbnailKind::Model3d => cfg.get_model3d().get_max_size_mb(),
     };
     Ok(mb * 1024 * 1024)
 }

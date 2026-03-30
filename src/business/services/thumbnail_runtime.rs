@@ -11,6 +11,7 @@ pub struct ThumbnailRuntimeToolConfig {
     pub imagemagick_path: String,
     pub ffmpeg_path: String,
     pub libreoffice_path: String,
+    pub blender_path: String,
 }
 
 impl ThumbnailRuntimeToolConfig {
@@ -28,6 +29,10 @@ impl ThumbnailRuntimeToolConfig {
 
     pub fn get_imagemagick_path(&self) -> &str {
         self.imagemagick_path.as_str()
+    }
+
+    pub fn get_blender_path(&self) -> &str {
+        self.blender_path.as_str()
     }
 }
 
@@ -127,6 +132,7 @@ pub struct ThumbnailRuntimeConfig {
     pub pdf: ThumbnailRuntimeTypeConfig,
     pub office: ThumbnailRuntimeTypeConfig,
     pub text: ThumbnailRuntimeTypeConfig,
+    pub model3d: ThumbnailRuntimeTypeConfig,
     pub media_hardware: MediaHardwareAccelerationRuntimeConfig,
 }
 
@@ -157,6 +163,10 @@ impl ThumbnailRuntimeConfig {
 
     pub fn get_text(&self) -> &ThumbnailRuntimeTypeConfig {
         &self.text
+    }
+
+    pub fn get_model3d(&self) -> &ThumbnailRuntimeTypeConfig {
+        &self.model3d
     }
 
     pub fn get_thumb_size_px(&self) -> u32 {
