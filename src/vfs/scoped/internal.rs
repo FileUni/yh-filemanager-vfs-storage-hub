@@ -382,16 +382,25 @@ impl ScopedVfsStorageEngine {
         &self,
         path: &str,
     ) -> VfsResult<Option<crate::vfs::protected::ProtectedPathPlan>> {
+        let cached = self
+            .protected_plan_cache
+            .get_or_try_init(|| async { self.resolve_protected_plan_uncached().await })
+            .await?;
+        match cached {
+            Some(plan) if plan.matches_path(path) => Ok(Some(plan.clone())),
+            _ => Ok(None),
+        }
+    }
+    async fn resolve_protected_plan_uncached(
+        &self,
+    ) -> VfsResult<Option<crate::vfs::protected::ProtectedPathPlan>> {
         let Some(settings) = self.get_user_settings_snapshot().await? else {
             return Ok(None);
         };
-        if !settings.matches_protected_root(path) {
+        let Some(root) = settings.protected_root_trimmed() else {
             return Ok(None);
-        }
-        let root = settings
-            .protected_root_trimmed()
-            .ok_or_else(|| VfsError::Internal("Protected root is missing".to_string()))?
-            .to_string();
+        };
+        let root = root.to_string();
         let mode_raw = settings
             .protected_mode
             .as_deref()
