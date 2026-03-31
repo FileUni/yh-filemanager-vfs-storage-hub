@@ -2,7 +2,7 @@
 use crate::business::services::{UserSettingsService, UserSettingsSnapshot};
 use crate::vfs::scoped::ScopedVfsStorageEngine;
 use crate::vfs::{VfsFileInfo, VfsStorage, VfsStorageHub};
-use sea_orm::sea_query::{Expr, Index};
+use sea_orm::sea_query::{Alias, ColumnDef, Expr, Index, Table};
 use sea_orm::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -64,6 +64,36 @@ pub struct WalProtectedWriteMeta {
     pub backend_key: String,
     pub physical_size: i64,
     pub protected_meta: String,
+}
+
+#[derive(Clone, Copy)]
+enum WalColumnKind {
+    TextNullable,
+    TimestampNullable,
+    TimestampNotNullDefaultCurrentTimestamp,
+    StatusNotNullDefaultPending,
+}
+
+fn build_wal_column(column_name: &str, kind: WalColumnKind) -> ColumnDef {
+    let mut column = ColumnDef::new(Alias::new(column_name));
+    match kind {
+        WalColumnKind::TextNullable => {
+            column.text().null();
+        }
+        WalColumnKind::TimestampNullable => {
+            column.timestamp_with_time_zone().null();
+        }
+        WalColumnKind::TimestampNotNullDefaultCurrentTimestamp => {
+            column
+                .timestamp_with_time_zone()
+                .not_null()
+                .default(Expr::current_timestamp());
+        }
+        WalColumnKind::StatusNotNullDefaultPending => {
+            column.string().not_null().default("pending");
+        }
+    }
+    column
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -482,30 +512,22 @@ impl VfsWalManager {
     async fn ensure_journal_columns(&self) -> Result<(), DbErr> {
         self.add_column_if_missing(
             "status",
-            "status TEXT NOT NULL DEFAULT 'pending'",
-            "status TEXT NOT NULL DEFAULT 'pending'",
-            "status VARCHAR(32) NOT NULL DEFAULT 'pending'",
+            WalColumnKind::StatusNotNullDefaultPending,
         )
         .await?;
         self.add_column_if_missing(
             "failure_reason",
-            "failure_reason TEXT NULL",
-            "failure_reason TEXT NULL",
-            "failure_reason TEXT NULL",
+            WalColumnKind::TextNullable,
         )
         .await?;
         self.add_column_if_missing(
             "updated_at",
-            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
-            "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
-            "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            WalColumnKind::TimestampNotNullDefaultCurrentTimestamp,
         )
         .await?;
         self.add_column_if_missing(
             "completed_at",
-            "completed_at TEXT NULL",
-            "completed_at TIMESTAMPTZ NULL",
-            "completed_at TIMESTAMP NULL",
+            WalColumnKind::TimestampNullable,
         )
         .await?;
         Ok(())
@@ -514,22 +536,14 @@ impl VfsWalManager {
     async fn add_column_if_missing(
         &self,
         column_name: &str,
-        sqlite_def: &str,
-        postgres_def: &str,
-        mysql_def: &str,
+        column_kind: WalColumnKind,
     ) -> Result<(), DbErr> {
         let backend = self.db.get_database_backend();
-        let sql = match backend {
-            DbBackend::Sqlite => format!("ALTER TABLE yh_vfs_wal ADD COLUMN {}", sqlite_def),
-            DbBackend::Postgres => {
-                format!(
-                    "ALTER TABLE yh_vfs_wal ADD COLUMN IF NOT EXISTS {}",
-                    postgres_def
-                )
-            }
-            DbBackend::MySql => format!("ALTER TABLE yh_vfs_wal ADD COLUMN {}", mysql_def),
-        };
-        match self.db.execute(Statement::from_string(backend, sql)).await {
+        let stmt = Table::alter()
+            .table(Alias::new("yh_vfs_wal"))
+            .add_column(build_wal_column(column_name, column_kind))
+            .to_owned();
+        match self.db.execute(backend.build(&stmt)).await {
             Ok(_) => Ok(()),
             Err(err) if Self::is_duplicate_column_error(&err, column_name) => Ok(()),
             Err(err) => Err(err),

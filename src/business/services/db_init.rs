@@ -1,8 +1,7 @@
 use crate::business::entities::{file_index, file_share, remote_mount, ssh_keys, user_settings};
-use sea_orm::sea_query::Index;
+use sea_orm::sea_query::{Alias, ColumnDef, Index, Table};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, QueryFilter,
-    Schema, Statement,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, Schema,
 };
 use std::sync::Arc;
 use yh_console_log::yhlog;
@@ -168,49 +167,37 @@ async fn ensure_user_settings_columns(db: &Arc<sea_orm::DatabaseConnection>) -> 
     add_user_settings_column_if_missing(
         db,
         "protected_root",
-        "protected_root TEXT NULL",
-        "protected_root TEXT NULL",
-        "protected_root TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     add_user_settings_column_if_missing(
         db,
         "protected_mode",
-        "protected_mode TEXT NULL",
-        "protected_mode TEXT NULL",
-        "protected_mode TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     add_user_settings_column_if_missing(
         db,
         "protected_key_slot_id",
-        "protected_key_slot_id TEXT NULL",
-        "protected_key_slot_id TEXT NULL",
-        "protected_key_slot_id TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     add_user_settings_column_if_missing(
         db,
         "protected_wrapped_key",
-        "protected_wrapped_key TEXT NULL",
-        "protected_wrapped_key TEXT NULL",
-        "protected_wrapped_key TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     add_user_settings_column_if_missing(
         db,
         "protected_enabled_at",
-        "protected_enabled_at TEXT NULL",
-        "protected_enabled_at TIMESTAMPTZ NULL",
-        "protected_enabled_at TIMESTAMP NULL",
+        AddColumnKind::TimestampNullable,
     )
     .await?;
     add_user_settings_column_if_missing(
         db,
         "protected_updated_at",
-        "protected_updated_at TEXT NULL",
-        "protected_updated_at TIMESTAMPTZ NULL",
-        "protected_updated_at TIMESTAMP NULL",
+        AddColumnKind::TimestampNullable,
     )
     .await?;
     Ok(())
@@ -220,17 +207,13 @@ async fn ensure_file_index_columns(db: &Arc<sea_orm::DatabaseConnection>) -> Res
     add_file_index_column_if_missing(
         db,
         "physical_size",
-        "physical_size BIGINT NULL",
-        "physical_size BIGINT NULL",
-        "physical_size BIGINT NULL",
+        AddColumnKind::BigIntNullable,
     )
     .await?;
     add_file_index_column_if_missing(
         db,
         "protected_meta",
-        "protected_meta TEXT NULL",
-        "protected_meta TEXT NULL",
-        "protected_meta TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     Ok(())
@@ -240,57 +223,43 @@ async fn ensure_file_share_columns(db: &Arc<sea_orm::DatabaseConnection>) -> Res
     add_file_share_column_if_missing(
         db,
         "note",
-        "note TEXT NULL",
-        "note TEXT NULL",
-        "note TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     add_file_share_column_if_missing(
         db,
         "label",
-        "label TEXT NULL",
-        "label TEXT NULL",
-        "label TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     add_file_share_column_if_missing(
         db,
         "attributes",
-        "attributes TEXT NULL",
-        "attributes TEXT NULL",
-        "attributes TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     add_file_share_column_if_missing(
         db,
         "hide_download",
-        "hide_download INTEGER NOT NULL DEFAULT 0",
-        "hide_download BOOLEAN NOT NULL DEFAULT FALSE",
-        "hide_download BOOLEAN NOT NULL DEFAULT FALSE",
+        AddColumnKind::BoolNotNullDefaultFalse,
     )
     .await?;
     add_file_share_column_if_missing(
         db,
         "snapshot_path",
-        "snapshot_path TEXT NULL",
-        "snapshot_path TEXT NULL",
-        "snapshot_path TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     add_file_share_column_if_missing(
         db,
         "snapshot_name",
-        "snapshot_name TEXT NULL",
-        "snapshot_name TEXT NULL",
-        "snapshot_name TEXT NULL",
+        AddColumnKind::TextNullable,
     )
     .await?;
     add_file_share_column_if_missing(
         db,
         "snapshot_is_dir",
-        "snapshot_is_dir INTEGER NULL",
-        "snapshot_is_dir BOOLEAN NULL",
-        "snapshot_is_dir BOOLEAN NULL",
+        AddColumnKind::BoolNullable,
     )
     .await?;
     backfill_file_share_snapshots(db).await?;
@@ -321,22 +290,9 @@ async fn backfill_file_share_snapshots(db: &Arc<sea_orm::DatabaseConnection>) ->
 async fn add_file_share_column_if_missing(
     db: &Arc<sea_orm::DatabaseConnection>,
     column_name: &str,
-    sqlite_def: &str,
-    postgres_def: &str,
-    mysql_def: &str,
+    column_kind: AddColumnKind,
 ) -> Result<(), DbErr> {
-    let backend = db.get_database_backend();
-    let sql = match backend {
-        DbBackend::Sqlite => format!("ALTER TABLE yh_vfs_file_shares ADD COLUMN {}", sqlite_def),
-        DbBackend::Postgres => {
-            format!(
-                "ALTER TABLE yh_vfs_file_shares ADD COLUMN IF NOT EXISTS {}",
-                postgres_def
-            )
-        }
-        DbBackend::MySql => format!("ALTER TABLE yh_vfs_file_shares ADD COLUMN {}", mysql_def),
-    };
-    match db.execute(Statement::from_string(backend, sql)).await {
+    match execute_add_column_if_missing(db, "yh_vfs_file_shares", column_name, column_kind).await {
         Ok(_) => Ok(()),
         Err(err) => {
             let msg = err.to_string().to_ascii_lowercase();
@@ -356,22 +312,9 @@ async fn add_file_share_column_if_missing(
 async fn add_user_settings_column_if_missing(
     db: &Arc<sea_orm::DatabaseConnection>,
     column_name: &str,
-    sqlite_def: &str,
-    postgres_def: &str,
-    mysql_def: &str,
+    column_kind: AddColumnKind,
 ) -> Result<(), DbErr> {
-    let backend = db.get_database_backend();
-    let sql = match backend {
-        DbBackend::Sqlite => format!("ALTER TABLE yh_vfs_user_settings ADD COLUMN {}", sqlite_def),
-        DbBackend::Postgres => {
-            format!(
-                "ALTER TABLE yh_vfs_user_settings ADD COLUMN IF NOT EXISTS {}",
-                postgres_def
-            )
-        }
-        DbBackend::MySql => format!("ALTER TABLE yh_vfs_user_settings ADD COLUMN {}", mysql_def),
-    };
-    match db.execute(Statement::from_string(backend, sql)).await {
+    match execute_add_column_if_missing(db, "yh_vfs_user_settings", column_name, column_kind).await {
         Ok(_) => Ok(()),
         Err(err) => {
             let msg = err.to_string().to_ascii_lowercase();
@@ -391,22 +334,9 @@ async fn add_user_settings_column_if_missing(
 async fn add_file_index_column_if_missing(
     db: &Arc<sea_orm::DatabaseConnection>,
     column_name: &str,
-    sqlite_def: &str,
-    postgres_def: &str,
-    mysql_def: &str,
+    column_kind: AddColumnKind,
 ) -> Result<(), DbErr> {
-    let backend = db.get_database_backend();
-    let sql = match backend {
-        DbBackend::Sqlite => format!("ALTER TABLE yh_vfs_file_index ADD COLUMN {}", sqlite_def),
-        DbBackend::Postgres => {
-            format!(
-                "ALTER TABLE yh_vfs_file_index ADD COLUMN IF NOT EXISTS {}",
-                postgres_def
-            )
-        }
-        DbBackend::MySql => format!("ALTER TABLE yh_vfs_file_index ADD COLUMN {}", mysql_def),
-    };
-    match db.execute(Statement::from_string(backend, sql)).await {
+    match execute_add_column_if_missing(db, "yh_vfs_file_index", column_name, column_kind).await {
         Ok(_) => Ok(()),
         Err(err) => {
             let msg = err.to_string().to_ascii_lowercase();
@@ -421,4 +351,49 @@ async fn add_file_index_column_if_missing(
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum AddColumnKind {
+    TextNullable,
+    BoolNullable,
+    BoolNotNullDefaultFalse,
+    BigIntNullable,
+    TimestampNullable,
+}
+
+fn build_optional_column(column_name: &str, column_kind: AddColumnKind) -> ColumnDef {
+    let mut column = ColumnDef::new(Alias::new(column_name));
+    match column_kind {
+        AddColumnKind::TextNullable => {
+            column.text().null();
+        }
+        AddColumnKind::BoolNullable => {
+            column.boolean().null();
+        }
+        AddColumnKind::BoolNotNullDefaultFalse => {
+            column.boolean().not_null().default(false);
+        }
+        AddColumnKind::BigIntNullable => {
+            column.big_integer().null();
+        }
+        AddColumnKind::TimestampNullable => {
+            column.timestamp_with_time_zone().null();
+        }
+    }
+    column
+}
+
+async fn execute_add_column_if_missing(
+    db: &Arc<sea_orm::DatabaseConnection>,
+    table_name: &str,
+    column_name: &str,
+    column_kind: AddColumnKind,
+) -> Result<(), DbErr> {
+    let backend = db.get_database_backend();
+    let stmt = Table::alter()
+        .table(Alias::new(table_name))
+        .add_column(build_optional_column(column_name, column_kind))
+        .to_owned();
+    db.execute(backend.build(&stmt)).await.map(|_| ())
 }
