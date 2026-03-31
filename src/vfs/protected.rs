@@ -2,6 +2,7 @@ use aes::Aes256;
 use bytes::{Bytes, BytesMut};
 use ctr::cipher::{KeyIvInit, StreamCipher};
 use hmac::{Hmac, Mac};
+use once_cell::sync::OnceCell;
 use rand::RngCore;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -360,14 +361,13 @@ fn derive_encrypt_mac_key(encrypt_key: &[u8; 32]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn compute_encrypt_chunk_mac(
-    encrypt_key: &[u8; 32],
+fn compute_chunk_mac_with_key(
+    mac_key: &[u8; 32],
     chunk_index: u64,
     ciphertext: &[u8],
 ) -> Result<[u8; PROTECTED_MAC_LEN], String> {
-    let mac_key = derive_encrypt_mac_key(encrypt_key);
     let mut mac =
-        HmacSha256::new_from_slice(&mac_key).map_err(|e| format!("invalid mac key: {}", e))?;
+        HmacSha256::new_from_slice(mac_key).map_err(|e| format!("invalid mac key: {}", e))?;
     mac.update(&chunk_index.to_le_bytes());
     mac.update(ciphertext);
     let out = mac.finalize().into_bytes();
@@ -381,11 +381,12 @@ fn build_encrypt_mac_table(
     chunk_size: usize,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, String> {
+    let mac_key = derive_encrypt_mac_key(encrypt_key);
     let mut out = Vec::with_capacity(
         integrity_chunk_count(ciphertext.len() as u64, chunk_size as u32) * PROTECTED_MAC_LEN,
     );
     for (chunk_index, chunk) in ciphertext.chunks(chunk_size.max(1)).enumerate() {
-        let tag = compute_encrypt_chunk_mac(encrypt_key, chunk_index as u64, chunk)?;
+        let tag = compute_chunk_mac_with_key(&mac_key, chunk_index as u64, chunk)?;
         out.extend_from_slice(&tag);
     }
     Ok(out)
@@ -450,30 +451,33 @@ fn obfuscate_in_place_from_block(
         return;
     }
 
-    let _ = rayon::ThreadPoolBuilder::new()
-        .num_threads(effective_workers)
-        .build()
-        .map(|pool| {
-            pool.install(|| {
-                buf.par_chunks_mut(block_size)
-                    .enumerate()
-                    .for_each(|(block_index, chunk)| {
-                        let absolute_index = start_block_index + block_index as u64;
-                        match prng {
-                            ProtectedPrng::Xorshift => apply_xorshift_mask(
-                                chunk,
-                                user_id,
-                                key_slot_id,
-                                seed,
-                                absolute_index,
-                            ),
-                            ProtectedPrng::Pcg => {
-                                apply_pcg_mask(chunk, user_id, key_slot_id, seed, absolute_index)
-                            }
-                        }
-                    });
-            })
-        });
+    let _ = get_or_create_obfuscate_pool(effective_workers).install(|| {
+        buf.par_chunks_mut(block_size)
+            .enumerate()
+            .for_each(|(block_index, chunk)| {
+                let absolute_index = start_block_index + block_index as u64;
+                match prng {
+                    ProtectedPrng::Xorshift => {
+                        apply_xorshift_mask(chunk, user_id, key_slot_id, seed, absolute_index)
+                    }
+                    ProtectedPrng::Pcg => {
+                        apply_pcg_mask(chunk, user_id, key_slot_id, seed, absolute_index)
+                    }
+                }
+            });
+    });
+}
+
+static OBFUSCATE_POOL: OnceCell<rayon::ThreadPool> = OnceCell::new();
+
+fn get_or_create_obfuscate_pool(num_threads: usize) -> &'static rayon::ThreadPool {
+    OBFUSCATE_POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .thread_name(|i| format!("fileuni-obfuscate-{}", i))
+            .build()
+            .expect("failed to create obfuscate thread pool")
+    })
 }
 
 fn derive_block_material(
@@ -568,6 +572,13 @@ fn decode_obfuscate_range(
     let slice_start = (start as usize).saturating_sub(aligned_start);
     let slice_end = slice_start + (end - start) as usize;
     let logical_window = &buf[..clamped_end.saturating_sub(aligned_start)];
+    if slice_end > logical_window.len() {
+        return Err(format!(
+            "obfuscate range slice out of bounds: slice_end={} window_len={}",
+            slice_end,
+            logical_window.len()
+        ));
+    }
     Ok(Bytes::copy_from_slice(
         &logical_window[slice_start..slice_end],
     ))
@@ -583,9 +594,22 @@ fn decode_encrypt_range(
 ) -> Result<Bytes, String> {
     let mut buf = payload.to_vec();
     let key = encrypt_key.ok_or_else(|| "Protected encrypt key is missing".to_string())?;
+    if start < payload_logical_start {
+        return Err(format!(
+            "encrypt range start {} < payload_logical_start {}",
+            start, payload_logical_start
+        ));
+    }
     encrypt_range_in_place(&mut buf, &key, header.seed_or_nonce, payload_logical_start);
     let slice_start = (start - payload_logical_start) as usize;
     let slice_end = slice_start + (end - start) as usize;
+    if slice_end > buf.len() {
+        return Err(format!(
+            "encrypt range slice out of bounds: slice_end={} buf_len={}",
+            slice_end,
+            buf.len()
+        ));
+    }
     Ok(Bytes::copy_from_slice(&buf[slice_start..slice_end]))
 }
 
@@ -602,9 +626,10 @@ pub fn verify_encrypt_window(
     if mac_table.len() != expected_chunks * PROTECTED_MAC_LEN {
         return Err("protected MAC table window size mismatch".to_string());
     }
+    let mac_key = derive_encrypt_mac_key(encrypt_key);
     for (idx, chunk) in ciphertext_window.chunks(chunk_size as usize).enumerate() {
         let chunk_index = start_chunk + idx as u64;
-        let expected = compute_encrypt_chunk_mac(encrypt_key, chunk_index, chunk)?;
+        let expected = compute_chunk_mac_with_key(&mac_key, chunk_index, chunk)?;
         let offset = idx * PROTECTED_MAC_LEN;
         let actual = &mac_table[offset..offset + PROTECTED_MAC_LEN];
         if actual != expected {
