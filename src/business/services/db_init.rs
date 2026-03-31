@@ -164,30 +164,12 @@ pub async fn init_vfs_tables(db: &Arc<sea_orm::DatabaseConnection>) -> Result<()
 }
 
 async fn ensure_user_settings_columns(db: &Arc<sea_orm::DatabaseConnection>) -> Result<(), DbErr> {
-    add_user_settings_column_if_missing(
-        db,
-        "protected_root",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
-    add_user_settings_column_if_missing(
-        db,
-        "protected_mode",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
-    add_user_settings_column_if_missing(
-        db,
-        "protected_key_slot_id",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
-    add_user_settings_column_if_missing(
-        db,
-        "protected_wrapped_key",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
+    add_user_settings_column_if_missing(db, "protected_root", AddColumnKind::TextNullable).await?;
+    add_user_settings_column_if_missing(db, "protected_mode", AddColumnKind::TextNullable).await?;
+    add_user_settings_column_if_missing(db, "protected_key_slot_id", AddColumnKind::TextNullable)
+        .await?;
+    add_user_settings_column_if_missing(db, "protected_wrapped_key", AddColumnKind::TextNullable)
+        .await?;
     add_user_settings_column_if_missing(
         db,
         "protected_enabled_at",
@@ -204,64 +186,20 @@ async fn ensure_user_settings_columns(db: &Arc<sea_orm::DatabaseConnection>) -> 
 }
 
 async fn ensure_file_index_columns(db: &Arc<sea_orm::DatabaseConnection>) -> Result<(), DbErr> {
-    add_file_index_column_if_missing(
-        db,
-        "physical_size",
-        AddColumnKind::BigIntNullable,
-    )
-    .await?;
-    add_file_index_column_if_missing(
-        db,
-        "protected_meta",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
+    add_file_index_column_if_missing(db, "physical_size", AddColumnKind::BigIntNullable).await?;
+    add_file_index_column_if_missing(db, "protected_meta", AddColumnKind::TextNullable).await?;
     Ok(())
 }
 
 async fn ensure_file_share_columns(db: &Arc<sea_orm::DatabaseConnection>) -> Result<(), DbErr> {
-    add_file_share_column_if_missing(
-        db,
-        "note",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
-    add_file_share_column_if_missing(
-        db,
-        "label",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
-    add_file_share_column_if_missing(
-        db,
-        "attributes",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
-    add_file_share_column_if_missing(
-        db,
-        "hide_download",
-        AddColumnKind::BoolNotNullDefaultFalse,
-    )
-    .await?;
-    add_file_share_column_if_missing(
-        db,
-        "snapshot_path",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
-    add_file_share_column_if_missing(
-        db,
-        "snapshot_name",
-        AddColumnKind::TextNullable,
-    )
-    .await?;
-    add_file_share_column_if_missing(
-        db,
-        "snapshot_is_dir",
-        AddColumnKind::BoolNullable,
-    )
-    .await?;
+    add_file_share_column_if_missing(db, "note", AddColumnKind::TextNullable).await?;
+    add_file_share_column_if_missing(db, "label", AddColumnKind::TextNullable).await?;
+    add_file_share_column_if_missing(db, "attributes", AddColumnKind::TextNullable).await?;
+    add_file_share_column_if_missing(db, "hide_download", AddColumnKind::BoolNotNullDefaultFalse)
+        .await?;
+    add_file_share_column_if_missing(db, "snapshot_path", AddColumnKind::TextNullable).await?;
+    add_file_share_column_if_missing(db, "snapshot_name", AddColumnKind::TextNullable).await?;
+    add_file_share_column_if_missing(db, "snapshot_is_dir", AddColumnKind::BoolNullable).await?;
     backfill_file_share_snapshots(db).await?;
     Ok(())
 }
@@ -314,7 +252,8 @@ async fn add_user_settings_column_if_missing(
     column_name: &str,
     column_kind: AddColumnKind,
 ) -> Result<(), DbErr> {
-    match execute_add_column_if_missing(db, "yh_vfs_user_settings", column_name, column_kind).await {
+    match execute_add_column_if_missing(db, "yh_vfs_user_settings", column_name, column_kind).await
+    {
         Ok(_) => Ok(()),
         Err(err) => {
             let msg = err.to_string().to_ascii_lowercase();

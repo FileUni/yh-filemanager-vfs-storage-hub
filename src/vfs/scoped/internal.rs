@@ -495,7 +495,8 @@ impl ScopedVfsStorageEngine {
         if self.is_protected_blob_path(logical_path) {
             return Ok(());
         }
-        if self.is_thumbnail_cache_path(logical_path) && self.get_protected_plan(logical_path).await?.is_none()
+        if self.is_thumbnail_cache_path(logical_path)
+            && self.get_protected_plan(logical_path).await?.is_none()
         {
             return Ok(());
         }

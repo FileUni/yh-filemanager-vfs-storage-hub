@@ -510,26 +510,17 @@ impl VfsWalManager {
     }
 
     async fn ensure_journal_columns(&self) -> Result<(), DbErr> {
-        self.add_column_if_missing(
-            "status",
-            WalColumnKind::StatusNotNullDefaultPending,
-        )
-        .await?;
-        self.add_column_if_missing(
-            "failure_reason",
-            WalColumnKind::TextNullable,
-        )
-        .await?;
+        self.add_column_if_missing("status", WalColumnKind::StatusNotNullDefaultPending)
+            .await?;
+        self.add_column_if_missing("failure_reason", WalColumnKind::TextNullable)
+            .await?;
         self.add_column_if_missing(
             "updated_at",
             WalColumnKind::TimestampNotNullDefaultCurrentTimestamp,
         )
         .await?;
-        self.add_column_if_missing(
-            "completed_at",
-            WalColumnKind::TimestampNullable,
-        )
-        .await?;
+        self.add_column_if_missing("completed_at", WalColumnKind::TimestampNullable)
+            .await?;
         Ok(())
     }
 
@@ -801,7 +792,11 @@ impl VfsWalManager {
                         .await
                         .map_err(|e| e.to_string())?;
                     if physical_exists {
-                        let stat = engine.pool.stat(&meta.backend_key).await.map_err(|e| e.to_string())?;
+                        let stat = engine
+                            .pool
+                            .stat(&meta.backend_key)
+                            .await
+                            .map_err(|e| e.to_string())?;
                         let info = VfsFileInfo {
                             name: std::path::Path::new(path)
                                 .file_name()
@@ -851,7 +846,11 @@ impl VfsWalManager {
                     .await
                     .map_err(|e| e.to_string())?;
                 if physical_exists {
-                    let stat = engine.pool.stat(&meta.backend_key).await.map_err(|e| e.to_string())?;
+                    let stat = engine
+                        .pool
+                        .stat(&meta.backend_key)
+                        .await
+                        .map_err(|e| e.to_string())?;
                     let info = VfsFileInfo {
                         name: std::path::Path::new(path)
                             .file_name()
