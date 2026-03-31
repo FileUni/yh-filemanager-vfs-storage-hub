@@ -1,13 +1,14 @@
 use crate::business::services::FileIndexService;
+use crate::utils::temp_file::{get_global_temp_manager_sync, VfsTempFileManager};
 use crate::utils::VfsCache;
-use crate::utils::temp_file::{VfsTempFileManager, get_global_temp_manager_sync};
-use crate::vfs::VfsResult;
 use crate::vfs::error::VfsError;
 use crate::vfs::pool::VfsPool;
 use crate::vfs::wal::VfsWalManager;
+use crate::vfs::VfsResult;
 use sea_orm::DatabaseConnection;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 /// User-scoped VFS engine.
 pub struct ScopedVfsStorageEngine {
@@ -22,6 +23,8 @@ pub struct ScopedVfsStorageEngine {
     pub(crate) journal_recorder: Option<Arc<dyn crate::vfs::VfsJournalRecorder>>,
     pub(crate) task_handler: Option<Arc<dyn crate::vfs::task::VfsTaskHandler>>,
     pub(crate) wal_manager: Option<Arc<VfsWalManager>>,
+    pub(crate) protected_plan_cache:
+        Arc<OnceCell<Option<crate::vfs::protected::ProtectedPathPlan>>>,
 }
 impl ScopedVfsStorageEngine {
     /// Create a new scoped storage engine.
@@ -55,6 +58,7 @@ impl ScopedVfsStorageEngine {
             journal_recorder,
             task_handler,
             wal_manager,
+            protected_plan_cache: Arc::new(OnceCell::new()),
         })
     }
     /// Clone for async tasks (Arc-only, O(1)).
@@ -71,6 +75,7 @@ impl ScopedVfsStorageEngine {
             journal_recorder: self.journal_recorder.as_ref().map(Arc::clone),
             task_handler: self.task_handler.as_ref().map(Arc::clone),
             wal_manager: self.wal_manager.as_ref().map(Arc::clone),
+            protected_plan_cache: Arc::clone(&self.protected_plan_cache),
         }
     }
 }
