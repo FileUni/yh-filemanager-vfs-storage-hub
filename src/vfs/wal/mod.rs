@@ -60,10 +60,19 @@ impl WalStatus {
 
 /// Write-Ahead Log Operation Types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalProtectedWriteMeta {
+    pub backend_key: String,
+    pub physical_size: i64,
+    pub protected_meta: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WalOperation {
     Write {
         path: String,
         size: u64,
+        #[serde(default)]
+        protected: Option<WalProtectedWriteMeta>,
     },
     Delete {
         path: String,
@@ -580,7 +589,15 @@ impl VfsWalManager {
             .await?;
 
         let recover_res = match op {
-            WalOperation::Write { path, .. } => self.recover_write(&engine, &path, status).await,
+            WalOperation::Write {
+                path,
+                size,
+                protected,
+                ..
+            } => {
+                self.recover_write(&engine, &path, size, protected.as_ref(), status)
+                    .await
+            }
             WalOperation::Delete { path } => self.recover_delete(&engine, &path, status).await,
             WalOperation::Move { src, dst } => self.recover_move(&engine, &src, &dst, status).await,
             WalOperation::Rename { old_path, new_path } => {
@@ -745,6 +762,8 @@ impl VfsWalManager {
         &self,
         engine: &Arc<ScopedVfsStorageEngine>,
         path: &str,
+        size: u64,
+        protected: Option<&WalProtectedWriteMeta>,
         status: WalStatus,
     ) -> Result<(), String> {
         let protected_root = self.protected_root_for_path(engine, path).await?;
@@ -761,6 +780,48 @@ impl VfsWalManager {
                 if index_row.is_some() {
                     return Ok(());
                 }
+                if let Some(meta) = protected {
+                    let physical_exists = engine
+                        .pool
+                        .exists(&meta.backend_key)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if physical_exists {
+                        let stat = engine.pool.stat(&meta.backend_key).await.map_err(|e| e.to_string())?;
+                        let info = VfsFileInfo {
+                            name: std::path::Path::new(path)
+                                .file_name()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or("")
+                                .to_string()
+                                .into(),
+                            path: path.to_string().into(),
+                            is_dir: false,
+                            size,
+                            modified: stat.modified,
+                            favorite_color: 0,
+                            has_active_share: None,
+                            has_active_direct: None,
+                            trashed_at: None,
+                            original_path: None,
+                        };
+                        engine
+                            .index_service
+                            .upsert_file_with_location(
+                                engine.user_id.as_ref(),
+                                path,
+                                &info,
+                                Some(engine.pool.config.get_name()),
+                                Some(engine.pool.get_backend_type().as_str()),
+                                Some(meta.backend_key.as_str()),
+                                Some(meta.physical_size),
+                                Some(meta.protected_meta.as_str()),
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        return Ok(());
+                    }
+                }
                 return Err(
                     "Protected write recovery requires manual backend_key repair because index metadata is missing"
                         .to_string(),
@@ -768,6 +829,48 @@ impl VfsWalManager {
             }
             if index_row.is_some() {
                 return Ok(());
+            }
+            if let Some(meta) = protected {
+                let physical_exists = engine
+                    .pool
+                    .exists(&meta.backend_key)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if physical_exists {
+                    let stat = engine.pool.stat(&meta.backend_key).await.map_err(|e| e.to_string())?;
+                    let info = VfsFileInfo {
+                        name: std::path::Path::new(path)
+                            .file_name()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or("")
+                            .to_string()
+                            .into(),
+                        path: path.to_string().into(),
+                        is_dir: false,
+                        size,
+                        modified: stat.modified,
+                        favorite_color: 0,
+                        has_active_share: None,
+                        has_active_direct: None,
+                        trashed_at: None,
+                        original_path: None,
+                    };
+                    engine
+                        .index_service
+                        .upsert_file_with_location(
+                            engine.user_id.as_ref(),
+                            path,
+                            &info,
+                            Some(engine.pool.config.get_name()),
+                            Some(engine.pool.get_backend_type().as_str()),
+                            Some(meta.backend_key.as_str()),
+                            Some(meta.physical_size),
+                            Some(meta.protected_meta.as_str()),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
             }
             return Err(
                 "Protected write recovery requires manual backend_key repair because WAL does not store blob locator"

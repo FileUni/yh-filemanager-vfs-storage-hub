@@ -635,3 +635,124 @@ fn pcg32_next(state: &mut u64, inc: &mut u64) -> u32 {
     let rot = (oldstate >> 59) as u32;
     xorshifted.rotate_right(rot)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obfuscate_plan(workers: usize) -> ProtectedPathPlan {
+        ProtectedPathPlan {
+            root: "/".to_string(),
+            mode: ProtectedMode::Obfuscate,
+            key_slot_id: "slot-a".to_string(),
+            block_size: 64,
+            prng: ProtectedPrng::Xorshift,
+            encrypt_key: None,
+            workers,
+        }
+    }
+
+    fn encrypt_plan() -> ProtectedPathPlan {
+        ProtectedPathPlan {
+            root: "/".to_string(),
+            mode: ProtectedMode::Encrypt,
+            key_slot_id: "slot-b".to_string(),
+            block_size: 256 * 1024,
+            prng: ProtectedPrng::Xorshift,
+            encrypt_key: Some([7u8; 32]),
+            workers: 1,
+        }
+    }
+
+    #[test]
+    fn obfuscate_roundtrip_and_range_work() {
+        let plaintext = Bytes::from_static(
+            b"hello protected storage this payload should cross blocks for range reading",
+        );
+        let (encoded, header, _meta) =
+            encode_payload("user-a", &obfuscate_plan(1), plaintext.clone()).expect("encode");
+        let payload = encoded.slice(PROTECTED_HEADER_LEN..);
+        let all = decode_range(
+            "user-a",
+            "slot-a",
+            None,
+            1,
+            &header,
+            payload.clone(),
+            0,
+            0,
+            plaintext.len() as u64,
+        )
+        .expect("decode all");
+        assert_eq!(all, plaintext);
+
+        let range = decode_range("user-a", "slot-a", None, 1, &header, payload, 0, 7, 31)
+            .expect("decode range");
+        assert_eq!(range, plaintext.slice(7..31));
+    }
+
+    #[test]
+    fn obfuscate_multithread_is_stable() {
+        let seed = [9u8; 16];
+        let input = vec![0x5a; 4096];
+        let mut single = input.clone();
+        let mut parallel = input.clone();
+        obfuscate_in_place_from_block(
+            &mut single,
+            "user-a",
+            "slot-a",
+            seed,
+            256,
+            ProtectedPrng::Pcg,
+            0,
+            1,
+        );
+        obfuscate_in_place_from_block(
+            &mut parallel,
+            "user-a",
+            "slot-a",
+            seed,
+            256,
+            ProtectedPrng::Pcg,
+            0,
+            4,
+        );
+        assert_eq!(single, parallel);
+    }
+
+    #[test]
+    fn encrypt_roundtrip_and_chunk_mac_work() {
+        let plaintext = Bytes::from(vec![0x2a; 2 * 1024 * 1024 + 321]);
+        let plan = encrypt_plan();
+        let (encoded, header, meta_json) =
+            encode_payload("user-b", &plan, plaintext.clone()).expect("encode");
+        let meta = meta_from_json(&meta_json).expect("meta");
+        assert_eq!(meta.integrity, PROTECTED_INTEGRITY_HMAC_SHA256_CHUNKED);
+        let chunk_size = meta.integrity_chunk_size.expect("chunk size");
+        let mac_len = encrypt_mac_table_len(header.logical_size, chunk_size);
+        let payload_end = encoded.len() - mac_len;
+        let payload = encoded.slice(PROTECTED_HEADER_LEN..payload_end);
+        let mac_table = encoded.slice(payload_end..);
+        verify_encrypt_window(
+            &plan.encrypt_key.expect("encrypt key"),
+            chunk_size,
+            0,
+            payload.as_ref(),
+            mac_table.as_ref(),
+        )
+        .expect("verify mac");
+        let range = decode_range(
+            "user-b",
+            "slot-b",
+            plan.encrypt_key,
+            1,
+            &header,
+            payload,
+            0,
+            123,
+            4567,
+        )
+        .expect("decode range");
+        assert_eq!(range, plaintext.slice(123..4567));
+    }
+}

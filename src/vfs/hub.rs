@@ -273,6 +273,9 @@ impl VfsStorageHub {
             .insert(user_id.to_string(), Arc::clone(&settings));
         Ok(settings)
     }
+    pub fn invalidate_user_settings_cache(&self, user_id: &str) {
+        self.settings_cache.remove(user_id);
+    }
     pub async fn create_scoped_engine(
         self: &Arc<Self>,
         db: Arc<sea_orm::DatabaseConnection>,

@@ -483,7 +483,11 @@ impl ScopedVfsStorageEngine {
         physical_size: Option<i64>,
         protected_meta: Option<&str>,
     ) -> VfsResult<()> {
-        if self.is_hidden_storage_path(logical_path) {
+        if self.is_protected_blob_path(logical_path) {
+            return Ok(());
+        }
+        if self.is_thumbnail_cache_path(logical_path) && self.get_protected_plan(logical_path).await?.is_none()
+        {
             return Ok(());
         }
         let backend_type = self.pool.get_backend_type();
@@ -708,6 +712,7 @@ impl ScopedVfsStorageEngine {
                 crate::vfs::wal::WalOperation::Write {
                     path: normalized.to_string(),
                     size: total_written,
+                    protected: None,
                 },
                 self.should_skip_wal_for_write(normalized, total_written)
                     .await,

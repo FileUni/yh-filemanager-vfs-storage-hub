@@ -339,16 +339,6 @@ impl ScopedVfsStorageEngine {
         if diff > 0 {
             self.check_quota(diff).await?;
         }
-        let wal_id = self
-            .begin_wal(
-                crate::vfs::wal::WalOperation::Write {
-                    path: normalized.to_string(),
-                    size: data.len() as u64,
-                },
-                self.should_skip_wal_for_write(normalized, data.len() as u64)
-                    .await,
-            )
-            .await?;
         let backend_key = existing
             .as_ref()
             .and_then(|row| row.backend_key.clone())
@@ -360,6 +350,21 @@ impl ScopedVfsStorageEngine {
             crate::vfs::protected::encode_payload(&self.user_id, plan, data.clone())
                 .map_err(VfsError::Internal)?;
         let physical_size = encoded.len() as i64;
+        let wal_id = self
+            .begin_wal(
+                crate::vfs::wal::WalOperation::Write {
+                    path: normalized.to_string(),
+                    size: data.len() as u64,
+                    protected: Some(crate::vfs::wal::WalProtectedWriteMeta {
+                        backend_key: backend_key.clone(),
+                        physical_size,
+                        protected_meta: protected_meta.clone(),
+                    }),
+                },
+                self.should_skip_wal_for_write(normalized, data.len() as u64)
+                    .await,
+            )
+            .await?;
         let write_result = self.pool.write(&backend_key, encoded).await;
         match write_result {
             Ok(_) => {

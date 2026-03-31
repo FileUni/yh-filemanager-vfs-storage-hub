@@ -24,6 +24,8 @@ pub struct UserSettingsUpdatePatch {
     pub protected_mode: Option<Option<String>>,
     pub protected_key_slot_id: Option<Option<String>>,
     pub protected_wrapped_key: Option<Option<String>>,
+    pub protected_enabled_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
+    pub protected_updated_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +56,8 @@ pub struct UserSettingsSnapshot {
     pub protected_mode: Option<String>,
     pub protected_key_slot_id: Option<String>,
     pub protected_wrapped_key: Option<String>,
+    pub protected_enabled_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub protected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl From<&user_settings::Model> for UserSettingsSnapshot {
@@ -79,6 +83,8 @@ impl From<&user_settings::Model> for UserSettingsSnapshot {
             protected_mode: model.protected_mode.clone(),
             protected_key_slot_id: model.protected_key_slot_id.clone(),
             protected_wrapped_key: model.protected_wrapped_key.clone(),
+            protected_enabled_at: model.protected_enabled_at,
+            protected_updated_at: model.protected_updated_at,
         }
     }
 }
@@ -120,6 +126,54 @@ impl UserSettingsSnapshot {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::UserSettingsSnapshot;
+
+    fn snapshot(root: Option<&str>) -> UserSettingsSnapshot {
+        UserSettingsSnapshot {
+            user_id: "user-a".to_string(),
+            pool_name: "default".to_string(),
+            base_dir: "/".to_string(),
+            storage_quota: 0,
+            storage_used: 0,
+            thumbnail_disable_image: false,
+            thumbnail_disable_video: false,
+            thumbnail_disable_audio: false,
+            thumbnail_disable_pdf: false,
+            thumbnail_disable_text: false,
+            thumbnail_disable_markdown: false,
+            thumbnail_disable_office: false,
+            thumbnail_disable_tex: false,
+            sftp_enable_password: true,
+            s3_access_key: None,
+            s3_secret_key: None,
+            protected_root: root.map(str::to_string),
+            protected_mode: None,
+            protected_key_slot_id: None,
+            protected_wrapped_key: None,
+            protected_enabled_at: None,
+            protected_updated_at: None,
+        }
+    }
+
+    #[test]
+    fn root_protected_matches_all_user_paths() {
+        let settings = snapshot(Some("/"));
+        assert!(settings.matches_protected_root("/"));
+        assert!(settings.matches_protected_root("/docs/a.txt"));
+        assert!(settings.matches_protected_root("/.thumbs/file.webp"));
+    }
+
+    #[test]
+    fn subdir_protected_matches_only_subtree() {
+        let settings = snapshot(Some("/private"));
+        assert!(settings.matches_protected_root("/private"));
+        assert!(settings.matches_protected_root("/private/docs/a.txt"));
+        assert!(!settings.matches_protected_root("/public/docs/a.txt"));
+    }
+}
+
 pub struct UserSettingsService;
 impl UserSettingsService {
     ///()
@@ -152,6 +206,8 @@ impl UserSettingsService {
             protected_mode: Set(None),
             protected_key_slot_id: Set(None),
             protected_wrapped_key: Set(None),
+            protected_enabled_at: Set(None),
+            protected_updated_at: Set(None),
             created_at: Set(now),
             updated_at: Set(now),
         };
@@ -292,6 +348,18 @@ impl UserSettingsService {
             update = update.col_expr(
                 user_settings::Column::ProtectedWrappedKey,
                 Expr::value(value.as_deref()),
+            );
+        }
+        if let Some(value) = &patch.protected_enabled_at {
+            update = update.col_expr(
+                user_settings::Column::ProtectedEnabledAt,
+                Expr::value(value.clone()),
+            );
+        }
+        if let Some(value) = &patch.protected_updated_at {
+            update = update.col_expr(
+                user_settings::Column::ProtectedUpdatedAt,
+                Expr::value(value.clone()),
             );
         }
 

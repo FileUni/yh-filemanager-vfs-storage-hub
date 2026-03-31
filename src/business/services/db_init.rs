@@ -197,6 +197,22 @@ async fn ensure_user_settings_columns(db: &Arc<sea_orm::DatabaseConnection>) -> 
         "protected_wrapped_key TEXT NULL",
     )
     .await?;
+    add_user_settings_column_if_missing(
+        db,
+        "protected_enabled_at",
+        "protected_enabled_at TEXT NULL",
+        "protected_enabled_at TIMESTAMPTZ NULL",
+        "protected_enabled_at TIMESTAMP NULL",
+    )
+    .await?;
+    add_user_settings_column_if_missing(
+        db,
+        "protected_updated_at",
+        "protected_updated_at TEXT NULL",
+        "protected_updated_at TIMESTAMPTZ NULL",
+        "protected_updated_at TIMESTAMP NULL",
+    )
+    .await?;
     Ok(())
 }
 

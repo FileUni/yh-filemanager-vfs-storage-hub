@@ -37,6 +37,7 @@ impl ScopedVfsStorageEngine {
                 WalOperation::Write {
                     path: normalized.to_string(),
                     size: data.len() as u64,
+                    protected: None,
                 },
                 self.should_skip_wal_for_write(&normalized, data.len() as u64)
                     .await,
@@ -304,6 +305,7 @@ impl ScopedVfsStorageEngine {
                 WalOperation::Write {
                     path: normalized.to_string(),
                     size: data.len() as u64,
+                    protected: None,
                 },
                 self.should_skip_wal_for_write(&normalized, data.len() as u64)
                     .await,

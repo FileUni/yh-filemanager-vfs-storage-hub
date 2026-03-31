@@ -221,6 +221,7 @@ impl ScopedVfsStorageEngine {
                 .map_err(|e| VfsError::Internal(e.to_string()))?;
             return Ok(db_entries
                 .into_iter()
+                .filter(|e| !self.is_hidden_storage_path(&e.path))
                 .map(|e| VfsFileInfo {
                     name: e.name.into(),
                     path: e.path.into(),
@@ -548,6 +549,7 @@ impl ScopedVfsStorageEngine {
                 .map_err(|e| VfsError::Internal(e.to_string()))?;
             let files = entries
                 .into_iter()
+                .filter(|e| !self.is_hidden_storage_path(&e.path))
                 .map(|e| VfsFileInfo {
                     name: e.name.into(),
                     path: e.path.into(),
@@ -591,6 +593,7 @@ impl ScopedVfsStorageEngine {
         if total > 0 {
             let files = entries
                 .into_iter()
+                .filter(|e| !self.is_hidden_storage_path(&e.path))
                 .map(|e| VfsFileInfo {
                     name: e.name.into(),
                     path: e.path.into(),
