@@ -89,6 +89,7 @@ impl FileIndexService {
         self.upsert_file_with_location(user_id, logical_path, info, None, None, None, None, None)
             .await
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_file_with_location(
         &self,
         user_id: &str,

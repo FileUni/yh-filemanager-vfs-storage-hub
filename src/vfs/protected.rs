@@ -35,15 +35,19 @@ fn derive_encrypt_mac_key(encrypt_key: &[u8; 32]) -> [u8; 32] {
     okm
 }
 
-impl ProtectedMode {
-    pub fn from_str(raw: &str) -> Option<Self> {
+impl std::str::FromStr for ProtectedMode {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "obfuscate" => Some(Self::Obfuscate),
-            "encrypt" => Some(Self::Encrypt),
-            _ => None,
+            "obfuscate" => Ok(Self::Obfuscate),
+            "encrypt" => Ok(Self::Encrypt),
+            _ => Err(format!("unsupported protected mode: {}", raw)),
         }
     }
+}
 
+impl ProtectedMode {
     fn to_byte(self) -> u8 {
         match self {
             Self::Obfuscate => 1,
@@ -66,15 +70,19 @@ pub enum ProtectedPrng {
     Pcg,
 }
 
-impl ProtectedPrng {
-    pub fn from_str(raw: &str) -> Option<Self> {
+impl std::str::FromStr for ProtectedPrng {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "xorshift" => Some(Self::Xorshift),
-            "pcg" => Some(Self::Pcg),
-            _ => None,
+            "xorshift" => Ok(Self::Xorshift),
+            "pcg" => Ok(Self::Pcg),
+            _ => Err(format!("unsupported protected PRNG: {}", raw)),
         }
     }
+}
 
+impl ProtectedPrng {
     fn to_byte(self) -> u8 {
         match self {
             Self::Xorshift => 1,
@@ -274,6 +282,7 @@ pub fn integrity_chunk_count(logical_size: u64, chunk_size: u32) -> usize {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn decode_range(
     user_id: &str,
     key_slot_id: &str,
@@ -341,10 +350,8 @@ impl ProtectedMetaRecord {
     }
 
     pub fn into_header(self) -> Result<ProtectedHeader, String> {
-        let mode = ProtectedMode::from_str(&self.mode)
-            .ok_or_else(|| format!("unsupported protected mode meta: {}", self.mode))?;
-        let prng = ProtectedPrng::from_str(&self.prng)
-            .ok_or_else(|| format!("unsupported protected prng meta: {}", self.prng))?;
+        let mode = self.mode.parse::<ProtectedMode>()?;
+        let prng = self.prng.parse::<ProtectedPrng>()?;
         let seed = hex::decode(&self.seed_or_nonce_hex)
             .map_err(|e| format!("decode protected seed failed: {}", e))?;
         if seed.len() != 16 {
@@ -442,6 +449,7 @@ fn effective_parallel_workers(requested: usize) -> usize {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn obfuscate_in_place_from_block(
     buf: &mut [u8],
     user_id: &str,
@@ -470,7 +478,7 @@ fn obfuscate_in_place_from_block(
         return;
     }
 
-    let _ = get_or_create_obfuscate_pool(effective_workers).install(|| {
+    get_or_create_obfuscate_pool(effective_workers).install(|| {
         buf.par_chunks_mut(block_size)
             .enumerate()
             .for_each(|(block_index, chunk)| {
@@ -567,6 +575,7 @@ fn apply_pcg_mask(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_obfuscate_range(
     user_id: &str,
     key_slot_id: &str,

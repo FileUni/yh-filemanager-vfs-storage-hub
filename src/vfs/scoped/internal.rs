@@ -414,9 +414,9 @@ impl ScopedVfsStorageEngine {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| VfsError::Internal("Protected key slot is missing".to_string()))?
             .to_string();
-        let mode = crate::vfs::protected::ProtectedMode::from_str(mode_raw).ok_or_else(|| {
-            VfsError::Internal(format!("Unsupported protected mode: {}", mode_raw))
-        })?;
+        let mode = mode_raw
+            .parse::<crate::vfs::protected::ProtectedMode>()
+            .map_err(|_| VfsError::Internal(format!("Unsupported protected mode: {}", mode_raw)))?;
         let config = crate::config::get_vfs_hub_config().await;
         let protected_cfg = config.get_protected_storage();
         let global_mode = protected_cfg.get_global_mode().trim().to_ascii_lowercase();
@@ -427,8 +427,10 @@ impl ScopedVfsStorageEngine {
             ));
         }
         let obfuscation = protected_cfg.get_obfuscation();
-        let prng = crate::vfs::protected::ProtectedPrng::from_str(obfuscation.get_prng())
-            .ok_or_else(|| {
+        let prng = obfuscation
+            .get_prng()
+            .parse::<crate::vfs::protected::ProtectedPrng>()
+            .map_err(|_| {
                 VfsError::Internal(format!(
                     "Unsupported protected storage PRNG: {}",
                     obfuscation.get_prng()
