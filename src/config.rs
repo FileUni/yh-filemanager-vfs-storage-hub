@@ -2138,9 +2138,14 @@ impl VfsProtectedStorageEncryptConfig {
     }
 
     pub fn get_binary_wrap_key(&self) -> [u8; 32] {
-        use sha2::Digest;
-        let digest = sha2::Sha256::digest(self.get_wrap_key().trim().as_bytes());
-        digest.into()
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let ikm = self.get_wrap_key().trim().as_bytes();
+        let hk = Hkdf::<Sha256>::new(None, ikm);
+        let mut okm = [0u8; 32];
+        hk.expand(b"fileuni:protected:wrap-key:v1", &mut okm)
+            .expect("32 bytes is a valid length for Sha256");
+        okm
     }
 }
 

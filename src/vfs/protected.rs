@@ -1,6 +1,7 @@
 use aes::Aes256;
 use bytes::{Bytes, BytesMut};
 use ctr::cipher::{KeyIvInit, StreamCipher};
+use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use once_cell::sync::OnceCell;
 use rand::RngCore;
@@ -24,6 +25,14 @@ type HmacSha256 = Hmac<Sha256>;
 pub enum ProtectedMode {
     Obfuscate,
     Encrypt,
+}
+
+fn derive_encrypt_mac_key(encrypt_key: &[u8; 32]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(None, encrypt_key);
+    let mut okm = [0u8; 32];
+    hk.expand(b"fileuni:protected:encrypt:mac:v1", &mut okm)
+        .expect("32 bytes is a valid length for Sha256");
+    okm
 }
 
 impl ProtectedMode {
@@ -91,6 +100,23 @@ pub struct ProtectedPathPlan {
     pub prng: ProtectedPrng,
     pub encrypt_key: Option<[u8; 32]>,
     pub workers: usize,
+}
+
+impl ProtectedPathPlan {
+    pub fn matches_path(&self, path: &str) -> bool {
+        if self.root == "/" {
+            return true;
+        }
+        let normalized = path.trim_end_matches('/');
+        let normalized = if normalized.is_empty() {
+            "/"
+        } else {
+            normalized
+        };
+        let root = self.root.trim_end_matches('/');
+        let root = if root.is_empty() { "/" } else { root };
+        normalized == root || normalized.starts_with(&format!("{}/", root))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -354,13 +380,6 @@ fn encrypt_range_in_place(buf: &mut [u8], key: &[u8; 32], nonce: [u8; 16], logic
     cipher.apply_keystream(buf);
 }
 
-fn derive_encrypt_mac_key(encrypt_key: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"fileuni:protected:encrypt:mac:v1:");
-    hasher.update(encrypt_key);
-    hasher.finalize().into()
-}
-
 fn compute_chunk_mac_with_key(
     mac_key: &[u8; 32],
     chunk_index: u64,
@@ -486,15 +505,19 @@ fn derive_block_material(
     seed: [u8; 16],
     block_index: u64,
 ) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"fileuni:protected:obfuscate:v1:");
-    hasher.update(user_id.as_bytes());
-    hasher.update(b":");
-    hasher.update(key_slot_id.as_bytes());
-    hasher.update(b":");
-    hasher.update(seed);
-    hasher.update(block_index.to_le_bytes());
-    hasher.finalize().into()
+    let mut salt = Vec::with_capacity(32);
+    salt.extend_from_slice(user_id.as_bytes());
+    salt.extend_from_slice(b":");
+    salt.extend_from_slice(key_slot_id.as_bytes());
+
+    let hk = Hkdf::<Sha256>::new(Some(&salt), &seed);
+    let mut okm = [0u8; 32];
+    hk.expand(
+        &format!("fileuni:protected:obfuscate:v1:{}", block_index).into_bytes(),
+        &mut okm,
+    )
+    .expect("32 bytes is a valid length for Sha256");
+    okm
 }
 
 fn apply_xorshift_mask(
