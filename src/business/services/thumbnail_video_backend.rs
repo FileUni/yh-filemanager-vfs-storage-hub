@@ -258,7 +258,7 @@ fn render_video_thumbnail_android(
     thumb_quality: u8,
     thumb_format: &str,
 ) -> Result<()> {
-    use jni::objects::{JByteArray, JObject, JString, JValue};
+    use jni::objects::{JByteArray, JString, JValue};
 
     fn java_error_from_jni(
         env: &mut jni::JNIEnv<'_>,
@@ -319,7 +319,7 @@ fn render_video_thumbnail_android(
     )
     .map_err(|err| java_error_from_jni(&mut env, "setDataSource", err))?;
 
-    let duration_ms = get_android_video_duration_ms(&mut env, retriever_class, &retriever)?;
+    let duration_ms = get_android_video_duration_ms(&mut env, &retriever_class, &retriever)?;
     let seek = match seek_mode.as_deref().unwrap_or("auto") {
         "ratio" => {
             resolve_seek_seconds(duration_ms.map(|value| value as f64 / 1000.0), seek_ratio, seek_seconds)
@@ -455,7 +455,7 @@ fn render_video_thumbnail_android(
 #[cfg(target_os = "android")]
 fn get_android_video_duration_ms(
     env: &mut jni::JNIEnv<'_>,
-    retriever_class: jni::objects::JClass<'_>,
+    retriever_class: &jni::objects::JClass<'_>,
     retriever: &jni::objects::JObject<'_>,
 ) -> Result<Option<u64>> {
     let key_duration = env
@@ -496,10 +496,11 @@ fn render_video_thumbnail_ios(
     thumb_quality: u8,
     thumb_format: &str,
 ) -> Result<()> {
+    use objc2::rc::autoreleasepool;
     use objc2_av_foundation::{AVAssetImageGenerator, AVURLAsset};
     use objc2_core_foundation::{CGFloat, CGSize};
     use objc2_core_media::CMTime;
-    use objc2_foundation::{NSString, NSURL, autoreleasepool};
+    use objc2_foundation::{NSString, NSURL};
     use objc2_ui_kit::UIImage;
 
     let output_bytes = autoreleasepool(|_| -> Result<Vec<u8>> {
