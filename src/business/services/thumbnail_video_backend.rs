@@ -35,13 +35,21 @@ async fn render_video_thumbnail_ffmpeg(
 ) -> Result<bool> {
     let ffmpeg_path = cfg.get_tools().get_ffmpeg_path();
     let size = cfg.get_thumb_size_px().to_string();
-    let seek = match (video_cfg.seek_ratio, video_cfg.seek_seconds) {
-        (Some(_), _) => {
+    let seek = match video_cfg.get_seek_mode() {
+        "ratio" => {
             let duration = detect_video_duration_ffmpeg(ffmpeg_path, input).await.ok();
             resolve_seek_seconds_from_config(duration, video_cfg)
         }
-        (None, Some(_)) => video_cfg.get_seek_seconds(),
-        (None, None) => return Err(anyhow!("Thumbnail video seek config missing")),
+        "seconds" => video_cfg.get_seek_seconds(),
+        "auto" => match (video_cfg.seek_ratio, video_cfg.seek_seconds) {
+            (Some(_), _) => {
+                let duration = detect_video_duration_ffmpeg(ffmpeg_path, input).await.ok();
+                resolve_seek_seconds_from_config(duration, video_cfg)
+            }
+            (None, Some(_)) => video_cfg.get_seek_seconds(),
+            (None, None) => return Err(anyhow!("Thumbnail video seek config missing")),
+        },
+        _ => return Err(anyhow!("Invalid seek_mode: {}", video_cfg.get_seek_mode())),
     };
     let quality = cfg.get_thumb_quality() as i32;
     let qscale = ((100 - quality) / 4).clamp(2, 31);
@@ -199,6 +207,7 @@ async fn render_video_thumbnail_mobile(
     let output = output.clone();
     let seek_ratio = video_cfg.seek_ratio;
     let seek_seconds = video_cfg.seek_seconds;
+    let seek_mode = video_cfg.seek_mode.clone();
     let thumb_size = cfg.get_thumb_size_px();
     let thumb_quality = cfg.get_thumb_quality();
     let thumb_format = normalize_output_format(cfg.get_thumb_format()).to_string();
@@ -211,6 +220,7 @@ async fn render_video_thumbnail_mobile(
                 &output,
                 seek_ratio,
                 seek_seconds,
+                &seek_mode,
                 thumb_size,
                 thumb_quality,
                 thumb_format.as_str(),
@@ -224,6 +234,7 @@ async fn render_video_thumbnail_mobile(
                 &output,
                 seek_ratio,
                 seek_seconds,
+                &seek_mode,
                 thumb_size,
                 thumb_quality,
                 thumb_format.as_str(),
@@ -242,6 +253,7 @@ fn render_video_thumbnail_android(
     output: &Path,
     seek_ratio: Option<f64>,
     seek_seconds: Option<u64>,
+    seek_mode: &Option<std::sync::Arc<str>>,
     thumb_size: u32,
     thumb_quality: u8,
     thumb_format: &str,
@@ -308,11 +320,16 @@ fn render_video_thumbnail_android(
     .map_err(|err| java_error_from_jni(&mut env, "setDataSource", err))?;
 
     let duration_ms = get_android_video_duration_ms(&mut env, retriever_class, &retriever)?;
-    let seek = resolve_seek_seconds(
-        duration_ms.map(|value| value as f64 / 1000.0),
-        seek_ratio,
-        seek_seconds,
-    );
+    let seek = match seek_mode.as_deref().unwrap_or("auto") {
+        "ratio" => {
+            resolve_seek_seconds(duration_ms.map(|value| value as f64 / 1000.0), seek_ratio, seek_seconds)
+        }
+        "seconds" => seek_seconds.unwrap_or(0),
+        "auto" => {
+            resolve_seek_seconds(duration_ms.map(|value| value as f64 / 1000.0), seek_ratio, seek_seconds)
+        }
+        _ => 0,
+    };
     let seek_us = (seek as i64).saturating_mul(1_000_000);
 
     let option_closest_sync = env
@@ -474,6 +491,7 @@ fn render_video_thumbnail_ios(
     output: &Path,
     seek_ratio: Option<f64>,
     seek_seconds: Option<u64>,
+    seek_mode: &Option<std::sync::Arc<str>>,
     thumb_size: u32,
     thumb_quality: u8,
     thumb_format: &str,
@@ -494,7 +512,12 @@ fn render_video_thumbnail_ios(
         } else {
             None
         };
-        let seek = resolve_seek_seconds(duration, seek_ratio, seek_seconds);
+        let seek = match seek_mode.as_deref().unwrap_or("auto") {
+            "ratio" => resolve_seek_seconds(duration, seek_ratio, seek_seconds),
+            "seconds" => seek_seconds.unwrap_or(0),
+            "auto" => resolve_seek_seconds(duration, seek_ratio, seek_seconds),
+            _ => 0,
+        };
         let requested_time = unsafe { CMTime::with_seconds(seek as f64, 600) };
         let generator = unsafe { AVAssetImageGenerator::assetImageGeneratorWithAsset(&asset) };
         unsafe {

@@ -1371,19 +1371,59 @@ impl VfsThumbnailImageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
-pub struct VfsThumbnailTypeConfig {
+pub struct VfsThumbnailVideoConfig {
+    #[config(
+        desc_zh = "是否启用视频缩略图",
+        desc_en = "Enable video thumbnails",
+        example = "true"
+    )]
+    pub enabled: Option<bool>,
+    #[config(
+        desc_zh = "大于此大小（MB）的视频文件跳过缩略图生成",
+        desc_en = "Skip video thumbnail generation for files larger than this (MB)",
+        example = "500"
+    )]
+    pub max_size_mb: Option<u64>,
+    #[config(
+        desc_zh = "ImageMagick最大允许处理的文件大小（MB，0表示不限制）",
+        desc_en = "Max file size allowed for ImageMagick (MB, 0 means no limit)",
+        example = "0"
+    )]
+    pub imagemagick_max_mb: Option<u64>,
+    #[config(
+        desc_zh = "生成超时时间（秒）",
+        desc_en = "Generation timeout (seconds)",
+        example = "30"
+    )]
+    pub timeout_secs: Option<u64>,
+    #[config(
+        desc_zh = "视频缩略图截取模式：ratio(百分比) | seconds(秒数) | auto(优先ratio，回退seconds)",
+        desc_en = "Video thumbnail seek mode: ratio(percentage) | seconds(seconds) | auto(prefer ratio, fallback to seconds)",
+        example = "auto"
+    )]
+    pub seek_mode: Option<Arc<str>>,
+    #[config(
+        desc_zh = "视频截取时间（秒）",
+        desc_en = "Video seek position (seconds)",
+        example = "3"
+    )]
+    pub seek_seconds: Option<u64>,
+    #[config(
+        desc_zh = "视频截取比例（0.0-1.0）",
+        desc_en = "Video seek ratio (0.0-1.0)",
+        example = "0.3"
+    )]
+    pub seek_ratio: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
+pub struct VfsThumbnailDocConfig {
     #[config(
         desc_zh = "是否启用此类文件的缩略图",
         desc_en = "Enable thumbnails for this type",
         example = "true"
     )]
     pub enabled: Option<bool>,
-    #[config(
-        desc_zh = "小于此大小（MB）的文件跳过缩略图生成",
-        desc_en = "Skip thumbnail generation for files smaller than this (MB)",
-        example = "1"
-    )]
-    pub small_skip_mb: Option<u64>,
     #[config(
         desc_zh = "大于此大小（MB）的文件跳过缩略图生成",
         desc_en = "Skip thumbnail generation for files larger than this (MB)",
@@ -1403,18 +1443,6 @@ pub struct VfsThumbnailTypeConfig {
     )]
     pub timeout_secs: Option<u64>,
     #[config(
-        desc_zh = "视频截取时间（秒）",
-        desc_en = "Video seek position (seconds)",
-        example = "3"
-    )]
-    pub seek_seconds: Option<u64>,
-    #[config(
-        desc_zh = "视频截取比例（0.0-1.0，优先于seek_seconds）",
-        desc_en = "Video seek ratio (0.0-1.0, overrides seek_seconds)",
-        example = "0.3"
-    )]
-    pub seek_ratio: Option<f64>,
-    #[config(
         desc_zh = "文本预览最大提取字符数",
         desc_en = "Max characters to extract for text preview",
         example = "1000"
@@ -1422,7 +1450,69 @@ pub struct VfsThumbnailTypeConfig {
     pub max_chars: Option<u64>,
 }
 
-impl VfsThumbnailTypeConfig {
+impl VfsThumbnailVideoConfig {
+    pub fn is_enabled(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.enabled,
+            "vfs_storage_hub",
+            "thumbnail.video.enabled"
+        )
+    }
+    pub fn get_max_size_mb(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.max_size_mb,
+            "vfs_storage_hub",
+            "thumbnail.video.max_size_mb"
+        )
+    }
+    pub fn get_imagemagick_max_mb(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.imagemagick_max_mb,
+            "vfs_storage_hub",
+            "thumbnail.video.imagemagick_max_mb"
+        )
+    }
+    pub fn get_timeout_secs(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.timeout_secs,
+            "vfs_storage_hub",
+            "thumbnail.video.timeout_secs"
+        )
+    }
+    pub fn get_seek_mode(&self) -> &str {
+        self.seek_mode.as_deref().unwrap_or("auto")
+    }
+    pub fn get_seek_ratio(&self) -> f32 {
+        yh_config_infra::config_require_clone!(
+            self.seek_ratio,
+            "vfs_storage_hub",
+            "thumbnail.video.seek_ratio"
+        ) as f32
+    }
+    pub fn get_seek_seconds(&self) -> u64 {
+        yh_config_infra::config_require_clone!(
+            self.seek_seconds,
+            "vfs_storage_hub",
+            "thumbnail.video.seek_seconds"
+        )
+    }
+
+    pub fn to_runtime_config(&self) -> crate::business::services::ThumbnailRuntimeTypeConfig {
+        crate::business::services::ThumbnailRuntimeTypeConfig {
+            enabled: self.is_enabled(),
+            small_skip_mb: 0,
+            max_size_mb: self.get_max_size_mb(),
+            imagemagick_max_mb: self.get_imagemagick_max_mb(),
+            timeout_secs: self.get_timeout_secs(),
+            seek_mode: self.seek_mode.clone(),
+            seek_seconds: self.seek_seconds,
+            seek_ratio: self.seek_ratio,
+            max_chars: None,
+        }
+    }
+}
+
+impl VfsThumbnailDocConfig {
     pub fn is_enabled(&self) -> bool {
         yh_config_infra::config_require_clone!(
             self.enabled,
@@ -1451,27 +1541,6 @@ impl VfsThumbnailTypeConfig {
             "thumbnail.type.timeout_secs"
         )
     }
-    pub fn get_small_skip_mb(&self) -> u64 {
-        yh_config_infra::config_require_clone!(
-            self.small_skip_mb,
-            "vfs_storage_hub",
-            "thumbnail.type.small_skip_mb"
-        )
-    }
-    pub fn get_seek_ratio(&self) -> f32 {
-        yh_config_infra::config_require_clone!(
-            self.seek_ratio,
-            "vfs_storage_hub",
-            "thumbnail.type.seek_ratio"
-        ) as f32
-    }
-    pub fn get_seek_seconds(&self) -> u64 {
-        yh_config_infra::config_require_clone!(
-            self.seek_seconds,
-            "vfs_storage_hub",
-            "thumbnail.type.seek_seconds"
-        )
-    }
     pub fn get_max_chars(&self) -> u64 {
         yh_config_infra::config_require_clone!(
             self.max_chars,
@@ -1483,12 +1552,13 @@ impl VfsThumbnailTypeConfig {
     pub fn to_runtime_config(&self) -> crate::business::services::ThumbnailRuntimeTypeConfig {
         crate::business::services::ThumbnailRuntimeTypeConfig {
             enabled: self.is_enabled(),
-            small_skip_mb: self.get_small_skip_mb(),
+            small_skip_mb: 0,
             max_size_mb: self.get_max_size_mb(),
             imagemagick_max_mb: self.get_imagemagick_max_mb(),
             timeout_secs: self.get_timeout_secs(),
-            seek_seconds: self.seek_seconds,
-            seek_ratio: self.seek_ratio,
+            seek_mode: None,
+            seek_seconds: None,
+            seek_ratio: None,
             max_chars: self.max_chars,
         }
     }
@@ -1540,24 +1610,24 @@ pub struct VfsThumbnailConfig {
     #[config(desc_zh = "图片缩略图配置", desc_en = "Image thumbnail configuration")]
     pub image: Option<VfsThumbnailImageConfig>,
     #[config(desc_zh = "视频缩略图配置", desc_en = "Video thumbnail configuration")]
-    pub video: Option<VfsThumbnailTypeConfig>,
+    pub video: Option<VfsThumbnailVideoConfig>,
     #[config(desc_zh = "PDF缩略图配置", desc_en = "PDF thumbnail configuration")]
-    pub pdf: Option<VfsThumbnailTypeConfig>,
+    pub pdf: Option<VfsThumbnailDocConfig>,
     #[config(
         desc_zh = "Office文档缩略图配置",
         desc_en = "Office thumbnail configuration"
     )]
-    pub office: Option<VfsThumbnailTypeConfig>,
+    pub office: Option<VfsThumbnailDocConfig>,
     #[config(
         desc_zh = "文本文件缩略图配置",
         desc_en = "Text thumbnail configuration"
     )]
-    pub text: Option<VfsThumbnailTypeConfig>,
+    pub text: Option<VfsThumbnailDocConfig>,
     #[config(
         desc_zh = "3D模型缩略图配置",
         desc_en = "3D model thumbnail configuration"
     )]
-    pub model3d: Option<VfsThumbnailTypeConfig>,
+    pub model3d: Option<VfsThumbnailDocConfig>,
 }
 
 impl VfsThumbnailConfig {
@@ -1570,19 +1640,19 @@ impl VfsThumbnailConfig {
     pub fn get_image(&self) -> &VfsThumbnailImageConfig {
         yh_config_infra::config_require_ref!(self.image, "vfs_storage_hub", "thumbnail.image")
     }
-    pub fn get_video(&self) -> &VfsThumbnailTypeConfig {
+    pub fn get_video(&self) -> &VfsThumbnailVideoConfig {
         yh_config_infra::config_require_ref!(self.video, "vfs_storage_hub", "thumbnail.video")
     }
-    pub fn get_pdf(&self) -> &VfsThumbnailTypeConfig {
+    pub fn get_pdf(&self) -> &VfsThumbnailDocConfig {
         yh_config_infra::config_require_ref!(self.pdf, "vfs_storage_hub", "thumbnail.pdf")
     }
-    pub fn get_office(&self) -> &VfsThumbnailTypeConfig {
+    pub fn get_office(&self) -> &VfsThumbnailDocConfig {
         yh_config_infra::config_require_ref!(self.office, "vfs_storage_hub", "thumbnail.office")
     }
-    pub fn get_text(&self) -> &VfsThumbnailTypeConfig {
+    pub fn get_text(&self) -> &VfsThumbnailDocConfig {
         yh_config_infra::config_require_ref!(self.text, "vfs_storage_hub", "thumbnail.text")
     }
-    pub fn get_model3d(&self) -> &VfsThumbnailTypeConfig {
+    pub fn get_model3d(&self) -> &VfsThumbnailDocConfig {
         yh_config_infra::config_require_ref!(self.model3d, "vfs_storage_hub", "thumbnail.model3d")
     }
     pub fn get_thumb_size_px(&self) -> u32 {
@@ -2807,14 +2877,93 @@ impl VfsStorageHubConfig {
                 errors.push(format!("[{}] thumbnail.image is required (section)", s));
             }
 
-            let types = [
-                (&thumb.video, "video"),
+            if let Some(video) = &thumb.video {
+                yh_config_infra::config_collect_bool!(
+                    video.enabled,
+                    s,
+                    "thumbnail.video.enabled",
+                    errors
+                );
+                yh_config_infra::config_collect_gt_zero!(
+                    video.max_size_mb,
+                    s,
+                    "thumbnail.video.max_size_mb",
+                    errors
+                );
+                yh_config_infra::config_collect_gt_zero!(
+                    video.timeout_secs,
+                    s,
+                    "thumbnail.video.timeout_secs",
+                    errors
+                );
+
+                if video.enabled == Some(true) {
+                    let seek_mode = video.seek_mode.as_deref().unwrap_or("auto");
+                    if !matches!(seek_mode, "ratio" | "seconds" | "auto") {
+                        errors.push(format!(
+                            "[{}] thumbnail.video.seek_mode must be one of: ratio, seconds, auto",
+                            s
+                        ));
+                    }
+                    if let Some(r) = video.seek_ratio
+                        && (!r.is_finite() || r <= 0.0 || r > 1.0)
+                    {
+                        errors.push(format!(
+                            "[{}] thumbnail.video.seek_ratio must be within (0.0, 1.0]",
+                            s
+                        ));
+                    }
+                    if let Some(v) = video.seek_seconds
+                        && v == 0
+                    {
+                        errors
+                            .push(format!("[{}] thumbnail.video.seek_seconds must be > 0", s));
+                    }
+
+                    let ratio_ok = video.seek_ratio
+                        .map(|r| r.is_finite() && r > 0.0 && r <= 1.0)
+                        .unwrap_or(false);
+                    let secs_ok = video.seek_seconds.map(|v| v > 0).unwrap_or(false);
+
+                    match seek_mode {
+                        "ratio" => {
+                            if !ratio_ok {
+                                errors.push(format!(
+                                    "[{}] thumbnail.video.seek_ratio is required when seek_mode is 'ratio'",
+                                    s
+                                ));
+                            }
+                        }
+                        "seconds" => {
+                            if !secs_ok {
+                                errors.push(format!(
+                                    "[{}] thumbnail.video.seek_seconds is required when seek_mode is 'seconds'",
+                                    s
+                                ));
+                            }
+                        }
+                        "auto" => {
+                            if !ratio_ok && !secs_ok {
+                                errors.push(format!(
+                                    "[{}] thumbnail.video.seek_ratio or seek_seconds is required when seek_mode is 'auto'",
+                                    s
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                errors.push(format!("[{}] thumbnail.video is required (section)", s));
+            }
+
+            let doc_types: [(&Option<VfsThumbnailDocConfig>, &str); 4] = [
                 (&thumb.pdf, "pdf"),
                 (&thumb.office, "office"),
                 (&thumb.text, "text"),
                 (&thumb.model3d, "model3d"),
             ];
-            for (t, name) in types {
+            for (t, name) in doc_types {
                 if let Some(tc) = t {
                     yh_config_infra::config_collect_bool!(
                         tc.enabled,
@@ -2834,35 +2983,6 @@ impl VfsStorageHubConfig {
                         format!("thumbnail.{}.timeout_secs", name),
                         errors
                     );
-
-                    if name == "video" && tc.enabled == Some(true) {
-                        let seek_ratio = tc.seek_ratio;
-                        let seek_seconds = tc.seek_seconds;
-                        let ratio_ok = seek_ratio
-                            .map(|r| r.is_finite() && r > 0.0 && r <= 1.0)
-                            .unwrap_or(false);
-                        let secs_ok = seek_seconds.map(|v| v > 0).unwrap_or(false);
-                        if ratio_ok == secs_ok {
-                            errors.push(format!(
-                                "[{}] thumbnail.video.seek_ratio and thumbnail.video.seek_seconds must be exactly one active option",
-                                s
-                            ));
-                        }
-                        if let Some(r) = seek_ratio
-                            && (!r.is_finite() || r <= 0.0 || r > 1.0)
-                        {
-                            errors.push(format!(
-                                "[{}] thumbnail.video.seek_ratio must be within (0.0, 1.0]",
-                                s
-                            ));
-                        }
-                        if let Some(v) = seek_seconds
-                            && v == 0
-                        {
-                            errors
-                                .push(format!("[{}] thumbnail.video.seek_seconds must be > 0", s));
-                        }
-                    }
 
                     if name == "text" && tc.enabled == Some(true) {
                         yh_config_infra::config_collect_gt_zero!(

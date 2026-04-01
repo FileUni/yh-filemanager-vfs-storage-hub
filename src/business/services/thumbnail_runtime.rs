@@ -79,6 +79,7 @@ pub struct ThumbnailRuntimeTypeConfig {
     pub max_size_mb: u64,
     pub imagemagick_max_mb: u64,
     pub timeout_secs: u64,
+    pub seek_mode: Option<Arc<str>>,
     pub seek_seconds: Option<u64>,
     pub seek_ratio: Option<f64>,
     pub max_chars: Option<u64>,
@@ -103,6 +104,10 @@ impl ThumbnailRuntimeTypeConfig {
 
     pub fn get_small_skip_mb(&self) -> u64 {
         self.small_skip_mb
+    }
+
+    pub fn get_seek_mode(&self) -> &str {
+        self.seek_mode.as_deref().unwrap_or("auto")
     }
 
     pub fn get_seek_ratio(&self) -> f32 {
