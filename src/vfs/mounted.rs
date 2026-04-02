@@ -1442,6 +1442,18 @@ fn compare_modified(
     }
 }
 
+fn debug_tree_entries(tree: &HashMap<String, VfsFileInfo>) -> Vec<String> {
+    let mut entries: Vec<String> = tree
+        .iter()
+        .map(|(relative, info)| {
+            let kind = if info.is_dir { "dir" } else { "file" };
+            format!("{} => {} [{}]", relative, info.path, kind)
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
 async fn ensure_directory_exists(storage: &Arc<dyn VfsStorage>, path: &str) -> VfsResult<()> {
     if path != "/" && !storage.exists(path).await? {
         let _ = storage.create_dir_all(path).await?;
@@ -1485,14 +1497,66 @@ async fn delete_extra_paths(
     source_map: &HashMap<String, VfsFileInfo>,
     dst_map: &HashMap<String, VfsFileInfo>,
 ) -> VfsResult<()> {
+    let dst_root_normalized = dst_root.trim_end_matches('/');
+    let dst_root_depth = path_depth(dst_root_normalized);
     let mut extra_paths: Vec<String> = dst_map
         .keys()
-        .filter(|key| !key.is_empty() && !source_map.contains_key(*key))
-        .map(|key| join_root(dst_root, key))
+        .filter_map(|key| {
+            if key.is_empty() || *key == "." || *key == "./" || source_map.contains_key(key) {
+                return None;
+            }
+            let joined = join_root(dst_root, key);
+            let joined_normalized = joined.trim_end_matches('/');
+            if joined_normalized == dst_root_normalized
+                || joined_normalized == format!("{}/.", dst_root_normalized)
+            {
+                return None;
+            }
+            if path_depth(joined_normalized) <= dst_root_depth {
+                return None;
+            }
+            Some(joined)
+        })
         .collect();
+    if !extra_paths.is_empty() {
+        yh_console_log::yhlog(
+            "warn",
+            &format!(
+                "Mirror sync deleting extra paths under '{}': {:?}",
+                dst_root, extra_paths
+            ),
+        );
+    }
     extra_paths.sort_by_key(|path| std::cmp::Reverse(path_depth(path)));
     for path in extra_paths {
-        let _ = dst_storage.delete(&path).await?;
+        match dst_storage.stat(&path).await {
+            Ok(info) => {
+                yh_console_log::yhlog(
+                    "warn",
+                    &format!(
+                        "Mirror sync deleting extra path '{}' (is_dir={}, size={})",
+                        path, info.is_dir, info.size
+                    ),
+                );
+            }
+            Err(error) => {
+                yh_console_log::yhlog(
+                    "warn",
+                    &format!(
+                        "Mirror sync extra path '{}' could not be stat-ed before delete: {}",
+                        path, error
+                    ),
+                );
+            }
+        }
+        delete_path_recursive(Arc::clone(dst_storage), path.clone())
+            .await
+            .map_err(|error| {
+                VfsError::Internal(format!(
+                    "Failed to delete mirror extra path '{}': {}",
+                    path, error
+                ))
+            })?;
     }
     Ok(())
 }
@@ -1513,6 +1577,18 @@ async fn sync_unidirectional(
     ensure_directory_exists(dst_storage, dst_root).await?;
     let source_map = collect_tree(src_storage, src_root).await?;
     let dst_map = collect_tree(dst_storage, dst_root).await?;
+    let source_debug = debug_tree_entries(&source_map);
+    let dst_debug = debug_tree_entries(&dst_map);
+
+    if delete_extras {
+        yh_console_log::yhlog(
+            "warn",
+            &format!(
+                "Mirror sync tree snapshot src_root='{}' dst_root='{}' src={:?} dst={:?}",
+                src_root, dst_root, source_debug, dst_debug
+            ),
+        );
+    }
 
     let mut dir_entries: Vec<_> = source_map
         .iter()
@@ -1521,9 +1597,15 @@ async fn sync_unidirectional(
         .collect();
     dir_entries.sort_by_key(|path| path_depth(path));
     for relative in dir_entries {
-        let _ = dst_storage
+        dst_storage
             .create_dir_all(&join_root(dst_root, &relative))
-            .await?;
+            .await
+            .map_err(|error| {
+                VfsError::Internal(format!(
+                    "Mirror sync create_dir failed src_root='{}' dst_root='{}' relative='{}' src={:?} dst={:?}: {}",
+                    src_root, dst_root, relative, source_debug, dst_debug, error
+                ))
+            })?;
     }
 
     let mut file_entries: Vec<_> = source_map.iter().filter(|(_, info)| !info.is_dir).collect();
@@ -1545,12 +1627,25 @@ async fn sync_unidirectional(
                 dst_storage,
                 &join_root(dst_root, relative),
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                VfsError::Internal(format!(
+                    "Mirror sync copy_file failed src_root='{}' dst_root='{}' relative='{}' src={:?} dst={:?}: {}",
+                    src_root, dst_root, relative, source_debug, dst_debug, error
+                ))
+            })?;
         }
     }
 
     if delete_extras {
-        delete_extra_paths(dst_storage, dst_root, &source_map, &dst_map).await?;
+        delete_extra_paths(dst_storage, dst_root, &source_map, &dst_map)
+            .await
+            .map_err(|error| {
+                VfsError::Internal(format!(
+                    "Mirror sync delete_extras failed src_root='{}' dst_root='{}' src={:?} dst={:?}: {}",
+                    src_root, dst_root, source_debug, dst_debug, error
+                ))
+            })?;
     }
     Ok(())
 }
