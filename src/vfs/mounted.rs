@@ -1487,7 +1487,7 @@ async fn delete_extra_paths(
 ) -> VfsResult<()> {
     let mut extra_paths: Vec<String> = dst_map
         .keys()
-        .filter(|key| !source_map.contains_key(*key))
+        .filter(|key| !key.is_empty() && !source_map.contains_key(*key))
         .map(|key| join_root(dst_root, key))
         .collect();
     extra_paths.sort_by_key(|path| std::cmp::Reverse(path_depth(path)));
