@@ -1518,37 +1518,8 @@ async fn delete_extra_paths(
             Some(joined)
         })
         .collect();
-    if !extra_paths.is_empty() {
-        yh_console_log::yhlog(
-            "warn",
-            &format!(
-                "Mirror sync deleting extra paths under '{}': {:?}",
-                dst_root, extra_paths
-            ),
-        );
-    }
     extra_paths.sort_by_key(|path| std::cmp::Reverse(path_depth(path)));
     for path in extra_paths {
-        match dst_storage.stat(&path).await {
-            Ok(info) => {
-                yh_console_log::yhlog(
-                    "warn",
-                    &format!(
-                        "Mirror sync deleting extra path '{}' (is_dir={}, size={})",
-                        path, info.is_dir, info.size
-                    ),
-                );
-            }
-            Err(error) => {
-                yh_console_log::yhlog(
-                    "warn",
-                    &format!(
-                        "Mirror sync extra path '{}' could not be stat-ed before delete: {}",
-                        path, error
-                    ),
-                );
-            }
-        }
         delete_path_recursive(Arc::clone(dst_storage), path.clone())
             .await
             .map_err(|error| {
@@ -1579,16 +1550,6 @@ async fn sync_unidirectional(
     let dst_map = collect_tree(dst_storage, dst_root).await?;
     let source_debug = debug_tree_entries(&source_map);
     let dst_debug = debug_tree_entries(&dst_map);
-
-    if delete_extras {
-        yh_console_log::yhlog(
-            "warn",
-            &format!(
-                "Mirror sync tree snapshot src_root='{}' dst_root='{}' src={:?} dst={:?}",
-                src_root, dst_root, source_debug, dst_debug
-            ),
-        );
-    }
 
     let mut dir_entries: Vec<_> = source_map
         .iter()
