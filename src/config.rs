@@ -2916,11 +2916,11 @@ impl VfsStorageHubConfig {
                     if let Some(v) = video.seek_seconds
                         && v == 0
                     {
-                        errors
-                            .push(format!("[{}] thumbnail.video.seek_seconds must be > 0", s));
+                        errors.push(format!("[{}] thumbnail.video.seek_seconds must be > 0", s));
                     }
 
-                    let ratio_ok = video.seek_ratio
+                    let ratio_ok = video
+                        .seek_ratio
                         .map(|r| r.is_finite() && r > 0.0 && r <= 1.0)
                         .unwrap_or(false);
                     let secs_ok = video.seek_seconds.map(|v| v > 0).unwrap_or(false);

@@ -321,13 +321,17 @@ fn render_video_thumbnail_android(
 
     let duration_ms = get_android_video_duration_ms(&mut env, &retriever_class, &retriever)?;
     let seek = match seek_mode.as_deref().unwrap_or("auto") {
-        "ratio" => {
-            resolve_seek_seconds(duration_ms.map(|value| value as f64 / 1000.0), seek_ratio, seek_seconds)
-        }
+        "ratio" => resolve_seek_seconds(
+            duration_ms.map(|value| value as f64 / 1000.0),
+            seek_ratio,
+            seek_seconds,
+        ),
         "seconds" => seek_seconds.unwrap_or(0),
-        "auto" => {
-            resolve_seek_seconds(duration_ms.map(|value| value as f64 / 1000.0), seek_ratio, seek_seconds)
-        }
+        "auto" => resolve_seek_seconds(
+            duration_ms.map(|value| value as f64 / 1000.0),
+            seek_ratio,
+            seek_seconds,
+        ),
         _ => 0,
     };
     let seek_us = (seek as i64).saturating_mul(1_000_000);
