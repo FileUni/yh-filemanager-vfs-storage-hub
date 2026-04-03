@@ -4,24 +4,62 @@ use crate::vfs::{VfsFileInfo, VfsStorage};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tar::{Archive, Builder};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, ReadBuf};
 use tokio::process::Command;
+use tokio_util::io::ReaderStream;
 use yh_console_log::yhlog;
-use yh_external_process_manager::get_global_manager;
+use yh_external_process_manager::{ExternalProcessPermit, TaskPriority, get_global_manager};
 use zip::ZipArchive;
 use zip::write::SimpleFileOptions;
 
 const PROCESS_PIPE_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
+
+struct PermitBoundAsyncRead<R> {
+    inner: R,
+    _permit: ExternalProcessPermit,
+}
+
+impl<R> AsyncRead for PermitBoundAsyncRead<R>
+where
+    R: AsyncRead + Unpin,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_read(cx, buf)
+    }
+}
+
+struct TempFileAsyncRead {
+    inner: fs::File,
+    _archive_guard: crate::utils::VfsTempFileGuard,
+    _entry_guard: crate::utils::VfsTempFileGuard,
+}
+
+impl AsyncRead for TempFileAsyncRead {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_read(cx, buf)
+    }
+}
 
 fn spawn_process_stdin_pump<S>(
     task_name: &'static str,
@@ -73,6 +111,50 @@ fn is_extension_allowed(path: &str, allowed_formats: &[Arc<str>]) -> bool {
         }
     }
     false
+}
+
+async fn create_temp_file(
+    user_id: &str,
+    prefix: &str,
+) -> anyhow::Result<(std::path::PathBuf, crate::utils::VfsTempFileGuard)> {
+    let temp_manager = yh_config_infra::config_require_manager!(
+        crate::utils::get_global_temp_manager().await,
+        "vfs_storage_hub"
+    );
+    temp_manager
+        .create_user_temp_file(user_id, prefix)
+        .await
+        .map_err(anyhow::Error::from)
+}
+
+async fn copy_vfs_file_to_local_temp(
+    engine: &dyn VfsStorage,
+    src_path: &str,
+    user_id: &str,
+    prefix: &str,
+) -> anyhow::Result<(std::path::PathBuf, crate::utils::VfsTempFileGuard)> {
+    let (temp_path, guard) = create_temp_file(user_id, prefix).await?;
+    copy_to_local_temp(engine, src_path, temp_path.as_path()).await?;
+    Ok((temp_path, guard))
+}
+
+fn max_archive_file_size_bytes(fc: &crate::config::VfsFileCompressConfig) -> u64 {
+    yh_config_infra::config_require_clone!(
+        fc.max_decompress_archive_size_mb,
+        "vfs_storage_hub",
+        "file_compress.max_decompress_archive_size_mb"
+    ) * 1024
+        * 1024
+}
+
+fn max_extract_output_bytes(fc: &crate::config::VfsFileCompressConfig) -> u64 {
+    yh_config_infra::config_require_clone!(
+        fc.max_extract_size_gb,
+        "vfs_storage_hub",
+        "file_compress.max_extract_size_gb"
+    ) * 1024
+        * 1024
+        * 1024
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CompressionFormat {
@@ -167,8 +249,9 @@ async fn copy_from_local_temp(src: &Path, dst: &str, engine: &dyn VfsStorage) ->
         }
         Ok(())
     } else {
-        let content = fs::read(src).await.map_err(VfsError::Io)?;
-        engine.write(dst, bytes::Bytes::from(content)).await?;
+        let file = fs::File::open(src).await.map_err(VfsError::Io)?;
+        let stream = ReaderStream::new(file).map(|result| result.map_err(VfsError::Io));
+        engine.write_stream(dst, Box::pin(stream)).await?;
         Ok(())
     }
 }
@@ -379,11 +462,12 @@ pub async fn compress_task(
                         res = tokio::time::timeout(timeout_duration, child.wait()) => {
                             match res {
                                 Ok(status) => {
-                                    let exit_status = status?;
-                                    if !exit_status.success() {
-                                        let output = child.wait_with_output().await?;
-                                        let stderr = String::from_utf8_lossy(&output.stderr);
-                                        return Err(anyhow::anyhow!("7z compression failed: {}. {}", exit_status, stderr));
+                                    let status = status?;
+                                    if !status.success() {
+                                        return Err(anyhow::anyhow!(
+                                            "7z compression failed with status {}",
+                                            status
+                                        ));
                                     }
                                     break;
                                 }
@@ -438,8 +522,8 @@ pub async fn compress_task(
                 .await??
             };
             // Upload result
-            let out_data = fs::read(&output_path_for_upload).await?;
-            let info = engine.write(dst_path, bytes::Bytes::from(out_data)).await?;
+            copy_from_local_temp(output_path_for_upload.as_path(), dst_path, engine).await?;
+            let info = engine.stat(dst_path).await?;
             if delete_source {
                 let _ = engine.delete(src_path).await;
                 if let Some(parent) = Path::new(src_path).parent() {
@@ -504,8 +588,7 @@ pub async fn decompress_task(
                 let local_archive = t_dir.join("input.archive");
                 let local_output_dir = t_dir.join("output");
                 fs::create_dir_all(&local_output_dir).await?;
-                let (data, _) = engine.read(src_path).await?;
-                fs::write(&local_archive, data).await?;
+                copy_to_local_temp(engine, src_path, &local_archive).await?;
                 let format = CompressionFormat::from_path(src_path)
                     .ok_or_else(|| anyhow::anyhow!("Unsupported format"))?;
                 let exe_path = fc.get_exe_7zip_path();
@@ -653,6 +736,9 @@ pub async fn stream_compress_reader(
     let (vfs_stream, _) = engine.read_stream(&src_path).await?;
     let exe_path = fc.get_exe_7zip_path();
     let final_exe = if exe_path.is_empty() { "7z" } else { exe_path };
+    let manager =
+        yh_config_infra::config_require_manager!(get_global_manager(), "external_process_manager");
+    let permit = manager.acquire_permit(TaskPriority::Normal).await?;
     let mut child = Command::new(final_exe)
         .arg("a")
         .arg("dummy")
@@ -672,7 +758,10 @@ pub async fn stream_compress_reader(
         .take()
         .ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
     spawn_process_stdin_pump("compress_stream", vfs_stream, stdin, Some(child));
-    Ok(stdout)
+    Ok(PermitBoundAsyncRead {
+        inner: stdout,
+        _permit: permit,
+    })
 }
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ArchiveEntry {
@@ -709,6 +798,14 @@ pub async fn list_archive_contents(
             archive_path
         ));
     }
+    let info = engine.stat(archive_path).await?;
+    if info.size > max_archive_file_size_bytes(&fc) {
+        return Err(anyhow::anyhow!(
+            "Archive browsing aborted: archive size exceeds limit"
+        ));
+    }
+    let manager =
+        yh_config_infra::config_require_manager!(get_global_manager(), "external_process_manager");
     let exe_path = fc.get_exe_7zip_path();
     let use_7z = !exe_path.is_empty() || format == CompressionFormat::SevenZip;
     if use_7z {
@@ -717,90 +814,104 @@ pub async fn list_archive_contents(
                 "7z format requires 7z executable to be configured."
             ));
         }
-        let (stream, _) = engine.read_stream(archive_path).await?;
-        let mut child = Command::new(if exe_path.is_empty() { "7z" } else { exe_path })
-            .arg("l")
-            .arg("-slt")
-            .arg("-si")
-            .args(if let Some(pwd) = password {
-                vec![format!("-p{}", pwd)]
-            } else {
-                vec![]
-            })
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
-        spawn_process_stdin_pump("list_archive_contents", stream, stdin, None);
-        let output = child.wait_with_output().await?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut entries = Vec::new();
-        let mut current_entry = ArchiveEntry::default();
-        let mut has_data = false;
-        for line in stdout.lines() {
-            if line.is_empty() {
-                if has_data && !current_entry.path.is_empty() {
-                    entries.push(std::mem::take(&mut current_entry));
-                }
-                has_data = false;
-                continue;
-            }
-            if let Some((key, value)) = line.split_once(" = ") {
-                has_data = true;
-                match key.trim() {
-                    "Path" => current_entry.path = value.trim().replace('\\', "/"),
-                    "Size" => {
-                        current_entry.size = match value.trim().parse() {
-                            Ok(parsed) => parsed,
-                            Err(err) => {
-                                yh_console_log::yhlog(
-                                    "warn",
-                                    &format!(
-                                        "Failed to parse archive entry size '{}': {}",
-                                        value.trim(),
-                                        err
-                                    ),
-                                );
-                                0
+        manager
+            .run_with_permit(TaskPriority::Low, || async move {
+                let (stream, _) = engine.read_stream(archive_path).await?;
+                let mut child = Command::new(if exe_path.is_empty() { "7z" } else { exe_path })
+                    .arg("l")
+                    .arg("-slt")
+                    .arg("-si")
+                    .args(if let Some(pwd) = password {
+                        vec![format!("-p{}", pwd)]
+                    } else {
+                        vec![]
+                    })
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()?;
+                let stdin = child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
+                spawn_process_stdin_pump("list_archive_contents", stream, stdin, None);
+                let output = child.wait_with_output().await?;
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut entries = Vec::new();
+                let mut current_entry = ArchiveEntry::default();
+                let mut has_data = false;
+                for line in stdout.lines() {
+                    if line.is_empty() {
+                        if has_data && !current_entry.path.is_empty() {
+                            entries.push(std::mem::take(&mut current_entry));
+                        }
+                        has_data = false;
+                        continue;
+                    }
+                    if let Some((key, value)) = line.split_once(" = ") {
+                        has_data = true;
+                        match key.trim() {
+                            "Path" => current_entry.path = value.trim().replace('\\', "/"),
+                            "Size" => {
+                                current_entry.size = match value.trim().parse() {
+                                    Ok(parsed) => parsed,
+                                    Err(err) => {
+                                        yh_console_log::yhlog(
+                                            "warn",
+                                            &format!(
+                                                "Failed to parse archive entry size '{}': {}",
+                                                value.trim(),
+                                                err
+                                            ),
+                                        );
+                                        0
+                                    }
+                                }
                             }
+                            "Attributes" => current_entry.is_dir = value.contains('D'),
+                            "Modified" => current_entry.modified = Some(value.trim().to_string()),
+                            _ => {}
                         }
                     }
-                    "Attributes" => current_entry.is_dir = value.contains('D'),
-                    "Modified" => current_entry.modified = Some(value.trim().to_string()),
-                    _ => {}
                 }
-            }
-        }
-        Ok(entries)
+                Ok::<Vec<ArchiveEntry>, anyhow::Error>(entries)
+            })
+            .await
     } else {
         if format != CompressionFormat::Zip {
             return Err(anyhow::anyhow!(
                 "Native browsing only supports ZIP format without 7z."
             ));
         }
-        let (data, _) = engine.read(archive_path).await?;
-        let cursor = std::io::Cursor::new(data);
-        let mut archive = ZipArchive::new(cursor)?;
-        let mut entries = Vec::new();
-        let archive_len = archive.len();
-        for i in 0..archive_len {
-            let file = if let Some(pwd) = password {
-                archive.by_index_decrypt(i, pwd.as_bytes())?
-            } else {
-                archive.by_index(i)?
-            };
-            entries.push(ArchiveEntry {
-                path: file.name().to_string(),
-                is_dir: file.is_dir(),
-                size: file.size(),
-                modified: None,
-            });
-        }
-        Ok(entries)
+        manager
+            .run_with_permit(TaskPriority::Low, || async move {
+                let password = password.map(str::to_owned);
+                let (local_archive, _guard) =
+                    copy_vfs_file_to_local_temp(engine, archive_path, "archive-browser", "list")
+                        .await?;
+                tokio::task::spawn_blocking(move || {
+                    let file = File::open(&local_archive)?;
+                    let mut archive = ZipArchive::new(file)?;
+                    let mut entries = Vec::new();
+                    let archive_len = archive.len();
+                    for i in 0..archive_len {
+                        let file = if let Some(password) = password.as_deref() {
+                            archive.by_index_decrypt(i, password.as_bytes())?
+                        } else {
+                            archive.by_index(i)?
+                        };
+                        entries.push(ArchiveEntry {
+                            path: file.name().to_string(),
+                            is_dir: file.is_dir(),
+                            size: file.size(),
+                            modified: None,
+                        });
+                    }
+                    Ok::<Vec<ArchiveEntry>, anyhow::Error>(entries)
+                })
+                .await?
+            })
+            .await
     }
 }
 /// Browse archive content without extraction
@@ -820,6 +931,12 @@ pub async fn extract_archive_file(
 ) -> Result<Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>, anyhow::Error> {
     let cfg = crate::config::get_vfs_hub_config().await;
     let fc = cfg.get_file_compress();
+    let info = engine.stat(archive_path).await?;
+    if info.size > max_archive_file_size_bytes(&fc) {
+        return Err(anyhow::anyhow!(
+            "Archive extract aborted: archive size exceeds limit"
+        ));
+    }
     let format = CompressionFormat::from_path(archive_path)
         .ok_or_else(|| anyhow::anyhow!("Unsupported format"))?;
     let exe_path = fc.get_exe_7zip_path();
@@ -830,6 +947,11 @@ pub async fn extract_archive_file(
                 "7z format requires 7z executable to be configured."
             ));
         }
+        let manager = yh_config_infra::config_require_manager!(
+            get_global_manager(),
+            "external_process_manager"
+        );
+        let permit = manager.acquire_permit(TaskPriority::Normal).await?;
         let (stream, _) = engine.read_stream(archive_path).await?;
         let mut child = Command::new(if exe_path.is_empty() { "7z" } else { exe_path })
             .arg("e")
@@ -855,24 +977,58 @@ pub async fn extract_archive_file(
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
         spawn_process_stdin_pump("extract_archive_file", stream, stdin, Some(child));
-        Ok(Box::pin(stdout) as Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>)
+        Ok(Box::pin(PermitBoundAsyncRead {
+            inner: stdout,
+            _permit: permit,
+        })
+            as Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>)
     } else {
         if format != CompressionFormat::Zip {
             return Err(anyhow::anyhow!(
                 "Native extraction only supports ZIP format without 7z."
             ));
         }
-        let (data, _) = engine.read(archive_path).await?;
-        let cursor = std::io::Cursor::new(data);
-        let mut archive = ZipArchive::new(cursor)?;
-        let mut file = if let Some(pwd) = password {
-            archive.by_name_decrypt(file_in_archive, pwd.as_bytes())?
-        } else {
-            archive.by_name(file_in_archive)?
-        };
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
-        Ok(Box::pin(std::io::Cursor::new(buffer))
+        let manager = yh_config_infra::config_require_manager!(
+            get_global_manager(),
+            "external_process_manager"
+        );
+        let max_extract_size = max_extract_output_bytes(&fc);
+        let (local_archive, archive_guard) =
+            copy_vfs_file_to_local_temp(engine, archive_path, "archive-extract", "archive").await?;
+        let (local_entry, entry_guard) = create_temp_file("archive-extract", "entry").await?;
+        let reader_path = local_entry.clone();
+        let target_name = file_in_archive.to_string();
+        let password = password.map(str::to_owned);
+        manager
+            .run_with_permit(TaskPriority::Low, || async move {
+                let local_archive = local_archive.clone();
+                let local_entry = local_entry.clone();
+                tokio::task::spawn_blocking(move || {
+                    let archive_file = File::open(&local_archive)?;
+                    let mut archive = ZipArchive::new(archive_file)?;
+                    let mut file = if let Some(password) = password.as_deref() {
+                        archive.by_name_decrypt(target_name.as_str(), password.as_bytes())?
+                    } else {
+                        archive.by_name(target_name.as_str())?
+                    };
+                    if file.size() > max_extract_size {
+                        return Err(anyhow::anyhow!(
+                            "Extraction failed: output size exceeds limit"
+                        ));
+                    }
+                    let mut output = File::create(&local_entry)?;
+                    std::io::copy(&mut file, &mut output)?;
+                    Ok::<(), anyhow::Error>(())
+                })
+                .await?
+            })
+            .await?;
+        let reader = fs::File::open(&reader_path).await?;
+        Ok(Box::pin(TempFileAsyncRead {
+            inner: reader,
+            _archive_guard: archive_guard,
+            _entry_guard: entry_guard,
+        })
             as Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>)
     }
 }
