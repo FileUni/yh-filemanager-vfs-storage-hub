@@ -943,8 +943,13 @@ impl VfsWalManager {
                 .map_err(|e| e.to_string());
         }
         if engine.exists(path).await.map_err(|e| e.to_string())? {
-            let _ = engine.delete(path).await.map_err(|e| e.to_string())?;
-            return Ok(());
+            let physical_path = Self::to_physical_user_path(engine.user_id.as_ref(), path);
+            engine
+                .pool
+                .delete(&physical_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            engine.cache.invalidate_parent_ls(path).await;
         }
         engine
             .index_service
@@ -1029,8 +1034,12 @@ impl VfsWalManager {
             return self.sync_index_for_path(engine, path).await;
         }
         if !engine.exists(path).await.map_err(|e| e.to_string())? {
-            let _ = engine.create_dir(path).await.map_err(|e| e.to_string())?;
-            return Ok(());
+            let physical_path = Self::to_physical_user_path(engine.user_id.as_ref(), path);
+            engine
+                .pool
+                .create_dir(&physical_path)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         self.sync_index_for_path(engine, path).await
     }
