@@ -15,7 +15,7 @@ impl FileIndexService {
     /// Insert or update file entry
     pub async fn add_or_update_entry(
         &self,
-        entry: file_index::ActiveModel,
+        mut entry: file_index::ActiveModel,
     ) -> Result<file_index::Model, DbErr> {
         let user_id = match &entry.user_id {
             ActiveValue::Set(value) | ActiveValue::Unchanged(value) => value.clone(),
@@ -34,50 +34,64 @@ impl FileIndexService {
             }
         };
 
-        file_index::Entity::insert(entry)
-            .on_conflict(
-                sea_orm::sea_query::OnConflict::columns(vec![
-                    file_index::Column::UserId,
-                    file_index::Column::Path,
-                ])
-                .update_columns(vec![
-                    file_index::Column::ParentPath,
-                    file_index::Column::Name,
-                    file_index::Column::IsDir,
-                    file_index::Column::StorageId,
-                    file_index::Column::BackendType,
-                    file_index::Column::BackendKey,
-                    file_index::Column::Size,
-                    file_index::Column::PhysicalSize,
-                    file_index::Column::ProtectedMeta,
-                    file_index::Column::Etag,
-                    file_index::Column::FileUpdatedAt,
-                    file_index::Column::RowUpdatedAt,
-                    file_index::Column::RowDeletedAt,
-                    file_index::Column::FileTrashedAt,
-                    file_index::Column::OriginalPath,
-                    //favorite_color is intentionally excluded to preserve user metadata during physical sync
-                ])
-                .value(
-                    file_index::Column::RowDeletedAt,
-                    Option::<chrono::NaiveDateTime>::None,
-                )
-                .value(
-                    file_index::Column::FileTrashedAt,
-                    Option::<chrono::NaiveDateTime>::None,
-                )
-                .value(file_index::Column::OriginalPath, Option::<String>::None)
-                .to_owned(),
-            )
-            .exec(&*self.db)
-            .await?;
+        // Keep restored entries out of deleted/trash state during both insert and conflict update
+        // so restored entries become visible again.
+        entry.row_deleted_at = Set(None);
+        entry.file_trashed_at = Set(None);
+        entry.original_path = Set(None);
 
-        file_index::Entity::find()
-            .filter(file_index::Column::UserId.eq(user_id))
-            .filter(file_index::Column::Path.eq(path))
+        if let Some(existing) = file_index::Entity::find()
+            .filter(file_index::Column::UserId.eq(user_id.as_str()))
+            .filter(file_index::Column::Path.eq(path.as_str()))
             .one(&*self.db)
             .await?
-            .ok_or_else(|| DbErr::RecordNotFound("Failed to find inserted item".to_string()))
+        {
+            let mut active: file_index::ActiveModel = existing.into();
+
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.parent_path {
+                active.parent_path = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.name {
+                active.name = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.is_dir {
+                active.is_dir = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.storage_id {
+                active.storage_id = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.backend_type {
+                active.backend_type = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.backend_key {
+                active.backend_key = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.size {
+                active.size = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.physical_size {
+                active.physical_size = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.protected_meta {
+                active.protected_meta = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.etag {
+                active.etag = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.file_updated_at {
+                active.file_updated_at = Set(value);
+            }
+            if let ActiveValue::Set(value) | ActiveValue::Unchanged(value) = entry.row_updated_at {
+                active.row_updated_at = Set(value);
+            }
+
+            active.row_deleted_at = Set(None);
+            active.file_trashed_at = Set(None);
+            active.original_path = Set(None);
+            return active.update(&*self.db).await;
+        }
+
+        entry.insert(&*self.db).await
     }
     /// High-level wrapper: upsert file index
     pub async fn upsert_file(
@@ -1293,10 +1307,13 @@ impl FileIndexService {
     pub async fn upsert_directory_chunk_txn(
         &self,
         txn: &DatabaseTransaction,
-        chunk: Vec<file_index::ActiveModel>,
+        mut chunk: Vec<file_index::ActiveModel>,
     ) -> Result<(), DbErr> {
         if chunk.is_empty() {
             return Ok(());
+        }
+        for item in &mut chunk {
+            item.row_deleted_at = Set(None);
         }
         file_index::Entity::insert_many(chunk)
             .on_conflict(
@@ -1311,11 +1328,8 @@ impl FileIndexService {
                     file_index::Column::Size,
                     file_index::Column::FileUpdatedAt,
                     file_index::Column::RowUpdatedAt,
-                ])
-                .value(
                     file_index::Column::RowDeletedAt,
-                    Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
-                )
+                ])
                 .to_owned(),
             )
             .exec(txn)
