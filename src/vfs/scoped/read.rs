@@ -7,12 +7,15 @@ use crate::vfs::{
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures::Stream;
+use futures::StreamExt;
 use futures::stream::BoxStream;
 use std::cmp::Ordering;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_util::io::ReaderStream;
 
 static INDEX_SYNC_SEMAPHORE: once_cell::sync::OnceCell<Arc<Semaphore>> =
     once_cell::sync::OnceCell::new();
@@ -848,6 +851,27 @@ impl ScopedVfsStorageEngine {
         VfsFileInfo,
     )> {
         let normalized = self.validate_file_operation(path).await?;
+        if self.is_temp_path(&normalized) {
+            let info = self.stat_impl(&normalized).await?;
+            let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
+            let local_path = self.temp_manager.get_user_temp_dir(&self.user_id).join(rel);
+            let mut file = tokio::fs::File::open(local_path).await.map_err(VfsError::Io)?;
+            if range.start > 0 {
+                file.seek(std::io::SeekFrom::Start(range.start))
+                    .await
+                    .map_err(VfsError::Io)?;
+            }
+            let remaining = info.size.saturating_sub(range.start);
+            let length = if range.end == u64::MAX {
+                remaining
+            } else {
+                remaining.min(range.end.saturating_sub(range.start))
+            };
+            let stream: Pin<Box<dyn Stream<Item = VfsResult<Bytes>> + Send + Sync>> = Box::pin(
+                ReaderStream::new(file.take(length)).map(|item| item.map_err(VfsError::Io)),
+            );
+            return Ok((stream, info));
+        }
         if let Some(plan) = self.get_protected_plan(&normalized).await? {
             return self
                 .protected_read_stream_range_impl(&normalized, range, &plan)
@@ -883,6 +907,26 @@ impl ScopedVfsStorageEngine {
         end: u64,
     ) -> VfsResult<(Bytes, VfsFileInfo)> {
         let normalized = self.validate_file_operation(path).await?;
+        if self.is_temp_path(&normalized) {
+            let info = self.stat_impl(&normalized).await?;
+            let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
+            let local_path = self.temp_manager.get_user_temp_dir(&self.user_id).join(rel);
+            let mut file = tokio::fs::File::open(local_path).await.map_err(VfsError::Io)?;
+            if start > 0 {
+                file.seek(std::io::SeekFrom::Start(start))
+                    .await
+                    .map_err(VfsError::Io)?;
+            }
+            let length = if end <= start {
+                0
+            } else {
+                info.size.saturating_sub(start).min(end - start)
+            };
+            let mut buffer = Vec::with_capacity(length as usize);
+            let mut limited = file.take(length);
+            limited.read_to_end(&mut buffer).await.map_err(VfsError::Io)?;
+            return Ok((Bytes::from(buffer), info));
+        }
         if let Some(plan) = self.get_protected_plan(&normalized).await? {
             return self
                 .protected_read_range_impl(&normalized, start, end, &plan)
