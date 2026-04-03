@@ -198,7 +198,7 @@ pub struct VfsFileCompressConfig {
     #[config(
         desc_zh = "启用文件压缩和解压功能，支持在线创建压缩包和解压归档。低性能设备建议设为false以节省内存和CPU",
         desc_en = "Enable file compression and decompression feature, supports online creating archives and extracting. Low-performance devices: recommend false to save memory and CPU",
-        example = "true"
+        example = "false"
     )]
     pub enable: Option<bool>,
     #[config(
@@ -300,7 +300,7 @@ pub struct VfsFileCompressConfig {
     #[config(
         desc_zh = "启用归档浏览器，无需解压即可浏览归档内文件列表",
         desc_en = "Enable archive browser to view file list inside archive without extraction",
-        example = "true"
+        example = "false"
     )]
     pub enable_archive_browser: Option<bool>,
 }
@@ -1375,7 +1375,7 @@ pub struct VfsThumbnailVideoConfig {
     #[config(
         desc_zh = "是否启用视频缩略图",
         desc_en = "Enable video thumbnails",
-        example = "true"
+        example = "false"
     )]
     pub enabled: Option<bool>,
     #[config(
@@ -1421,7 +1421,7 @@ pub struct VfsThumbnailDocConfig {
     #[config(
         desc_zh = "是否启用此类文件的缩略图",
         desc_en = "Enable thumbnails for this type",
-        example = "true"
+        example = "false"
     )]
     pub enabled: Option<bool>,
     #[config(
