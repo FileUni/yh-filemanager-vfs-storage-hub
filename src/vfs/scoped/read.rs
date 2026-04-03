@@ -855,7 +855,9 @@ impl ScopedVfsStorageEngine {
             let info = self.stat_impl(&normalized).await?;
             let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
             let local_path = self.temp_manager.get_user_temp_dir(&self.user_id).join(rel);
-            let mut file = tokio::fs::File::open(local_path).await.map_err(VfsError::Io)?;
+            let mut file = tokio::fs::File::open(local_path)
+                .await
+                .map_err(VfsError::Io)?;
             if range.start > 0 {
                 file.seek(std::io::SeekFrom::Start(range.start))
                     .await
@@ -911,7 +913,9 @@ impl ScopedVfsStorageEngine {
             let info = self.stat_impl(&normalized).await?;
             let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
             let local_path = self.temp_manager.get_user_temp_dir(&self.user_id).join(rel);
-            let mut file = tokio::fs::File::open(local_path).await.map_err(VfsError::Io)?;
+            let mut file = tokio::fs::File::open(local_path)
+                .await
+                .map_err(VfsError::Io)?;
             if start > 0 {
                 file.seek(std::io::SeekFrom::Start(start))
                     .await
@@ -924,7 +928,10 @@ impl ScopedVfsStorageEngine {
             };
             let mut buffer = Vec::with_capacity(length as usize);
             let mut limited = file.take(length);
-            limited.read_to_end(&mut buffer).await.map_err(VfsError::Io)?;
+            limited
+                .read_to_end(&mut buffer)
+                .await
+                .map_err(VfsError::Io)?;
             return Ok((Bytes::from(buffer), info));
         }
         if let Some(plan) = self.get_protected_plan(&normalized).await? {
