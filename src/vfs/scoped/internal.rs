@@ -417,6 +417,27 @@ impl ScopedVfsStorageEngine {
         let mode = mode_raw
             .parse::<crate::vfs::protected::ProtectedMode>()
             .map_err(|_| VfsError::Internal(format!("Unsupported protected mode: {}", mode_raw)))?;
+
+        // License check for encryption
+        if mode == crate::vfs::protected::ProtectedMode::Encrypt {
+            let authorized = if let Some(config_arc) =
+                yh_config_infra::core_crate_config::get_core_config()
+            {
+                let cfg = config_arc.read().await;
+                cfg.license
+                    .is_feature_authorized_in_config_cached("storage_encryption")
+                    .await
+            } else {
+                false
+            };
+            if !authorized {
+                return Err(VfsError::Internal(
+                    "Storage encryption is disabled. Valid license and 'enabled' flag required."
+                        .to_string(),
+                ));
+            }
+        }
+
         let config = crate::config::get_vfs_hub_config().await;
         let protected_cfg = config.get_protected_storage();
         let global_mode = protected_cfg.get_global_mode().trim().to_ascii_lowercase();
