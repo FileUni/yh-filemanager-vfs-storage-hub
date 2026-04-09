@@ -799,7 +799,7 @@ pub async fn list_archive_contents(
         ));
     }
     let info = engine.stat(archive_path).await?;
-    if info.size > max_archive_file_size_bytes(&fc) {
+    if info.size > max_archive_file_size_bytes(fc) {
         return Err(anyhow::anyhow!(
             "Archive browsing aborted: archive size exceeds limit"
         ));
@@ -932,7 +932,7 @@ pub async fn extract_archive_file(
     let cfg = crate::config::get_vfs_hub_config().await;
     let fc = cfg.get_file_compress();
     let info = engine.stat(archive_path).await?;
-    if info.size > max_archive_file_size_bytes(&fc) {
+    if info.size > max_archive_file_size_bytes(fc) {
         return Err(anyhow::anyhow!(
             "Archive extract aborted: archive size exceeds limit"
         ));
@@ -992,7 +992,7 @@ pub async fn extract_archive_file(
             get_global_manager(),
             "external_process_manager"
         );
-        let max_extract_size = max_extract_output_bytes(&fc);
+        let max_extract_size = max_extract_output_bytes(fc);
         let (local_archive, archive_guard) =
             copy_vfs_file_to_local_temp(engine, archive_path, "archive-extract", "archive").await?;
         let (local_entry, entry_guard) = create_temp_file("archive-extract", "entry").await?;
