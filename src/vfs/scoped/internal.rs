@@ -420,16 +420,15 @@ impl ScopedVfsStorageEngine {
 
         // License check for encryption
         if mode == crate::vfs::protected::ProtectedMode::Encrypt {
-            let authorized = if let Some(config_arc) =
-                yh_config_infra::core_crate_config::get_core_config()
-            {
-                let cfg = config_arc.read().await;
-                cfg.license
-                    .is_feature_authorized_in_config_cached("storage_encryption")
-                    .await
-            } else {
-                false
-            };
+            let authorized =
+                if let Some(config_arc) = yh_config_infra::core_crate_config::get_core_config() {
+                    let cfg = config_arc.read().await;
+                    cfg.license
+                        .is_feature_authorized_in_config_cached("storage_encryption")
+                        .await
+                } else {
+                    false
+                };
             if !authorized {
                 return Err(VfsError::Internal(
                     "Storage encryption is disabled. Valid license and 'enabled' flag required."
