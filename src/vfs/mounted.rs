@@ -68,6 +68,9 @@ fn normalize_dir_path(path: &str) -> String {
 }
 
 fn is_path_within(path: &str, dir: &str) -> bool {
+    if dir == "/" {
+        return true;
+    }
     path == dir
         || path
             .strip_prefix(dir)
@@ -238,7 +241,7 @@ impl MountedUserStorage {
     fn mount_root_info(runtime: &MountRuntime) -> VfsFileInfo {
         let path = runtime.snapshot.model.mount_dir.as_str();
         VfsFileInfo {
-            name: file_name(path).into(),
+            name: if path == "/" { "/" } else { file_name(path) }.into(),
             path: path.into(),
             is_dir: true,
             size: 0,
@@ -289,7 +292,9 @@ impl MountedUserStorage {
         let normalized = normalize_dir_path(path);
         self.mounts.iter().find_map(|runtime| {
             let mount_dir = runtime.snapshot.model.mount_dir.as_str();
-            if normalized == mount_dir {
+            if mount_dir == "/" {
+                Some((runtime, normalized.clone()))
+            } else if normalized == mount_dir {
                 Some((runtime, "/".to_string()))
             } else {
                 normalized
