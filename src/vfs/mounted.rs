@@ -357,6 +357,45 @@ impl MountedUserStorage {
         Ok(entries)
     }
 
+    fn paginate_with_sort_in_memory(
+        mut entries: Vec<VfsFileInfo>,
+        params: VfsPaginationParams<'_>,
+    ) -> (Vec<VfsFileInfo>, i64) {
+        if let Some(keyword) = params.keyword
+            && !keyword.is_empty()
+        {
+            let keyword_lower = keyword.to_lowercase();
+            entries.retain(|entry| {
+                entry.name.to_lowercase().contains(&keyword_lower)
+                    || entry.path.to_lowercase().contains(&keyword_lower)
+            });
+        }
+
+        let sort_field = params.sort_by.unwrap_or("name");
+        let is_desc = params.order.unwrap_or("asc") == "desc";
+        entries.sort_by(|left, right| {
+            let dir_cmp = right.is_dir.cmp(&left.is_dir);
+            if dir_cmp != std::cmp::Ordering::Equal {
+                return dir_cmp;
+            }
+            let cmp = match sort_field {
+                "size" => left.size.cmp(&right.size),
+                "modified" => left.modified.cmp(&right.modified),
+                _ => left.name.cmp(&right.name),
+            };
+            if is_desc { cmp.reverse() } else { cmp }
+        });
+
+        let total = entries.len() as i64;
+        let offset = ((params.page - 1) * params.page_size).max(0) as usize;
+        let files = entries
+            .into_iter()
+            .skip(offset)
+            .take(params.page_size.max(0) as usize)
+            .collect();
+        (files, total)
+    }
+
     async fn generic_move_or_copy(
         &self,
         src: &str,
@@ -453,6 +492,33 @@ impl VfsStorage for MountedUserStorage {
                 .collect());
         }
         self.merge_local_listing(&normalized).await
+    }
+
+    async fn list_files_paginated(
+        &self,
+        parent_path: &str,
+        page: i64,
+        page_size: i64,
+    ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
+        let entries = self.list(parent_path).await?;
+        let total = entries.len() as i64;
+        let offset = ((page - 1) * page_size).max(0) as usize;
+        let files = entries
+            .into_iter()
+            .skip(offset)
+            .take(page_size.max(0) as usize)
+            .collect();
+        Ok((files, total))
+    }
+
+    async fn list_files_paginated_with_sort(
+        &self,
+        parent_path: &str,
+        params: VfsPaginationParams<'_>,
+    ) -> VfsResult<(Vec<VfsFileInfo>, i64)> {
+        let entries = self.list(parent_path).await?;
+        let (files, total) = Self::paginate_with_sort_in_memory(entries, params);
+        Ok((files, total))
     }
 
     fn list_stream(&self, path: &str) -> BoxStream<'static, VfsResult<VfsFileInfo>> {

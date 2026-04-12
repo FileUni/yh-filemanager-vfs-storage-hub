@@ -103,6 +103,21 @@ impl RemoteMountService {
             .collect())
     }
 
+    pub async fn list_all_mounts(db: &DatabaseConnection) -> VfsCommonResult<Vec<RemoteMountSnapshot>> {
+        let rows = remote_mount::Entity::find()
+            .order_by_asc(remote_mount::Column::UserId)
+            .order_by_asc(remote_mount::Column::CreatedAt)
+            .all(db)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|model| RemoteMountSnapshot {
+                options: Self::decode_options(&model.options_json),
+                model,
+            })
+            .collect())
+    }
+
     pub async fn count_user_mounts(db: &DatabaseConnection, user_id: &str) -> VfsCommonResult<u64> {
         remote_mount::Entity::find()
             .filter(remote_mount::Column::UserId.eq(user_id))
