@@ -1197,7 +1197,7 @@ impl VfsStorage for MountedUserStorage {
             "delete_source": delete_source
         });
         let task_id = task_handler
-            .create_task(self.user_id.as_ref(), "compress", payload)
+            .create_task(self.user_id.as_ref(), "batch_compress", payload)
             .await
             .map_err(VfsError::Internal)?;
         let storage: Arc<dyn VfsStorage> = Arc::new(self.clone());
@@ -1223,19 +1223,65 @@ impl VfsStorage for MountedUserStorage {
                     return Err(format!("Failed to create temp dir: {}", err));
                 }
                 let mut copied_count = 0usize;
+                let mut failed_count = 0usize;
+                let mut prepared_paths = Vec::new();
                 let total_files = paths.len();
                 for (idx, path) in paths.iter().enumerate() {
                     let Some(name) = std::path::Path::new(path).file_name() else {
+                        failed_count += 1;
+                        let error_msg = "Path is missing a file name".to_string();
+                        let _ = handler
+                            .log_batch_operation(crate::vfs::task::BatchOperationLog {
+                                task_id,
+                                user_id: &user_id,
+                                operation_type: "compress",
+                                file_path: path,
+                                target_path: Some(&archive_name),
+                                status: "failed",
+                                error_message: Some(&error_msg),
+                                file_size: None,
+                                execution_time_ms: None,
+                            })
+                            .await;
                         continue;
                     };
                     let target = format!("{}/{}", temp_dir, name.to_string_lossy());
-                    if storage.copy_file(path, &target).await.is_ok() {
-                        copied_count += 1;
+                    match storage.copy_file(path, &target).await {
+                        Ok(_) => {
+                            copied_count += 1;
+                            prepared_paths.push(path.to_string());
+                        }
+                        Err(err) => {
+                            failed_count += 1;
+                            let error_msg = err.to_string();
+                            let _ = handler
+                                .log_batch_operation(crate::vfs::task::BatchOperationLog {
+                                    task_id,
+                                    user_id: &user_id,
+                                    operation_type: "compress",
+                                    file_path: path,
+                                    target_path: Some(&archive_name),
+                                    status: "failed",
+                                    error_message: Some(&error_msg),
+                                    file_size: None,
+                                    execution_time_ms: None,
+                                })
+                                .await;
+                        }
                     }
-                    let progress = ((idx + 1) as f32 / total_files.max(1) as f32 * 30.0) as i32;
-                    let _ = handler
-                        .update_progress(task_id, progress, Some("preparing"))
-                        .await;
+                    if (idx + 1).is_multiple_of(5) || idx + 1 == total_files {
+                        let progress = ((idx + 1) as f32 / total_files.max(1) as f32 * 30.0) as i32;
+                        let message = format!(
+                            "Prepared {}/{} (Ready: {}, Failed: {})",
+                            idx + 1,
+                            total_files,
+                            copied_count,
+                            failed_count
+                        );
+                        let _ = handler
+                            .update_task(task_id, progress, Some("preparing"), Some(&message))
+                            .await;
+                    }
                 }
                 if copied_count == 0 {
                     let _ = storage.delete(&temp_dir).await;
@@ -1255,6 +1301,21 @@ impl VfsStorage for MountedUserStorage {
                 .await
                 {
                     Ok(_) => {
+                        for path in &prepared_paths {
+                            let _ = handler
+                                .log_batch_operation(crate::vfs::task::BatchOperationLog {
+                                    task_id,
+                                    user_id: &user_id,
+                                    operation_type: "compress",
+                                    file_path: path,
+                                    target_path: Some(&archive_name),
+                                    status: "success",
+                                    error_message: None,
+                                    file_size: None,
+                                    execution_time_ms: None,
+                                })
+                                .await;
+                        }
                         let _ = storage.delete(&temp_dir).await;
                         if delete_source {
                             for path in &paths {
@@ -1264,8 +1325,24 @@ impl VfsStorage for MountedUserStorage {
                         Ok(())
                     }
                     Err(err) => {
+                        let error_msg = format!("Compression failed: {}", err);
+                        for path in &prepared_paths {
+                            let _ = handler
+                                .log_batch_operation(crate::vfs::task::BatchOperationLog {
+                                    task_id,
+                                    user_id: &user_id,
+                                    operation_type: "compress",
+                                    file_path: path,
+                                    target_path: Some(&archive_name),
+                                    status: "failed",
+                                    error_message: Some(&error_msg),
+                                    file_size: None,
+                                    execution_time_ms: None,
+                                })
+                                .await;
+                        }
                         let _ = storage.delete(&temp_dir).await;
-                        Err(format!("Compression failed: {}", err))
+                        Err(error_msg)
                     }
                 }
             };
@@ -1310,10 +1387,11 @@ impl VfsStorage for MountedUserStorage {
         let payload = serde_json::json!({
             "paths": paths,
             "output_dir": output_dir,
+            "options": options,
             "delete_archive": delete_archive
         });
         let task_id = task_handler
-            .create_task(self.user_id.as_ref(), "decompress", payload)
+            .create_task(self.user_id.as_ref(), "batch_decompress", payload)
             .await
             .map_err(VfsError::Internal)?;
         let storage: Arc<dyn VfsStorage> = Arc::new(self.clone());
@@ -1334,6 +1412,7 @@ impl VfsStorage for MountedUserStorage {
             };
             let task_future = async {
                 let total = paths.len();
+                let mut success_count = 0usize;
                 let mut failed_count = 0usize;
                 for (idx, path) in paths.iter().enumerate() {
                     match crate::utils::decompress_task(
@@ -1346,9 +1425,38 @@ impl VfsStorage for MountedUserStorage {
                     )
                     .await
                     {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            success_count += 1;
+                            let _ = handler
+                                .log_batch_operation(crate::vfs::task::BatchOperationLog {
+                                    task_id,
+                                    user_id: &user_id,
+                                    operation_type: "decompress",
+                                    file_path: path,
+                                    target_path: Some(&output_dir),
+                                    status: "success",
+                                    error_message: None,
+                                    file_size: None,
+                                    execution_time_ms: None,
+                                })
+                                .await;
+                        }
                         Err(err) => {
                             failed_count += 1;
+                            let error_msg = err.to_string();
+                            let _ = handler
+                                .log_batch_operation(crate::vfs::task::BatchOperationLog {
+                                    task_id,
+                                    user_id: &user_id,
+                                    operation_type: "decompress",
+                                    file_path: path,
+                                    target_path: Some(&output_dir),
+                                    status: "failed",
+                                    error_message: Some(&error_msg),
+                                    file_size: None,
+                                    execution_time_ms: None,
+                                })
+                                .await;
                             yh_console_log::yhlog(
                                 "error",
                                 &format!(
@@ -1358,12 +1466,19 @@ impl VfsStorage for MountedUserStorage {
                             );
                         }
                     }
-                    let progress = ((idx + 1) as f32 / total.max(1) as f32 * 100.0) as i32;
-                    let message =
-                        format!("Processed {}/{} (Failed: {})", idx + 1, total, failed_count);
-                    let _ = handler
-                        .update_task(task_id, progress, Some("running"), Some(&message))
-                        .await;
+                    if (idx + 1).is_multiple_of(5) || idx + 1 == total {
+                        let progress = ((idx + 1) as f32 / total.max(1) as f32 * 100.0) as i32;
+                        let message = format!(
+                            "Processed {}/{} (Success: {}, Failed: {})",
+                            idx + 1,
+                            total,
+                            success_count,
+                            failed_count
+                        );
+                        let _ = handler
+                            .update_task(task_id, progress, Some("running"), Some(&message))
+                            .await;
+                    }
                 }
                 failed_count
             };

@@ -1,5 +1,6 @@
 //! Write-ahead log / operation journal.
 use crate::business::services::{UserSettingsService, UserSettingsSnapshot};
+use crate::business::services::user_settings::UserSettingsUpdatePatch;
 use crate::vfs::scoped::ScopedVfsStorageEngine;
 use crate::vfs::{VfsFileInfo, VfsStorage, VfsStorageHub};
 use sea_orm::sea_query::{Alias, ColumnDef, Expr, Index, Table};
@@ -148,6 +149,7 @@ pub struct WalRecoveryResult {
     pub recovered: usize,
     pub failed: usize,
     pub errors: Vec<String>,
+    pub affected_users: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,6 +411,7 @@ impl VfsWalManager {
                 recovered: 0,
                 failed: 0,
                 errors: vec![],
+                affected_users: vec![],
             });
         }
 
@@ -426,6 +429,7 @@ impl VfsWalManager {
             recovered: 0,
             failed: 0,
             errors: vec![],
+            affected_users: affected_users.iter().map(|value| (*value).to_string()).collect(),
         };
         for row in rows {
             match self.recover_one(&row, &hub).await {
@@ -436,6 +440,21 @@ impl VfsWalManager {
                 }
             }
         }
+
+        if result.failed == 0 {
+            for user_id in &result.affected_users {
+                if let Err(err) = self.recalibrate_storage_used(hub.as_ref(), user_id).await {
+                    yh_console_log::yhlog(
+                        "warn",
+                        &format!(
+                            "WAL recovery storage recalibration skipped for user_id={} err={}",
+                            user_id, err
+                        ),
+                    );
+                }
+            }
+        }
+
         Ok(result)
     }
 
@@ -600,8 +619,12 @@ impl VfsWalManager {
                 protected,
                 ..
             } => {
-                self.recover_write(&engine, &path, size, protected.as_ref(), status)
-                    .await
+                if row.operation_type.eq_ignore_ascii_case("COPY") {
+                    self.recover_copy(&engine, &path, status).await
+                } else {
+                    self.recover_write(&engine, &path, size, protected.as_ref(), status)
+                        .await
+                }
             }
             WalOperation::Delete { path } => self.recover_delete(&engine, &path, status).await,
             WalOperation::Move { src, dst } => self.recover_move(&engine, &src, &dst, status).await,
@@ -958,6 +981,30 @@ impl VfsWalManager {
             .map_err(|e| e.to_string())
     }
 
+    async fn recover_copy(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        path: &str,
+        status: WalStatus,
+    ) -> Result<(), String> {
+        if status.has_metadata_done() {
+            return Ok(());
+        }
+        if status.has_physical_done() {
+            return self.sync_index_for_path(engine, path).await;
+        }
+
+        if engine.exists(path).await.map_err(|e| e.to_string())? {
+            return self.sync_index_for_path(engine, path).await;
+        }
+
+        engine
+            .index_service
+            .delete_file(engine.user_id.as_ref(), path)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     async fn recover_move(
         &self,
         engine: &Arc<ScopedVfsStorageEngine>,
@@ -1184,6 +1231,38 @@ impl VfsWalManager {
                 trash_path, original_path
             )),
         }
+    }
+
+    async fn recalibrate_storage_used(
+        &self,
+        hub: &VfsStorageHub,
+        user_id: &str,
+    ) -> Result<(), String> {
+        let pool = hub
+            .route_for_user(self.db.as_ref(), user_id, "100")
+            .await
+            .map_err(|e| e.to_string())?;
+        let task_handler = hub.task_handler.as_ref().map(Arc::clone);
+        let engine = ScopedVfsStorageEngine::new(
+            Arc::clone(&self.db),
+            user_id.to_string(),
+            pool,
+            None,
+            task_handler,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        let total_used = engine.get_recursive_size("/").await.map_err(|e| e.to_string())?;
+        UserSettingsService::update_user_settings_patch(
+            &self.db,
+            user_id,
+            &UserSettingsUpdatePatch {
+                storage_used: Some(total_used),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())
     }
 }
 
