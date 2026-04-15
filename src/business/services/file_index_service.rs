@@ -735,6 +735,16 @@ impl FileIndexService {
     pub async fn delete_file(&self, user_id: &str, path: &str) -> Result<(), DbErr> {
         let prefix = format!("{}/", path);
         let txn = self.db.begin().await?;
+        let original_prefixes = file_index::Entity::find()
+            .filter(file_index::Column::UserId.eq(user_id))
+            .filter(file_index::Column::Path.eq(path))
+            .filter(file_index::Column::RowDeletedAt.is_null())
+            .all(&txn)
+            .await?
+            .into_iter()
+            .filter_map(|row| row.original_path)
+            .map(|original_path| format!("{}/", original_path.trim_end_matches('/')))
+            .collect::<Vec<_>>();
         file_index::Entity::delete_many()
             .filter(file_index::Column::UserId.eq(user_id))
             .filter(
@@ -744,6 +754,13 @@ impl FileIndexService {
             )
             .exec(&txn)
             .await?;
+        for original_prefix in original_prefixes {
+            file_index::Entity::delete_many()
+                .filter(file_index::Column::UserId.eq(user_id))
+                .filter(file_index::Column::OriginalPath.starts_with(original_prefix.as_str()))
+                .exec(&txn)
+                .await?;
+        }
         txn.commit().await?;
         Ok(())
     }
