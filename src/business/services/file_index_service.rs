@@ -687,70 +687,47 @@ impl FileIndexService {
         let now = chrono::Utc::now();
         let trash_prefix = format!("{}/", trash_path);
         let txn = self.db.begin().await?;
-        // Get top-level node name
-        let new_name = if let Some(name) = restored_path.split('/').next_back() {
-            name.to_string()
-        } else {
-            String::new()
-        };
-        let restored_parent = if let Some((parent, _)) = restored_path.rsplit_once('/') {
-            if parent.is_empty() {
-                "/".to_string()
-            } else {
-                parent.to_string()
-            }
-        } else {
-            "/".to_string()
-        };
-        // Update top-level node
-        file_index::Entity::update_many()
+        let mut rows = file_index::Entity::find()
             .filter(file_index::Column::UserId.eq(user_id))
-            .filter(file_index::Column::Path.eq(trash_path))
-            .col_expr(file_index::Column::Path, Expr::value(restored_path))
-            .col_expr(file_index::Column::Name, Expr::value(new_name))
-            .col_expr(file_index::Column::ParentPath, Expr::value(restored_parent))
-            .col_expr(
-                file_index::Column::FileTrashedAt,
-                Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
+            .filter(
+                file_index::Column::Path
+                    .eq(trash_path)
+                    .or(file_index::Column::Path.starts_with(trash_prefix.as_str())),
             )
-            .col_expr(
-                file_index::Column::OriginalPath,
-                Expr::value(Option::<String>::None),
-            )
-            .col_expr(file_index::Column::RowUpdatedAt, Expr::value(now))
-            .exec(&txn)
+            .all(&txn)
             .await?;
-        // Recursively process children
-        let condition = file_index::Column::UserId
-            .eq(user_id)
-            .and(file_index::Column::Path.like(format!("{}%", trash_prefix)));
-        file_index::Entity::update_many()
-            .filter(condition)
-            .col_expr(
-                file_index::Column::Path,
-                Expr::cust_with_exprs(
-                    "REPLACE(path, $1, $2)",
-                    vec![trash_path.into(), restored_path.into()],
-                ),
-            )
-            .col_expr(
-                file_index::Column::ParentPath,
-                Expr::cust_with_exprs(
-                    "REPLACE(parent_path, $1, $2)",
-                    vec![trash_path.into(), restored_path.into()],
-                ),
-            )
-            .col_expr(
-                file_index::Column::FileTrashedAt,
-                Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
-            )
-            .col_expr(
-                file_index::Column::OriginalPath,
-                Expr::value(Option::<String>::None),
-            )
-            .col_expr(file_index::Column::RowUpdatedAt, Expr::value(now))
-            .exec(&txn)
-            .await?;
+        rows.sort_by_key(|row| row.path.len());
+
+        for row in rows {
+            let target_path = if row.path == trash_path {
+                restored_path.to_string()
+            } else {
+                format!("{}{}", restored_path, &row.path[trash_path.len()..])
+            };
+            let target_name = if let Some(name) = target_path.split('/').next_back() {
+                name.to_string()
+            } else {
+                String::new()
+            };
+            let target_parent = if let Some((parent, _)) = target_path.rsplit_once('/') {
+                if parent.is_empty() {
+                    "/".to_string()
+                } else {
+                    parent.to_string()
+                }
+            } else {
+                "/".to_string()
+            };
+
+            let mut active: file_index::ActiveModel = row.into();
+            active.path = Set(target_path);
+            active.name = Set(target_name);
+            active.parent_path = Set(target_parent);
+            active.file_trashed_at = Set(None);
+            active.original_path = Set(None);
+            active.row_updated_at = Set(now.into());
+            active.update(&txn).await?;
+        }
         txn.commit().await?;
         Ok(())
     }

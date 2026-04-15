@@ -247,8 +247,7 @@ impl ScopedVfsStorageEngine {
             ));
         }
         let info = self.stat_impl(&normalized).await?;
-        let timestamp = chrono::Utc::now().timestamp();
-        let trash_path = format!("/.recycle_bin/{}_{}", timestamp, info.name);
+        let trash_path = format!("/.recycle_bin/{}_{}", uuid::Uuid::now_v7(), info.name);
         if let Some(plan) = self.get_protected_plan(&normalized).await?
             && plan.root == "/"
             && !self.is_hidden_storage_path(&normalized)

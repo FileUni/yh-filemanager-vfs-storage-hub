@@ -104,8 +104,16 @@ impl ScopedVfsStorageEngine {
         }
         self.flush_pending_write_cache_for_path(&normalized).await?;
         let info = self.stat_impl(&normalized).await?;
-        // Record size before deletion for quota update
-        let size = info.size as i64;
+        let reclaimed_size = if info.is_dir {
+            self.list_recursive_impl(&normalized)
+                .await?
+                .into_iter()
+                .filter(|entry| !entry.is_dir)
+                .map(|entry| entry.size as i64)
+                .sum()
+        } else {
+            info.size as i64
+        };
         let skip_quota = self.is_thumbnail_cache_path(&normalized);
         let wal_id = self
             .begin_wal(
@@ -133,11 +141,13 @@ impl ScopedVfsStorageEngine {
             self.complete_wal(wal_id).await;
             return Ok(info);
         }
-        match self
-            .pool
-            .delete(&self.get_physical_path(&normalized).await?)
-            .await
-        {
+        let physical_path = self.get_physical_path(&normalized).await?;
+        let delete_result = if info.is_dir {
+            self.pool.remove_tree(&physical_path).await.map(|_| info.clone())
+        } else {
+            self.pool.delete(&physical_path).await
+        };
+        match delete_result {
             Ok(_) => {
                 self.mark_wal_physical_done(wal_id).await;
                 let mut metadata_complete = true;
@@ -166,8 +176,8 @@ impl ScopedVfsStorageEngine {
                 }
                 self.cache.invalidate_parent_ls(&normalized).await;
                 // Update quota (decrease)
-                if !skip_quota {
-                    let _ = self.update_quota(-size).await;
+                if !skip_quota && reclaimed_size != 0 {
+                    let _ = self.update_quota(-reclaimed_size).await;
                 }
                 self.journal_log("DELETE", &normalized, None, true, None)
                     .await;

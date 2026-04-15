@@ -235,6 +235,36 @@ impl VfsPool {
             read_cache.remove(path).await;
         }
     }
+
+    pub async fn remove_tree(&self, path: &str) -> VfsResult<()> {
+        let normalized = normalize_entry_path(path).to_string();
+        let list_path = if normalized == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", normalized.trim_end_matches('/'))
+        };
+        let mut entries = self
+            .list_recursive(&list_path)
+            .await?
+            .into_iter()
+            .filter(|entry| {
+                let entry_path = normalize_entry_path(entry.path.as_ref());
+                entry_path != normalized
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.path.len());
+        for entry in entries.into_iter().rev() {
+            let mut delete_path = entry.path.to_string();
+            if entry.is_dir && !delete_path.ends_with('/') {
+                delete_path.push('/');
+            }
+            self.invalidate_read_cache(delete_path.as_str()).await;
+            self.primary.delete(delete_path.as_str()).await?;
+        }
+        self.invalidate_read_cache(&normalized).await;
+        self.primary.delete(&list_path).await?;
+        Ok(())
+    }
 }
 #[async_trait]
 impl VfsStorage for VfsPool {
@@ -278,7 +308,11 @@ impl VfsStorage for VfsPool {
     async fn delete(&self, path: &str) -> VfsResult<VfsFileInfo> {
         let info = self.stat(path).await?;
         self.invalidate_read_cache(path).await;
-        self.primary.delete(path).await?;
+        if info.is_dir {
+            self.remove_tree(path).await?;
+        } else {
+            self.primary.delete(path).await?;
+        }
         Ok(info)
     }
     async fn list(&self, path: &str) -> VfsResult<Vec<VfsFileInfo>> {
