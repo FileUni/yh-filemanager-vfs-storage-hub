@@ -9,6 +9,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use std::pin::Pin;
+use crate::vfs::wal::{WalCopyPlan, WalCopyPlanEntry, WalOperation};
 
 fn file_info_from_index(row: &file_index::Model) -> VfsFileInfo {
     VfsFileInfo {
@@ -611,14 +612,49 @@ impl ScopedVfsStorageEngine {
         if total_size > 0 {
             self.check_quota(total_size).await?;
         }
+        let copy_plan = self.build_protected_copy_plan(src, dst, &rows, plan).await?;
+        let wal_id = self
+            .begin_wal(
+                WalOperation::Copy {
+                    src: src.to_string(),
+                    dst: dst.to_string(),
+                    protected: Some(copy_plan.clone()),
+                },
+                self.should_skip_wal_for_path(src).await,
+            )
+            .await?;
         let mut created_paths = Vec::new();
         let mut created_backend_keys = Vec::new();
-        for row in &rows {
-            let new_path = map_subtree_path(src, dst, &row.path);
-            let info = file_info_from_index_with_path(row, &new_path);
+        for (row, plan_entry) in rows.iter().zip(copy_plan.entries.iter()) {
+            if row.is_dir {
+                continue;
+            }
+            let src_backend = row.backend_key.as_deref().ok_or_else(|| {
+                VfsError::Internal("Protected source backend key is missing".to_string())
+            })?;
+            let dst_backend = plan_entry.dst_backend_key.as_deref().ok_or_else(|| {
+                VfsError::Internal("Protected copy plan is missing dst backend key".to_string())
+            })?;
+            if let Err(err) = self.pool.copy_file(src_backend, dst_backend).await {
+                rollback_protected_copy_partial(self, &created_paths, &created_backend_keys).await;
+                self.fail_wal(
+                    wal_id,
+                    &format!(
+                        "PROTECTED_COPY physical copy failed for {} -> {}: {}",
+                        src_backend, dst_backend, err
+                    ),
+                )
+                .await;
+                return Err(err);
+            }
+            created_backend_keys.push(dst_backend.to_string());
+        }
+        self.mark_wal_physical_done(wal_id).await;
+        for (row, plan_entry) in rows.iter().zip(copy_plan.entries.iter()) {
+            let info = file_info_from_index_with_path(row, &plan_entry.dst_path);
             if row.is_dir {
                 if let Err(err) = self
-                    .upsert_index_helper_with_backend_key(&new_path, &info, None, None, None)
+                    .upsert_index_helper_with_backend_key(&plan_entry.dst_path, &info, None, None, None)
                     .await
                 {
                     rollback_protected_copy_partial(
@@ -627,43 +663,81 @@ impl ScopedVfsStorageEngine {
                         &created_backend_keys,
                     )
                     .await;
+                    self.fail_wal(
+                        wal_id,
+                        &format!(
+                            "PROTECTED_COPY directory metadata sync failed for {} -> {}: {}",
+                            src, dst, err
+                        ),
+                    )
+                    .await;
                     return Err(err);
                 }
-                created_paths.push(new_path);
+                created_paths.push(plan_entry.dst_path.clone());
                 continue;
             }
-            let src_backend = row.backend_key.as_deref().ok_or_else(|| {
-                VfsError::Internal("Protected source backend key is missing".to_string())
-            })?;
-            let dst_backend = self
-                .next_protected_blob_physical_path(&plan.key_slot_id)
-                .await?;
-            if let Err(err) = self.pool.copy_file(src_backend, &dst_backend).await {
-                rollback_protected_copy_partial(self, &created_paths, &created_backend_keys).await;
-                return Err(err);
-            }
-            created_backend_keys.push(dst_backend.clone());
             if let Err(err) = self
                 .upsert_index_helper_with_backend_key(
-                    &new_path,
+                    &plan_entry.dst_path,
                     &info,
-                    Some(&dst_backend),
-                    row.physical_size,
-                    row.protected_meta.as_deref(),
+                    plan_entry.dst_backend_key.as_deref(),
+                    plan_entry.physical_size,
+                    plan_entry.protected_meta.as_deref(),
                 )
                 .await
             {
                 rollback_protected_copy_partial(self, &created_paths, &created_backend_keys).await;
+                self.fail_wal(
+                    wal_id,
+                    &format!(
+                        "PROTECTED_COPY metadata sync failed for {} -> {}: {}",
+                        src, plan_entry.dst_path, err
+                    ),
+                )
+                .await;
                 return Err(err);
             }
-            created_paths.push(new_path);
+            created_paths.push(plan_entry.dst_path.clone());
         }
         if total_size > 0 {
             let _ = self.update_quota(total_size).await;
         }
+        self.complete_wal(wal_id).await;
         self.journal_log("PROTECTED_COPY", src, Some(dst), true, None)
             .await;
         self.stat_impl(dst).await
+    }
+}
+
+impl ScopedVfsStorageEngine {
+    async fn build_protected_copy_plan(
+        &self,
+        src: &str,
+        dst: &str,
+        rows: &[file_index::Model],
+        plan: &crate::vfs::protected::ProtectedPathPlan,
+    ) -> VfsResult<WalCopyPlan> {
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows {
+            let dst_path = map_subtree_path(src, dst, &row.path);
+            let dst_backend_key = if row.is_dir {
+                None
+            } else {
+                Some(self.next_protected_blob_physical_path(&plan.key_slot_id).await?)
+            };
+            entries.push(WalCopyPlanEntry {
+                src_path: row.path.clone(),
+                dst_path,
+                is_dir: row.is_dir,
+                size: row.size.max(0) as u64,
+                storage_id: row.storage_id.clone(),
+                backend_type: row.backend_type.clone(),
+                dst_backend_key,
+                physical_size: row.physical_size,
+                protected_meta: row.protected_meta.clone(),
+            });
+        }
+        Ok(WalCopyPlan { entries })
     }
 }
 

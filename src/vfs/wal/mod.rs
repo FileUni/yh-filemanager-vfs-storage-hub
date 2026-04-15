@@ -111,6 +111,8 @@ pub enum WalOperation {
     Copy {
         src: String,
         dst: String,
+        #[serde(default)]
+        protected: Option<WalCopyPlan>,
     },
     Move {
         src: String,
@@ -131,6 +133,24 @@ pub enum WalOperation {
         trash_path: String,
         original_path: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalCopyPlan {
+    pub entries: Vec<WalCopyPlanEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalCopyPlanEntry {
+    pub src_path: String,
+    pub dst_path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub storage_id: Option<String>,
+    pub backend_type: Option<String>,
+    pub dst_backend_key: Option<String>,
+    pub physical_size: Option<i64>,
+    pub protected_meta: Option<String>,
 }
 
 impl WalOperation {
@@ -627,7 +647,14 @@ impl VfsWalManager {
                 .recover_write(&engine, &path, size, protected.as_ref(), status)
                 .await,
             WalOperation::Delete { path } => self.recover_delete(&engine, &path, status).await,
-            WalOperation::Copy { src, dst } => self.recover_copy(&engine, &src, &dst, status).await,
+            WalOperation::Copy {
+                src,
+                dst,
+                protected,
+            } => {
+                self.recover_copy(&engine, &src, &dst, protected.as_ref(), status)
+                    .await
+            }
             WalOperation::Move { src, dst } => self.recover_move(&engine, &src, &dst, status).await,
             WalOperation::Rename { old_path, new_path } => {
                 self.recover_move(&engine, &old_path, &new_path, status)
@@ -987,8 +1014,14 @@ impl VfsWalManager {
         engine: &Arc<ScopedVfsStorageEngine>,
         src: &str,
         dst: &str,
+        protected: Option<&WalCopyPlan>,
         status: WalStatus,
     ) -> Result<(), String> {
+        if let Some(plan) = protected {
+            return self
+                .recover_protected_copy(engine, src, dst, plan, status)
+                .await;
+        }
         if status.has_metadata_done() {
             return Ok(());
         }
@@ -1074,6 +1107,103 @@ impl VfsWalManager {
         }
 
         self.sync_index_for_path(engine, dst).await
+    }
+
+    async fn recover_protected_copy(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        _src: &str,
+        _dst: &str,
+        plan: &WalCopyPlan,
+        status: WalStatus,
+    ) -> Result<(), String> {
+        if status.has_metadata_done() {
+            return Ok(());
+        }
+
+        let mut physical_missing = Vec::new();
+        for entry in &plan.entries {
+            if entry.is_dir {
+                continue;
+            }
+            let Some(backend_key) = entry.dst_backend_key.as_deref() else {
+                return Err(format!(
+                    "Protected copy WAL entry for '{}' is missing dst_backend_key",
+                    entry.dst_path
+                ));
+            };
+            let exists = engine.pool.exists(backend_key).await.map_err(|e| e.to_string())?;
+            if !exists {
+                physical_missing.push(entry.dst_path.as_str());
+            }
+        }
+
+        if !physical_missing.is_empty() {
+            self.cleanup_protected_copy_index(engine, plan).await?;
+            return Err(format!(
+                "Protected copy recovery missing physical blobs for: {}",
+                physical_missing.join(", ")
+            ));
+        }
+
+        self.rebuild_protected_copy_index(engine, plan).await?;
+        Ok(())
+    }
+
+    async fn rebuild_protected_copy_index(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        plan: &WalCopyPlan,
+    ) -> Result<(), String> {
+        for entry in &plan.entries {
+            let info = VfsFileInfo {
+                name: std::path::Path::new(&entry.dst_path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("")
+                    .to_string()
+                    .into(),
+                path: entry.dst_path.clone().into(),
+                is_dir: entry.is_dir,
+                size: entry.size,
+                modified: Some(chrono::Utc::now()),
+                favorite_color: 0,
+                has_active_share: None,
+                has_active_direct: None,
+                trashed_at: None,
+                original_path: None,
+            };
+            engine
+                .index_service
+                .upsert_file_with_location(
+                    engine.user_id.as_ref(),
+                    &entry.dst_path,
+                    &info,
+                    entry.storage_id.as_deref(),
+                    entry.backend_type.as_deref(),
+                    entry.dst_backend_key.as_deref(),
+                    entry.physical_size,
+                    entry.protected_meta.as_deref(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    async fn cleanup_protected_copy_index(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        plan: &WalCopyPlan,
+    ) -> Result<(), String> {
+        for entry in plan.entries.iter().rev() {
+            engine
+                .index_service
+                .delete_file(engine.user_id.as_ref(), &entry.dst_path)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     async fn recover_move(

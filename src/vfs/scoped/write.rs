@@ -594,6 +594,7 @@ impl ScopedVfsStorageEngine {
                 WalOperation::Copy {
                     src: norm_src.to_string(),
                     dst: norm_dst.to_string(),
+                    protected: None,
                 },
                 self.should_skip_wal_for_write(&norm_dst, src_info.size).await,
             )
