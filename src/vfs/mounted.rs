@@ -1217,36 +1217,28 @@ impl VfsStorage for MountedUserStorage {
                 }
             };
             let task_future = async {
-                let timestamp = chrono::Utc::now().timestamp();
-                let temp_dir = format!("/.virtual/tmp/batch_{}_{}", timestamp, task_id);
-                if let Err(err) = storage.create_dir_all(&temp_dir).await {
-                    return Err(format!("Failed to create temp dir: {}", err));
-                }
+                let temp_manager = yh_config_infra::config_require_manager!(
+                    crate::utils::get_global_temp_manager().await,
+                    "vfs_storage_hub"
+                );
+                let (local_stage_dir, _stage_guard) = temp_manager
+                    .create_user_temp_dir(&user_id, "mounted-batch-compress-stage")
+                    .await
+                    .map_err(|e| format!("Failed to create local staging dir: {}", e))?;
                 let mut copied_count = 0usize;
                 let mut failed_count = 0usize;
                 let mut prepared_paths = Vec::new();
+                let mut staged_names = std::collections::HashSet::new();
                 let total_files = paths.len();
                 for (idx, path) in paths.iter().enumerate() {
-                    let Some(name) = std::path::Path::new(path).file_name() else {
-                        failed_count += 1;
-                        let error_msg = "Path is missing a file name".to_string();
-                        let _ = handler
-                            .log_batch_operation(crate::vfs::task::BatchOperationLog {
-                                task_id,
-                                user_id: &user_id,
-                                operation_type: "compress",
-                                file_path: path,
-                                target_path: Some(&archive_name),
-                                status: "failed",
-                                error_message: Some(&error_msg),
-                                file_size: None,
-                                execution_time_ms: None,
-                            })
-                            .await;
-                        continue;
-                    };
-                    let target = format!("{}/{}", temp_dir, name.to_string_lossy());
-                    match storage.copy_file(path, &target).await {
+                    match crate::utils::compression::stage_vfs_path_for_batch_compress(
+                        storage.as_ref(),
+                        path,
+                        &local_stage_dir,
+                        &mut staged_names,
+                    )
+                    .await
+                    {
                         Ok(_) => {
                             copied_count += 1;
                             prepared_paths.push(path.to_string());
@@ -1284,23 +1276,26 @@ impl VfsStorage for MountedUserStorage {
                     }
                 }
                 if copied_count == 0 {
-                    let _ = storage.delete(&temp_dir).await;
                     return Err("No files were successfully prepared for compression".to_string());
                 }
                 let _ = handler
                     .update_progress(task_id, 35, Some("compressing"))
                     .await;
-                match crate::utils::compress_task(
+                match crate::utils::compression::compress_local_source_to_vfs(
                     storage.as_ref(),
-                    &temp_dir,
+                    &local_stage_dir,
                     &archive_name,
                     &user_id,
                     &options,
-                    delete_source,
                 )
                 .await
                 {
                     Ok(_) => {
+                        if delete_source {
+                            for path in &prepared_paths {
+                                let _ = storage.delete(path).await;
+                            }
+                        }
                         for path in &prepared_paths {
                             let _ = handler
                                 .log_batch_operation(crate::vfs::task::BatchOperationLog {
@@ -1315,12 +1310,6 @@ impl VfsStorage for MountedUserStorage {
                                     execution_time_ms: None,
                                 })
                                 .await;
-                        }
-                        let _ = storage.delete(&temp_dir).await;
-                        if delete_source {
-                            for path in &paths {
-                                let _ = storage.delete(path).await;
-                            }
                         }
                         Ok(())
                     }
@@ -1341,7 +1330,6 @@ impl VfsStorage for MountedUserStorage {
                                 })
                                 .await;
                         }
-                        let _ = storage.delete(&temp_dir).await;
                         Err(error_msg)
                     }
                 }

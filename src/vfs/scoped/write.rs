@@ -143,7 +143,10 @@ impl ScopedVfsStorageEngine {
         }
         let physical_path = self.get_physical_path(&normalized).await?;
         let delete_result = if info.is_dir {
-            self.pool.remove_tree(&physical_path).await.map(|_| info.clone())
+            self.pool
+                .remove_tree(&physical_path)
+                .await
+                .map(|_| info.clone())
         } else {
             self.pool.delete(&physical_path).await
         };
@@ -596,7 +599,8 @@ impl ScopedVfsStorageEngine {
                     dst: norm_dst.to_string(),
                     protected: None,
                 },
-                self.should_skip_wal_for_write(&norm_dst, src_info.size).await,
+                self.should_skip_wal_for_write(&norm_dst, src_info.size)
+                    .await,
             )
             .await?;
         let result = if self.is_temp_path(&norm_src) == self.is_temp_path(&norm_dst) {

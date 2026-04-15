@@ -212,14 +212,18 @@ impl ScopedVfsStorageEngine {
                 }
             };
             let task_future = async {
-                let timestamp = chrono::Utc::now().timestamp();
-                let temp_dir = format!("/.virtual/tmp/batch_{}_{}", timestamp, task_id);
-                if let Err(e) = engine.create_dir_impl(&temp_dir).await {
-                    return Err(format!("Failed to create temp dir: {}", e));
-                }
+                let temp_manager = yh_config_infra::config_require_manager!(
+                    crate::utils::get_global_temp_manager().await,
+                    "vfs_storage_hub"
+                );
+                let (local_stage_dir, _stage_guard) = temp_manager
+                    .create_user_temp_dir(engine.user_id.as_ref(), "batch-compress-stage")
+                    .await
+                    .map_err(|e| format!("Failed to create local staging dir: {}", e))?;
                 let mut copied_count = 0;
                 let mut failed_count = 0usize;
                 let mut prepared_paths = Vec::new();
+                let mut staged_names = std::collections::HashSet::new();
                 let total_files = paths.len();
                 for (idx, path) in paths.iter().enumerate() {
                     let logical = match engine.validate_file_operation(path).await {
@@ -243,34 +247,14 @@ impl ScopedVfsStorageEngine {
                             continue;
                         }
                     };
-                    let Some(name) = std::path::Path::new(&logical).file_name() else {
-                        failed_count += 1;
-                        let error_msg = "Path is missing a file name".to_string();
-                        let _ = handler
-                            .log_batch_operation(crate::vfs::task::BatchOperationLog {
-                                task_id,
-                                user_id: engine.user_id.as_ref(),
-                                operation_type: "compress",
-                                file_path: path,
-                                target_path: Some(&archive_name),
-                                status: "failed",
-                                error_message: Some(&error_msg),
-                                file_size: None,
-                                execution_time_ms: None,
-                            })
-                            .await;
-                        yh_console_log::yhlog(
-                            "warn",
-                            &format!(
-                                "Skip path without file name during batch compression: {}",
-                                logical
-                            ),
-                        );
-                        continue;
-                    };
-                    let name = name.to_string_lossy();
-                    let staging_path = format!("{}/{}", temp_dir, name);
-                    match engine.copy_file_impl(&logical, &staging_path).await {
+                    match crate::utils::compression::stage_vfs_path_for_batch_compress(
+                        engine.as_ref(),
+                        &logical,
+                        &local_stage_dir,
+                        &mut staged_names,
+                    )
+                    .await
+                    {
                         Ok(_) => {
                             copied_count += 1;
                             prepared_paths.push(path.to_string());
@@ -308,24 +292,27 @@ impl ScopedVfsStorageEngine {
                     }
                 }
                 if copied_count == 0 {
-                    let _ = engine.delete_impl(&temp_dir).await;
                     return Err("No files were successfully prepared for compression".to_string());
                 }
                 let _ = handler
                     .update_progress(task_id, 35, Some("compressing"))
                     .await;
-                use crate::utils::compression::compress_task;
-                match compress_task(
+                use crate::utils::compression::compress_local_source_to_vfs;
+                match compress_local_source_to_vfs(
                     engine.as_ref(),
-                    &temp_dir,
+                    &local_stage_dir,
                     &archive_name,
                     engine.user_id.as_ref(),
                     &options,
-                    delete_source,
                 )
                 .await
                 {
                     Ok(_) => {
+                        if delete_source {
+                            for path in &prepared_paths {
+                                let _ = engine.delete_impl(path).await;
+                            }
+                        }
                         for path in &prepared_paths {
                             let _ = handler
                                 .log_batch_operation(crate::vfs::task::BatchOperationLog {
@@ -340,12 +327,6 @@ impl ScopedVfsStorageEngine {
                                     execution_time_ms: None,
                                 })
                                 .await;
-                        }
-                        let _ = engine.delete_impl(&temp_dir).await;
-                        if delete_source {
-                            for p in &paths {
-                                let _ = engine.delete_impl(p).await;
-                            }
                         }
                         Ok(())
                     }
@@ -366,7 +347,6 @@ impl ScopedVfsStorageEngine {
                                 })
                                 .await;
                         }
-                        let _ = engine.delete_impl(&temp_dir).await;
                         Err(error_msg)
                     }
                 }

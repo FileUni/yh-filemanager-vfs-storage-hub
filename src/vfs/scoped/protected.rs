@@ -3,13 +3,13 @@ use crate::business::entities::file_index;
 use crate::vfs::VfsFileInfo;
 use crate::vfs::error::{VfsError, VfsResult};
 use crate::vfs::traits::VfsStorage;
+use crate::vfs::wal::{WalCopyPlan, WalCopyPlanEntry, WalOperation};
 use bytes::{Bytes, BytesMut};
 use futures::Stream;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use std::pin::Pin;
-use crate::vfs::wal::{WalCopyPlan, WalCopyPlanEntry, WalOperation};
 
 fn file_info_from_index(row: &file_index::Model) -> VfsFileInfo {
     VfsFileInfo {
@@ -612,7 +612,9 @@ impl ScopedVfsStorageEngine {
         if total_size > 0 {
             self.check_quota(total_size).await?;
         }
-        let copy_plan = self.build_protected_copy_plan(src, dst, &rows, plan).await?;
+        let copy_plan = self
+            .build_protected_copy_plan(src, dst, &rows, plan)
+            .await?;
         let wal_id = self
             .begin_wal(
                 WalOperation::Copy {
@@ -654,15 +656,17 @@ impl ScopedVfsStorageEngine {
             let info = file_info_from_index_with_path(row, &plan_entry.dst_path);
             if row.is_dir {
                 if let Err(err) = self
-                    .upsert_index_helper_with_backend_key(&plan_entry.dst_path, &info, None, None, None)
+                    .upsert_index_helper_with_backend_key(
+                        &plan_entry.dst_path,
+                        &info,
+                        None,
+                        None,
+                        None,
+                    )
                     .await
                 {
-                    rollback_protected_copy_partial(
-                        self,
-                        &created_paths,
-                        &created_backend_keys,
-                    )
-                    .await;
+                    rollback_protected_copy_partial(self, &created_paths, &created_backend_keys)
+                        .await;
                     self.fail_wal(
                         wal_id,
                         &format!(
@@ -723,7 +727,10 @@ impl ScopedVfsStorageEngine {
             let dst_backend_key = if row.is_dir {
                 None
             } else {
-                Some(self.next_protected_blob_physical_path(&plan.key_slot_id).await?)
+                Some(
+                    self.next_protected_blob_physical_path(&plan.key_slot_id)
+                        .await?,
+                )
             };
             entries.push(WalCopyPlanEntry {
                 src_path: row.path.clone(),

@@ -5,6 +5,7 @@ use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use futures::{Stream, StreamExt};
+use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 use std::pin::Pin;
@@ -138,6 +139,76 @@ async fn copy_vfs_file_to_local_temp(
     Ok((temp_path, guard))
 }
 
+fn summarize_local_path(path: &Path) -> anyhow::Result<(usize, u64)> {
+    if path.is_dir() {
+        let mut total_items = 0usize;
+        let mut total_size = 0u64;
+        let mut walk_dir = vec![path.to_path_buf()];
+        while let Some(current) = walk_dir.pop() {
+            for entry in std::fs::read_dir(current)? {
+                let entry = entry?;
+                let child_path = entry.path();
+                let metadata = entry.metadata()?;
+                total_items += 1;
+                if metadata.is_dir() {
+                    walk_dir.push(child_path);
+                } else {
+                    total_size = total_size.saturating_add(metadata.len());
+                }
+            }
+        }
+        Ok((total_items, total_size))
+    } else {
+        Ok((1, std::fs::metadata(path)?.len()))
+    }
+}
+
+pub(crate) fn unique_archive_entry_name(base_name: &str, seen: &mut HashSet<String>) -> String {
+    if seen.insert(base_name.to_string()) {
+        return base_name.to_string();
+    }
+
+    let (stem, extension) = if let Some(dot_index) = base_name.rfind('.') {
+        if dot_index > 0 {
+            (&base_name[..dot_index], &base_name[dot_index..])
+        } else {
+            (base_name, "")
+        }
+    } else {
+        (base_name, "")
+    };
+
+    let mut suffix = 2usize;
+    loop {
+        let candidate = if extension.is_empty() {
+            format!("{} ({})", stem, suffix)
+        } else {
+            format!("{} ({}){}", stem, suffix, extension)
+        };
+        if seen.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
+}
+
+pub(crate) async fn stage_vfs_path_for_batch_compress(
+    engine: &dyn VfsStorage,
+    logical_path: &str,
+    local_dir: &Path,
+    seen_names: &mut HashSet<String>,
+) -> VfsResult<String> {
+    let Some(name) = Path::new(logical_path).file_name() else {
+        return Err(VfsError::Internal(
+            "Path is missing a file name".to_string(),
+        ));
+    };
+    let unique_name = unique_archive_entry_name(&name.to_string_lossy(), seen_names);
+    let local_target = local_dir.join(&unique_name);
+    copy_to_local_temp(engine, logical_path, &local_target).await?;
+    Ok(unique_name)
+}
+
 fn max_archive_file_size_bytes(fc: &crate::config::VfsFileCompressConfig) -> u64 {
     yh_config_infra::config_require_clone!(
         fc.max_decompress_archive_size_mb,
@@ -213,7 +284,11 @@ pub struct DecompressionOptions {
     pub password: Option<String>,
 }
 /// Copy VFS path to local temp dir recursively
-async fn copy_to_local_temp(engine: &dyn VfsStorage, src: &str, dst: &Path) -> VfsResult<()> {
+pub(crate) async fn copy_to_local_temp(
+    engine: &dyn VfsStorage,
+    src: &str,
+    dst: &Path,
+) -> VfsResult<()> {
     let info = engine.stat(src).await?;
     if info.is_dir {
         fs::create_dir_all(dst).await.map_err(VfsError::Io)?;
@@ -236,24 +311,203 @@ async fn copy_to_local_temp(engine: &dyn VfsStorage, src: &str, dst: &Path) -> V
     }
 }
 /// Upload local dir to VFS recursively
-async fn copy_from_local_temp(src: &Path, dst: &str, engine: &dyn VfsStorage) -> VfsResult<()> {
+async fn copy_from_local_temp(
+    src: &Path,
+    dst: &str,
+    engine: &dyn VfsStorage,
+    overwrite: bool,
+) -> VfsResult<()> {
     if src.is_dir() {
-        engine.create_dir_all(dst).await?;
+        if !engine.exists(dst).await? {
+            engine.create_dir_all(dst).await?;
+        }
         let mut entries = fs::read_dir(src).await.map_err(VfsError::Io)?;
         while let Some(entry) = entries.next_entry().await.map_err(VfsError::Io)? {
             let s = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             let d = format!("{}/{}", dst.trim_end_matches('/'), name_str);
-            Box::pin(copy_from_local_temp(&s, &d, engine)).await?;
+            Box::pin(copy_from_local_temp(&s, &d, engine, overwrite)).await?;
         }
         Ok(())
     } else {
+        if !overwrite && engine.exists(dst).await? {
+            return Ok(());
+        }
         let file = fs::File::open(src).await.map_err(VfsError::Io)?;
         let stream = ReaderStream::new(file).map(|result| result.map_err(VfsError::Io));
         engine.write_stream(dst, Box::pin(stream)).await?;
         Ok(())
     }
+}
+
+pub(crate) async fn compress_local_source_to_vfs(
+    engine: &dyn VfsStorage,
+    local_input: &Path,
+    dst_path: &str,
+    user_id: &str,
+    opts: &CompressionOptions,
+) -> Result<VfsFileInfo, anyhow::Error> {
+    let cfg = crate::config::get_vfs_hub_config().await;
+    let fc = cfg.get_file_compress();
+    if !fc.is_enabled() {
+        return Err(anyhow::anyhow!("Compression is disabled"));
+    }
+
+    engine
+        .check_quota(0)
+        .await
+        .map_err(|e| anyhow::anyhow!("Quota check failed: {}", e))?;
+
+    let (total_items, total_size) = summarize_local_path(local_input)?;
+    let max_compress_items = yh_config_infra::config_require_clone!(
+        fc.max_compress_items,
+        "vfs_storage_hub",
+        "file_compress.max_compress_items"
+    );
+    if total_items > max_compress_items {
+        return Err(anyhow::anyhow!(
+            "Compression aborted: too many items ({}), limit is {}",
+            total_items,
+            max_compress_items
+        ));
+    }
+
+    let max_compress_total_size_mb = yh_config_infra::config_require_clone!(
+        fc.max_compress_total_size_mb,
+        "vfs_storage_hub",
+        "file_compress.max_compress_total_size_mb"
+    );
+    let max_in_size = max_compress_total_size_mb * 1024 * 1024;
+    if total_size > max_in_size {
+        return Err(anyhow::anyhow!(
+            "Compression aborted: source total size ({} MB) exceeds limit ({} MB)",
+            total_size / 1024 / 1024,
+            max_compress_total_size_mb
+        ));
+    }
+
+    let manager =
+        yh_config_infra::config_require_manager!(get_global_manager(), "external_process_manager");
+    manager
+        .run_with_permit(yh_external_process_manager::TaskPriority::Normal, || async move {
+            let temp_manager = yh_config_infra::config_require_manager!(crate::utils::get_global_temp_manager().await, "vfs_storage_hub");
+            let (t_dir, _guard) = temp_manager.create_user_temp_dir(user_id, "compress").await?;
+            let local_output = t_dir.join(format!("output.{}", opts.format.extension()));
+            let exe_path = fc.get_exe_7zip_path();
+            let use_7z = !exe_path.is_empty() || opts.format == CompressionFormat::SevenZip;
+            let output_path_for_upload = if use_7z {
+                if exe_path.is_empty() && opts.format == CompressionFormat::SevenZip {
+                    return Err(anyhow::anyhow!("7z format requires 7z executable to be configured."));
+                }
+                let mut cmd = Command::new(if exe_path.is_empty() { "7z" } else { exe_path });
+                cmd.arg("a")
+                    .arg(&local_output)
+                    .arg(format!("-t{}", opts.format.type_flag()))
+                    .arg(format!("-mx={}", opts.compression_level))
+                    .arg(format!("-mmt={}", fc.get_effective_max_cpu_threads()))
+                    .arg("-y");
+                if let Some(pwd) = &opts.password {
+                    cmd.arg(format!("-p{}", pwd));
+                    if opts.format == CompressionFormat::SevenZip && opts.encrypt_filenames {
+                        cmd.arg("-mhe=on");
+                    }
+                }
+                let mut child = match cmd
+                    .args(if local_input.is_dir() {
+                        vec![format!("{}/.", local_input.to_string_lossy())]
+                    } else {
+                        vec![local_input.to_string_lossy().into_owned()]
+                    })
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                {
+                    Ok(child) => child,
+                    Err(err) => {
+                        let err_msg = format!("Failed to start 7z process: {}. Path: {}", err, exe_path);
+                        yhlog("error", &err_msg);
+                        return Err(anyhow::anyhow!(err_msg));
+                    }
+                };
+                let max_out_size = yh_config_infra::config_require_clone!(fc.max_compress_output_size_mb, "vfs_storage_hub", "file_compress.max_compress_output_size_mb") * 1024 * 1024;
+                let mut monitor_interval = tokio::time::interval(Duration::from_secs(1));
+                let timeout_duration = Duration::from_secs(yh_config_infra::config_require_clone!(fc.timeout_secs, "vfs_storage_hub", "file_compress.timeout_secs"));
+                loop {
+                    tokio::select! {
+                        res = tokio::time::timeout(timeout_duration, child.wait()) => {
+                            match res {
+                                Ok(status) => {
+                                    let status = status?;
+                                    if !status.success() {
+                                        return Err(anyhow::anyhow!(
+                                            "7z compression failed with status {}",
+                                            status
+                                        ));
+                                    }
+                                    break;
+                                }
+                                Err(_) => {
+                                    let _ = child.kill().await;
+                                    return Err(anyhow::anyhow!("Compression timed out"));
+                                }
+                            }
+                        }
+                        _ = monitor_interval.tick() => {
+                            if let Ok(meta) = fs::metadata(&local_output).await
+                                && meta.len() > max_out_size
+                            {
+                                let _ = child.kill().await;
+                                return Err(anyhow::anyhow!("Compression output limit exceeded"));
+                            }
+                        }
+                    }
+                }
+                local_output
+            } else {
+                let format = opts.format;
+                let level = opts.compression_level;
+                let input_path = local_input.to_path_buf();
+                let output_path = local_output;
+                let zip_password = opts.password.as_deref().map(str::to_owned);
+                let zip_encrypt_filenames = opts.encrypt_filenames;
+                tokio::task::spawn_blocking(move || {
+                    match format {
+                        CompressionFormat::Zip => compress_zip_native(
+                            &input_path,
+                            &output_path,
+                            &CompressionOptions {
+                                format,
+                                password: zip_password,
+                                encrypt_filenames: zip_encrypt_filenames,
+                                compression_level: level,
+                            },
+                        ),
+                        CompressionFormat::TarGz => {
+                            compress_tar_gz_native(&input_path, &output_path, level)
+                        }
+                        CompressionFormat::Gzip => {
+                            if input_path.is_dir() {
+                                return Err(anyhow::anyhow!(
+                                    "Gzip format only supports single file compression."
+                                ));
+                            }
+                            compress_gz_native(&input_path, &output_path, level)
+                        }
+                        _ => Err(anyhow::anyhow!(
+                            "Native compression for {:?} is not supported without 7z.",
+                            format
+                        )),
+                    }?;
+                    Ok::<std::path::PathBuf, anyhow::Error>(output_path)
+                })
+                .await??
+            };
+
+            copy_from_local_temp(output_path_for_upload.as_path(), dst_path, engine, true).await?;
+            engine.stat(dst_path).await.map_err(anyhow::Error::from)
+        })
+        .await
 }
 /// Native ZIP compression implementation
 fn compress_zip_native(
@@ -372,11 +626,6 @@ pub async fn compress_task(
     if !fc.is_enabled() {
         return Err(anyhow::anyhow!("Compression is disabled"));
     }
-    // Basic quota check
-    engine
-        .check_quota(0)
-        .await
-        .map_err(|e| anyhow::anyhow!("Quota check failed: {}", e))?;
     // Preliminary check
     let info = engine.stat(src_path).await?;
     let (total_items, total_size) = if info.is_dir {
@@ -410,129 +659,20 @@ pub async fn compress_task(
             max_compress_total_size_mb
         ));
     }
-    let manager =
-        yh_config_infra::config_require_manager!(get_global_manager(), "external_process_manager");
-    manager
-        .run_with_permit(yh_external_process_manager::TaskPriority::Normal, || async move {
-            let temp_manager = yh_config_infra::config_require_manager!(crate::utils::get_global_temp_manager().await, "vfs_storage_hub");
-            let (t_dir, _guard) = temp_manager.create_user_temp_dir(user_id, "compress").await?;
-            let local_input = t_dir.join("input");
-            let local_output = t_dir.join(format!("output.{}", opts.format.extension()));
-            // Prepare data
-            copy_to_local_temp(engine, src_path, &local_input).await?;
-            // Choose compression method based on config
-            let exe_path = fc.get_exe_7zip_path();
-            let use_7z = !exe_path.is_empty() || opts.format == CompressionFormat::SevenZip;
-            let output_path_for_upload = if use_7z {
-                if exe_path.is_empty() && opts.format == CompressionFormat::SevenZip {
-                    return Err(anyhow::anyhow!("7z format requires 7z executable to be configured."));
-                }
-                let mut cmd = Command::new(if exe_path.is_empty() { "7z" } else { exe_path });
-                cmd.arg("a")
-                    .arg(&local_output)
-                    .arg(format!("-t{}", opts.format.type_flag()))
-                    .arg(format!("-mx={}", opts.compression_level))
-                    .arg(format!("-mmt={}", fc.get_effective_max_cpu_threads()))
-                    .arg("-y");
-                // Add password argument
-                if let Some(pwd) = &opts.password {
-                    cmd.arg(format!("-p{}", pwd));
-                    if opts.format == CompressionFormat::SevenZip && opts.encrypt_filenames {
-                        cmd.arg("-mhe=on");
-                    }
-                }
-                let mut child = match cmd
-                    .args(if local_input.is_dir() { vec![format!("{}/.", local_input.to_string_lossy())] } else { vec![local_input.to_string_lossy().into_owned()] })
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let err_msg = format!("Failed to start 7z process: {}. Path: {}", e, exe_path);
-                        yhlog("error", &err_msg);
-                        return Err(anyhow::anyhow!(err_msg));
-                    }
-                };
-                let max_out_size = yh_config_infra::config_require_clone!(fc.max_compress_output_size_mb, "vfs_storage_hub", "file_compress.max_compress_output_size_mb") * 1024 * 1024;
-                let mut monitor_interval = tokio::time::interval(Duration::from_secs(1));
-                let timeout_duration = Duration::from_secs(yh_config_infra::config_require_clone!(fc.timeout_secs, "vfs_storage_hub", "file_compress.timeout_secs"));
-                loop {
-                    tokio::select! {
-                        res = tokio::time::timeout(timeout_duration, child.wait()) => {
-                            match res {
-                                Ok(status) => {
-                                    let status = status?;
-                                    if !status.success() {
-                                        return Err(anyhow::anyhow!(
-                                            "7z compression failed with status {}",
-                                            status
-                                        ));
-                                    }
-                                    break;
-                                }
-                                Err(_) => {
-                                    let _ = child.kill().await;
-                                    return Err(anyhow::anyhow!("Compression timed out"));
-                                }
-                            }
-                        }
-                        _ = monitor_interval.tick() => {
-                            if let Ok(meta) = fs::metadata(&local_output).await
-                                && meta.len() > max_out_size
-                            {
-                                let _ = child.kill().await;
-                                return Err(anyhow::anyhow!("Compression output limit exceeded"));
-                            }
-                        }
-                    }
-                }
-                local_output
-            } else {
-                // Native Rust processing
-                let format = opts.format;
-                let level = opts.compression_level;
-                let input_path = local_input;
-                let output_path = local_output;
-                let zip_password = opts.password.as_deref().map(str::to_owned);
-                let zip_encrypt_filenames = opts.encrypt_filenames;
-                tokio::task::spawn_blocking(move || {
-                    match format {
-                        CompressionFormat::Zip => compress_zip_native(
-                            &input_path,
-                            &output_path,
-                            &CompressionOptions {
-                                format,
-                                password: zip_password,
-                                encrypt_filenames: zip_encrypt_filenames,
-                                compression_level: level,
-                            },
-                        ),
-                        CompressionFormat::TarGz => compress_tar_gz_native(&input_path, &output_path, level),
-                        CompressionFormat::Gzip => {
-                            if input_path.is_dir() {
-                                return Err(anyhow::anyhow!("Gzip format only supports single file compression."));
-                            }
-                            compress_gz_native(&input_path, &output_path, level)
-                        }
-                        _ => Err(anyhow::anyhow!("Native compression for {:?} is not supported without 7z.", format)),
-                    }?;
-                    Ok::<std::path::PathBuf, anyhow::Error>(output_path)
-                })
-                .await??
-            };
-            // Upload result
-            copy_from_local_temp(output_path_for_upload.as_path(), dst_path, engine).await?;
-            let info = engine.stat(dst_path).await?;
-            if delete_source {
-                let _ = engine.delete(src_path).await;
-                if let Some(parent) = Path::new(src_path).parent() {
-                    let _ = engine.sync_index(&parent.to_string_lossy()).await;
-                }
-            }
-            Ok(info)
-        })
-        .await
+    let temp_manager = yh_config_infra::config_require_manager!(
+        crate::utils::get_global_temp_manager().await,
+        "vfs_storage_hub"
+    );
+    let (t_dir, _guard) = temp_manager
+        .create_user_temp_dir(user_id, "compress")
+        .await?;
+    let local_input = t_dir.join("input");
+    copy_to_local_temp(engine, src_path, &local_input).await?;
+    let info = compress_local_source_to_vfs(engine, &local_input, dst_path, user_id, opts).await?;
+    if delete_source {
+        let _ = engine.delete(src_path).await;
+    }
+    Ok(info)
 }
 /// Core decompression logic
 pub async fn decompress_task(
@@ -709,8 +849,7 @@ pub async fn decompress_task(
                     .check_quota(total_size as i64)
                     .await
                     .map_err(|e| anyhow::anyhow!("Quota check failed after extraction: {}", e))?;
-                copy_from_local_temp(&local_output_dir, dst_dir, engine).await?;
-                let _ = engine.sync_index(dst_dir).await;
+                copy_from_local_temp(&local_output_dir, dst_dir, engine, opts.overwrite).await?;
                 if delete_archive {
                     let _ = engine.delete(src_path).await;
                 }

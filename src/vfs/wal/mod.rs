@@ -1,6 +1,6 @@
 //! Write-ahead log / operation journal.
-use crate::business::services::{UserSettingsService, UserSettingsSnapshot};
 use crate::business::services::user_settings::UserSettingsUpdatePatch;
+use crate::business::services::{UserSettingsService, UserSettingsSnapshot};
 use crate::vfs::scoped::ScopedVfsStorageEngine;
 use crate::vfs::{VfsFileInfo, VfsStorage, VfsStorageHub};
 use sea_orm::sea_query::{Alias, ColumnDef, Expr, Index, Table};
@@ -454,7 +454,10 @@ impl VfsWalManager {
             recovered: 0,
             failed: 0,
             errors: vec![],
-            affected_users: affected_users.iter().map(|value| (*value).to_string()).collect(),
+            affected_users: affected_users
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
         };
         for row in rows {
             match self.recover_one(&row, &hub).await {
@@ -643,9 +646,10 @@ impl VfsWalManager {
                 size,
                 protected,
                 ..
-            } => self
-                .recover_write(&engine, &path, size, protected.as_ref(), status)
-                .await,
+            } => {
+                self.recover_write(&engine, &path, size, protected.as_ref(), status)
+                    .await
+            }
             WalOperation::Delete { path } => self.recover_delete(&engine, &path, status).await,
             WalOperation::Copy {
                 src,
@@ -1132,7 +1136,11 @@ impl VfsWalManager {
                     entry.dst_path
                 ));
             };
-            let exists = engine.pool.exists(backend_key).await.map_err(|e| e.to_string())?;
+            let exists = engine
+                .pool
+                .exists(backend_key)
+                .await
+                .map_err(|e| e.to_string())?;
             if !exists {
                 physical_missing.push(entry.dst_path.as_str());
             }
@@ -1453,7 +1461,10 @@ impl VfsWalManager {
             None,
         )
         .map_err(|e| e.to_string())?;
-        let total_used = engine.get_recursive_size("/").await.map_err(|e| e.to_string())?;
+        let total_used = engine
+            .get_recursive_size("/")
+            .await
+            .map_err(|e| e.to_string())?;
         UserSettingsService::update_user_settings_patch(
             &self.db,
             user_id,
