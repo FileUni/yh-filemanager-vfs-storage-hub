@@ -589,6 +589,16 @@ impl ScopedVfsStorageEngine {
         if !skip_quota {
             self.check_quota(size).await?;
         }
+        let wal_id = self
+            .begin_wal(
+                WalOperation::Write {
+                    path: norm_dst.to_string(),
+                    size: src_info.size,
+                    protected: None,
+                },
+                self.should_skip_wal_for_write(&norm_dst, src_info.size).await,
+            )
+            .await?;
         let result = if self.is_temp_path(&norm_src) == self.is_temp_path(&norm_dst) {
             if self.is_temp_path(&norm_src) {
                 let s = self
@@ -600,6 +610,7 @@ impl ScopedVfsStorageEngine {
                     .get_user_temp_dir(&self.user_id)
                     .join(self.get_relative_path(&norm_dst, LOGICAL_TEMP_PREFIX));
                 tokio::fs::copy(s, d).await.map_err(VfsError::Io)?;
+                self.mark_wal_physical_done(wal_id).await;
                 self.stat_impl(dst).await
             } else {
                 match self
@@ -611,12 +622,23 @@ impl ScopedVfsStorageEngine {
                     .await
                 {
                     Ok(_) => {
+                        self.mark_wal_physical_done(wal_id).await;
                         let info = self
                             .pool
                             .stat(&self.get_physical_path(&norm_dst).await?)
                             .await?;
                         let translated = self.translate_file_info(info, false);
-                        self.upsert_index_helper(&norm_dst, &translated).await?;
+                        if let Err(err) = self.upsert_index_helper(&norm_dst, &translated).await {
+                            self.fail_wal(
+                                wal_id,
+                                &format!(
+                                    "COPY metadata sync failed for {} -> {}: {}",
+                                    norm_src, norm_dst, err
+                                ),
+                            )
+                            .await;
+                            return Err(err);
+                        }
                         Ok(translated)
                     }
                     Err(e) => Err(e),
@@ -628,6 +650,7 @@ impl ScopedVfsStorageEngine {
         };
         match &result {
             Ok(_) => {
+                self.complete_wal(wal_id).await;
                 // Update quota
                 if !skip_quota {
                     let _ = self.update_quota(size).await;
@@ -636,6 +659,7 @@ impl ScopedVfsStorageEngine {
                     .await
             }
             Err(e) => {
+                self.fail_wal(wal_id, &e.to_string()).await;
                 self.journal_log(
                     "COPY",
                     &norm_src,
