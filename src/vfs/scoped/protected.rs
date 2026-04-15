@@ -567,10 +567,17 @@ impl ScopedVfsStorageEngine {
             )
             .await?;
         self.mark_wal_physical_done(wal_id).await;
-        self.index_service
-            .move_file(&self.user_id, src, dst)
-            .await
-            .map_err(|e| VfsError::Internal(e.to_string()))?;
+        if let Err(err) = self.index_service.move_file(&self.user_id, src, dst).await {
+            self.fail_wal(
+                wal_id,
+                &format!(
+                    "PROTECTED_MOVE metadata sync failed for {} -> {}: {}",
+                    src, dst, err
+                ),
+            )
+            .await;
+            return Err(VfsError::Internal(err.to_string()));
+        }
         self.complete_wal(wal_id).await;
         self.cache.invalidate_parent_ls(src).await;
         self.cache.invalidate_parent_ls(dst).await;
@@ -604,12 +611,25 @@ impl ScopedVfsStorageEngine {
         if total_size > 0 {
             self.check_quota(total_size).await?;
         }
+        let mut created_paths = Vec::new();
+        let mut created_backend_keys = Vec::new();
         for row in &rows {
             let new_path = map_subtree_path(src, dst, &row.path);
             let info = file_info_from_index_with_path(row, &new_path);
             if row.is_dir {
-                self.upsert_index_helper_with_backend_key(&new_path, &info, None, None, None)
-                    .await?;
+                if let Err(err) = self
+                    .upsert_index_helper_with_backend_key(&new_path, &info, None, None, None)
+                    .await
+                {
+                    rollback_protected_copy_partial(
+                        self,
+                        &created_paths,
+                        &created_backend_keys,
+                    )
+                    .await;
+                    return Err(err);
+                }
+                created_paths.push(new_path);
                 continue;
             }
             let src_backend = row.backend_key.as_deref().ok_or_else(|| {
@@ -618,15 +638,25 @@ impl ScopedVfsStorageEngine {
             let dst_backend = self
                 .next_protected_blob_physical_path(&plan.key_slot_id)
                 .await?;
-            self.pool.copy_file(src_backend, &dst_backend).await?;
-            self.upsert_index_helper_with_backend_key(
-                &new_path,
-                &info,
-                Some(&dst_backend),
-                row.physical_size,
-                row.protected_meta.as_deref(),
-            )
-            .await?;
+            if let Err(err) = self.pool.copy_file(src_backend, &dst_backend).await {
+                rollback_protected_copy_partial(self, &created_paths, &created_backend_keys).await;
+                return Err(err);
+            }
+            created_backend_keys.push(dst_backend.clone());
+            if let Err(err) = self
+                .upsert_index_helper_with_backend_key(
+                    &new_path,
+                    &info,
+                    Some(&dst_backend),
+                    row.physical_size,
+                    row.protected_meta.as_deref(),
+                )
+                .await
+            {
+                rollback_protected_copy_partial(self, &created_paths, &created_backend_keys).await;
+                return Err(err);
+            }
+            created_paths.push(new_path);
         }
         if total_size > 0 {
             let _ = self.update_quota(total_size).await;
@@ -634,5 +664,21 @@ impl ScopedVfsStorageEngine {
         self.journal_log("PROTECTED_COPY", src, Some(dst), true, None)
             .await;
         self.stat_impl(dst).await
+    }
+}
+
+async fn rollback_protected_copy_partial(
+    engine: &ScopedVfsStorageEngine,
+    created_paths: &[String],
+    created_backend_keys: &[String],
+) {
+    for path in created_paths.iter().rev() {
+        let _ = engine
+            .index_service
+            .delete_file(&engine.user_id, path)
+            .await;
+    }
+    for backend_key in created_backend_keys.iter().rev() {
+        let _ = engine.pool.delete(backend_key).await;
     }
 }

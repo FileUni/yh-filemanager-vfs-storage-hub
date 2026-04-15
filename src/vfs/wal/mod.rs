@@ -108,6 +108,10 @@ pub enum WalOperation {
     Delete {
         path: String,
     },
+    Copy {
+        src: String,
+        dst: String,
+    },
     Move {
         src: String,
         dst: String,
@@ -134,6 +138,7 @@ impl WalOperation {
         match self {
             WalOperation::Write { .. } => "WRITE",
             WalOperation::Delete { .. } => "DELETE",
+            WalOperation::Copy { .. } => "COPY",
             WalOperation::Move { .. } => "MOVE",
             WalOperation::Rename { .. } => "RENAME",
             WalOperation::MoveToTrash { .. } => "MOVE_TO_TRASH",
@@ -618,15 +623,11 @@ impl VfsWalManager {
                 size,
                 protected,
                 ..
-            } => {
-                if row.operation_type.eq_ignore_ascii_case("COPY") {
-                    self.recover_copy(&engine, &path, status).await
-                } else {
-                    self.recover_write(&engine, &path, size, protected.as_ref(), status)
-                        .await
-                }
-            }
+            } => self
+                .recover_write(&engine, &path, size, protected.as_ref(), status)
+                .await,
             WalOperation::Delete { path } => self.recover_delete(&engine, &path, status).await,
+            WalOperation::Copy { src, dst } => self.recover_copy(&engine, &src, &dst, status).await,
             WalOperation::Move { src, dst } => self.recover_move(&engine, &src, &dst, status).await,
             WalOperation::Rename { old_path, new_path } => {
                 self.recover_move(&engine, &old_path, &new_path, status)
@@ -984,25 +985,95 @@ impl VfsWalManager {
     async fn recover_copy(
         &self,
         engine: &Arc<ScopedVfsStorageEngine>,
-        path: &str,
+        src: &str,
+        dst: &str,
         status: WalStatus,
     ) -> Result<(), String> {
         if status.has_metadata_done() {
             return Ok(());
         }
         if status.has_physical_done() {
-            return self.sync_index_for_path(engine, path).await;
+            return self.sync_index_for_copy_target(engine, src, dst).await;
         }
 
-        if engine.exists(path).await.map_err(|e| e.to_string())? {
-            return self.sync_index_for_path(engine, path).await;
+        if engine.exists(dst).await.map_err(|e| e.to_string())? {
+            return self.sync_index_for_copy_target(engine, src, dst).await;
         }
 
         engine
             .index_service
-            .delete_file(engine.user_id.as_ref(), path)
+            .delete_file(engine.user_id.as_ref(), dst)
             .await
             .map_err(|e| e.to_string())
+    }
+
+    async fn sync_index_for_copy_target(
+        &self,
+        engine: &Arc<ScopedVfsStorageEngine>,
+        src: &str,
+        dst: &str,
+    ) -> Result<(), String> {
+        if let Some(dst_meta) = engine
+            .index_service
+            .get_file_metadata(engine.user_id.as_ref(), dst)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let dst_backend = dst_meta.backend_key.as_deref().unwrap_or_default();
+            if !dst_backend.is_empty()
+                && engine
+                    .pool
+                    .exists(dst_backend)
+                    .await
+                    .map_err(|e| e.to_string())?
+            {
+                return Ok(());
+            }
+        }
+
+        if let Some(src_meta) = engine
+            .index_service
+            .get_file_metadata(engine.user_id.as_ref(), src)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let info = crate::vfs::protected::ProtectedPathPlan::matches_path;
+            let _ = info;
+            let copied_info = crate::vfs::VfsFileInfo {
+                name: std::path::Path::new(dst)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("")
+                    .to_string()
+                    .into(),
+                path: dst.to_string().into(),
+                is_dir: src_meta.is_dir,
+                size: src_meta.size.max(0) as u64,
+                modified: src_meta.file_updated_at.map(|t| t.into()),
+                favorite_color: 0,
+                has_active_share: None,
+                has_active_direct: None,
+                trashed_at: None,
+                original_path: None,
+            };
+            return engine
+                .index_service
+                .upsert_file_with_location(
+                    engine.user_id.as_ref(),
+                    dst,
+                    &copied_info,
+                    src_meta.storage_id.as_deref(),
+                    src_meta.backend_type.as_deref(),
+                    src_meta.backend_key.as_deref(),
+                    src_meta.physical_size,
+                    src_meta.protected_meta.as_deref(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
+
+        self.sync_index_for_path(engine, dst).await
     }
 
     async fn recover_move(

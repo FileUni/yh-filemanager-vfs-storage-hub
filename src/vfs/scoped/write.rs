@@ -591,10 +591,9 @@ impl ScopedVfsStorageEngine {
         }
         let wal_id = self
             .begin_wal(
-                WalOperation::Write {
-                    path: norm_dst.to_string(),
-                    size: src_info.size,
-                    protected: None,
+                WalOperation::Copy {
+                    src: norm_src.to_string(),
+                    dst: norm_dst.to_string(),
                 },
                 self.should_skip_wal_for_write(&norm_dst, src_info.size).await,
             )
