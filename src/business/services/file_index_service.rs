@@ -693,12 +693,22 @@ impl FileIndexService {
         } else {
             String::new()
         };
+        let restored_parent = if let Some((parent, _)) = restored_path.rsplit_once('/') {
+            if parent.is_empty() {
+                "/".to_string()
+            } else {
+                parent.to_string()
+            }
+        } else {
+            "/".to_string()
+        };
         // Update top-level node
         file_index::Entity::update_many()
             .filter(file_index::Column::UserId.eq(user_id))
             .filter(file_index::Column::Path.eq(trash_path))
             .col_expr(file_index::Column::Path, Expr::value(restored_path))
             .col_expr(file_index::Column::Name, Expr::value(new_name))
+            .col_expr(file_index::Column::ParentPath, Expr::value(restored_parent))
             .col_expr(
                 file_index::Column::FileTrashedAt,
                 Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
