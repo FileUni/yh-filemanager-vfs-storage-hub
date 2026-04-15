@@ -412,24 +412,76 @@ impl ScopedVfsStorageEngine {
         )
     }
     pub(super) async fn list_recursive_impl(&self, path: &str) -> VfsResult<Vec<VfsFileInfo>> {
-        let entries = self
-            .index_service
-            .list_files_recursive(&self.user_id, path)
-            .await
-            .map_err(|e| VfsError::Internal(e.to_string()))?;
-        Ok(entries
+        let normalized = self.validate_file_operation(path).await?;
+        if self.is_temp_path(&normalized) {
+            return self.list_impl(&normalized).await;
+        }
+        if self.get_protected_plan(&normalized).await?.is_some() {
+            let entries = self
+                .index_service
+                .list_files_recursive(&self.user_id, &normalized)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))?;
+            return Ok(entries
+                .into_iter()
+                .map(|e| VfsFileInfo {
+                    name: e.name.into(),
+                    path: e.path.into(),
+                    is_dir: e.is_dir,
+                    size: e.size as u64,
+                    modified: e.file_updated_at.map(|t| t.into()),
+                    favorite_color: e.favorite_color,
+                    has_active_share: None,
+                    has_active_direct: None,
+                    trashed_at: e.file_trashed_at.map(|t| t.into()),
+                    original_path: e.original_path.map(|p| p.into()),
+                })
+                .collect());
+        }
+
+        let physical = self.get_physical_path(&normalized).await?;
+        if !self.pool.is_dirty_dir(&physical) {
+            let entries = self
+                .index_service
+                .list_files_recursive(&self.user_id, &normalized)
+                .await
+                .map_err(|e| VfsError::Internal(e.to_string()))?;
+            if !entries.is_empty() {
+                return Ok(entries
+                    .into_iter()
+                    .map(|e| VfsFileInfo {
+                        name: e.name.into(),
+                        path: e.path.into(),
+                        is_dir: e.is_dir,
+                        size: e.size as u64,
+                        modified: e.file_updated_at.map(|t| t.into()),
+                        favorite_color: e.favorite_color,
+                        has_active_share: None,
+                        has_active_direct: None,
+                        trashed_at: e.file_trashed_at.map(|t| t.into()),
+                        original_path: e.original_path.map(|p| p.into()),
+                    })
+                    .collect());
+            }
+        }
+
+        let norm_path = if normalized == "/" {
+            "/".to_string()
+        } else {
+            normalized.trim_end_matches('/').to_string()
+        };
+        let norm_path_slash = format!("{}/", norm_path);
+        Ok(self
+            .pool
+            .list_recursive(&physical)
+            .await?
             .into_iter()
-            .map(|e| VfsFileInfo {
-                name: e.name.into(),
-                path: e.path.into(),
-                is_dir: e.is_dir,
-                size: e.size as u64,
-                modified: e.file_updated_at.map(|t| t.into()),
-                favorite_color: e.favorite_color,
-                has_active_share: None,
-                has_active_direct: None,
-                trashed_at: e.file_trashed_at.map(|t| t.into()),
-                original_path: e.original_path.map(|p| p.into()),
+            .map(|entry| self.translate_file_info(entry, false))
+            .filter(|entry| {
+                let logical_path = entry.path.as_ref();
+                !self.is_hidden_storage_path(logical_path)
+                    && logical_path != norm_path
+                    && logical_path != norm_path_slash
             })
             .collect())
     }
