@@ -58,6 +58,8 @@ mod path_tests {
                 .decode_utf8()
                 .map_err(|_| "Security violation: invalid percent encoding in path".to_string())?;
             validate_segments(decoded.as_ref())?;
+            // Return the decoded path for consistent handling
+            return Ok(decoded.to_string());
         }
 
         Ok(normalized)
