@@ -725,7 +725,10 @@ pub async fn decompress_task(
                 let (t_dir, _guard) = temp_manager
                     .create_user_temp_dir(user_id, "decompress")
                     .await?;
-                let local_archive = t_dir.join("input.archive");
+                let original_name = Path::new(src_path)
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("input.archive"));
+                let local_archive = t_dir.join(original_name);
                 let local_output_dir = t_dir.join("output");
                 fs::create_dir_all(&local_output_dir).await?;
                 copy_to_local_temp(engine, src_path, &local_archive).await?;
@@ -955,26 +958,26 @@ pub async fn list_archive_contents(
         }
         manager
             .run_with_permit(TaskPriority::Low, || async move {
-                let (stream, _) = engine.read_stream(archive_path).await?;
+                let (local_archive, _guard) =
+                    copy_vfs_file_to_local_temp(engine, archive_path, "archive-browser", "list")
+                        .await?;
                 let mut child = Command::new(if exe_path.is_empty() { "7z" } else { exe_path })
                     .arg("l")
                     .arg("-slt")
-                    .arg("-si")
+                    .arg(&local_archive)
                     .args(if let Some(pwd) = password {
                         vec![format!("-p{}", pwd)]
                     } else {
                         vec![]
                     })
-                    .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
+                    .stderr(Stdio::piped())
                     .spawn()?;
-                let stdin = child
-                    .stdin
-                    .take()
-                    .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
-                spawn_process_stdin_pump("list_archive_contents", stream, stdin, None);
                 let output = child.wait_with_output().await?;
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(anyhow::anyhow!("7z list failed: {}", stderr));
+                }
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let mut entries = Vec::new();
                 let mut current_entry = ArchiveEntry::default();
