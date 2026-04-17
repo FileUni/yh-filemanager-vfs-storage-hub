@@ -267,8 +267,6 @@ impl ScopedVfsStorageEngine {
                 )
             })?;
         validate_segments(decoded.as_ref())?;
-        // Return the decoded path for consistent handling
-        return Ok(decoded.to_string());
     }
 
     Ok(normalized)
@@ -597,19 +595,10 @@ impl ScopedVfsStorageEngine {
             info.path = new_path.into();
         } else {
             let raw_path = info.path.as_ref();
-            let decoded_path = if raw_path.contains('%') {
-                Cow::Owned(
-                    percent_encoding::percent_decode_str(raw_path)
-                        .decode_utf8_lossy()
-                        .to_string(),
-                )
+            let normalized_path = if raw_path.contains('\\') {
+                Cow::Owned(raw_path.replace("\\", "/"))
             } else {
                 Cow::Borrowed(raw_path)
-            };
-            let normalized_path = if decoded_path.contains('\\') {
-                Cow::Owned(decoded_path.replace("\\", "/"))
-            } else {
-                decoded_path
             };
             if let Some(logical) = normalized_path.strip_prefix(self.user_path_prefix.as_ref()) {
                 info.path =
