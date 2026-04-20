@@ -781,7 +781,7 @@ pub struct VfsTempFileConfig {
     #[config(
         desc_zh = "临时文件存储目录，用于存储上传分片和临时处理文件",
         desc_en = "Temporary file storage directory for storing upload chunks and temporary processing files",
-        example = "{RUNTIMEDIR}/tmp/vfs"
+        example = "{TEMPDIR}/vfs"
     )]
     pub dir: Option<Arc<str>>,
     #[config(
