@@ -254,23 +254,23 @@ impl ScopedVfsStorageEngine {
             Ok(())
         }
 
-    // Validate raw segments first.
-    validate_segments(&normalized)?;
+        // Validate raw segments first.
+        validate_segments(&normalized)?;
 
-    // Also validate percent-decoded view to prevent encoded traversal (e.g. %2e%2e).
-    if normalized.contains('%') {
-        let decoded = percent_encoding::percent_decode_str(&normalized)
-            .decode_utf8()
-            .map_err(|_| {
-                VfsError::Internal(
-                    "Security violation: invalid percent encoding in path".to_string(),
-                )
-            })?;
-        validate_segments(decoded.as_ref())?;
+        // Also validate percent-decoded view to prevent encoded traversal (e.g. %2e%2e).
+        if normalized.contains('%') {
+            let decoded = percent_encoding::percent_decode_str(&normalized)
+                .decode_utf8()
+                .map_err(|_| {
+                    VfsError::Internal(
+                        "Security violation: invalid percent encoding in path".to_string(),
+                    )
+                })?;
+            validate_segments(decoded.as_ref())?;
+        }
+
+        Ok(normalized)
     }
-
-    Ok(normalized)
-}
 
     pub(super) async fn validate_file_operation(&self, path: &str) -> VfsResult<String> {
         Self::validate_file_operation_impl(path)
