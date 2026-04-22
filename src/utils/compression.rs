@@ -961,7 +961,7 @@ pub async fn list_archive_contents(
                 let (local_archive, _guard) =
                     copy_vfs_file_to_local_temp(engine, archive_path, "archive-browser", "list")
                         .await?;
-                let mut child = Command::new(if exe_path.is_empty() { "7z" } else { exe_path })
+                let child = Command::new(if exe_path.is_empty() { "7z" } else { exe_path })
                     .arg("l")
                     .arg("-slt")
                     .arg(&local_archive)
