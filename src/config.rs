@@ -2262,36 +2262,6 @@ impl VfsProtectedStorageConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ConfigDoc)]
 pub struct VfsStorageHubConfig {
     #[config(
-        desc_zh = "启用WebDAV协议服务。低性能设备建议设为false，仅保留HTTP API",
-        desc_en = "Enable WebDAV protocol service. Low-performance devices: recommend false, keep only HTTP API",
-        example = "true"
-    )]
-    pub enable_webdav: Option<bool>,
-    #[config(
-        desc_zh = "启用SFTP协议服务。低性能设备建议设为false，仅保留HTTP API",
-        desc_en = "Enable SFTP protocol service. Low-performance devices: recommend false, keep only HTTP API",
-        example = "true"
-    )]
-    pub enable_sftp: Option<bool>,
-    #[config(
-        desc_zh = "启用FTP协议服务。低性能设备建议设为false，仅保留HTTP API",
-        desc_en = "Enable FTP protocol service. Low-performance devices: recommend false, keep only HTTP API",
-        example = "true"
-    )]
-    pub enable_ftp: Option<bool>,
-    #[config(
-        desc_zh = "启用S3兼容服务。低性能设备建议设为false，仅保留HTTP API",
-        desc_en = "Enable S3 compatible service. Low-performance devices: recommend false, keep only HTTP API",
-        example = "true"
-    )]
-    pub enable_s3: Option<bool>,
-    #[config(
-        desc_zh = "启用Web API服务，提供RESTful文件管理接口",
-        desc_en = "Enable Web API service to provide RESTful file management interface",
-        example = "true"
-    )]
-    pub enable_api: Option<bool>,
-    #[config(
         desc_zh = "存储连接器配置列表，定义所有可用的存储后端",
         desc_en = "Storage connector configuration list, defines all available storage backends",
         example = "[{ name = \"local-fs\", driver = \"fs\", root = \"{RUNTIMEDIR}/vfs\", enable = true, options = {} }]"
@@ -2357,32 +2327,8 @@ pub struct VfsStorageHubConfig {
 }
 
 impl VfsStorageHubConfig {
-    pub fn is_enable_webdav(&self) -> bool {
-        yh_config_infra::config_require_clone!(
-            self.enable_webdav,
-            "vfs_storage_hub",
-            "enable_webdav"
-        )
-    }
-    pub fn is_enable_sftp(&self) -> bool {
-        yh_config_infra::config_require_clone!(self.enable_sftp, "vfs_storage_hub", "enable_sftp")
-    }
-    pub fn is_enable_ftp(&self) -> bool {
-        yh_config_infra::config_require_clone!(self.enable_ftp, "vfs_storage_hub", "enable_ftp")
-    }
-    pub fn is_enable_s3(&self) -> bool {
-        yh_config_infra::config_require_clone!(self.enable_s3, "vfs_storage_hub", "enable_s3")
-    }
-    pub fn is_enable_api(&self) -> bool {
-        yh_config_infra::config_require_clone!(self.enable_api, "vfs_storage_hub", "enable_api")
-    }
     pub fn validate(&self, section: &str, errors: &mut Vec<String>) {
         let s = section;
-        yh_config_infra::config_collect_bool!(self.enable_webdav, s, "enable_webdav", errors);
-        yh_config_infra::config_collect_bool!(self.enable_sftp, s, "enable_sftp", errors);
-        yh_config_infra::config_collect_bool!(self.enable_ftp, s, "enable_ftp", errors);
-        yh_config_infra::config_collect_bool!(self.enable_s3, s, "enable_s3", errors);
-        yh_config_infra::config_collect_bool!(self.enable_api, s, "enable_api", errors);
         yh_config_infra::config_collect_not_empty!(self.default_pool, s, "default_pool", errors);
         if let Some(tf) = &self.temp_file {
             yh_config_infra::config_collect_not_empty!(tf.dir, s, "temp_file.dir", errors);
