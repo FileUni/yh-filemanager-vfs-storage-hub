@@ -57,15 +57,15 @@ This document is the sole detailed documentation for `crates/yh-filemanager-vfs-
  - RAII auto cleanup + scheduled expiration cleanup.
 - WAL Compatible: Can skip temp path WAL via config `wal_skip_temp_path`.
 
-### 3.5 Support for `yh-email-manager` Email Attachments
+### 3.5 Support for Pluginized Email Attachments
 
-- No direct crate-level coupling implementation found (no `yh-email-manager` direct call adaptation code).
-- Available Base Capabilities: VFS file read/write, streaming read/write, compression/decompression, sharing link can be reused for email attachment scenarios.
-- Belongs to "integrable base exists, dedicated adaptation not implemented in this module".
+- No direct crate-level coupling implementation is required anymore.
+- Available Base Capabilities: VFS file read/write, streaming read/write, compression/decompression, and sharing links can be reused by pluginized email attachment flows.
+- Belongs to "integrable base exists, plugin-side adaptation consumes it".
 
-### 3.6 Support for `yh-chat-manager` File Transfer
-- Current Status: Supports file metadata transfer via chat protocol.
-- Important Limitation: Since `yh-chat-manager` doesn't have message persistence capability, all file references transferred via chat are temporary. System doesn't record file send history. Users should use "File Share" feature for long-term stable access.
+### 3.6 Support for Pluginized Chat File Transfer
+- Current Status: Supports file metadata transfer semantics needed by chat-style protocols.
+- Important Limitation: Chat-related file references remain temporary protocol data. For long-term stable access, users should still use the standard "File Share" flow.
 
 ### 3.7 Compression and Decompression Mechanism (Built-in + External 7z)
 
