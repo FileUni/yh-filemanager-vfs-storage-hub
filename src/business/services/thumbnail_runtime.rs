@@ -128,6 +128,9 @@ pub struct ThumbnailRuntimeConfig {
     pub enabled: bool,
     pub cache_mode: String,
     pub cache_dir: String,
+    pub allow_user_directory_mode_override: bool,
+    pub allow_user_show_hidden_thumbnail_dirs: bool,
+    pub default_show_thumbnail_directories: bool,
     pub thumb_size_px: u32,
     pub thumb_format: String,
     pub thumb_quality: u8,
@@ -192,6 +195,18 @@ impl ThumbnailRuntimeConfig {
 
     pub fn get_thumb_format(&self) -> &str {
         self.thumb_format.as_str()
+    }
+
+    pub fn is_allow_user_directory_mode_override(&self) -> bool {
+        self.allow_user_directory_mode_override
+    }
+
+    pub fn is_allow_user_show_hidden_thumbnail_dirs(&self) -> bool {
+        self.allow_user_show_hidden_thumbnail_dirs
+    }
+
+    pub fn is_default_show_thumbnail_directories(&self) -> bool {
+        self.default_show_thumbnail_directories
     }
 
     pub fn get_media_hardware(&self) -> &MediaHardwareAccelerationRuntimeConfig {

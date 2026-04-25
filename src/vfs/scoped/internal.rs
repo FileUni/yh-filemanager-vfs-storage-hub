@@ -280,10 +280,13 @@ impl ScopedVfsStorageEngine {
     }
     pub(super) fn is_thumbnail_cache_path(&self, path: &str) -> bool {
         let normalized = path.trim_end_matches('/');
-        if normalized == "/.thumbs" || normalized == "/.thumbs_cache" {
+        if normalized == "/.fileuni-thumbnail"
+            || normalized == "/.thumbs"
+            || normalized == "/.thumbs_cache"
+        {
             return true;
         }
-        if normalized.contains("/.thumbs/") {
+        if normalized.contains("/.fileuni-thumbnail/") || normalized.contains("/.thumbs/") {
             return true;
         }
         normalized.starts_with("/.thumbs_cache/")

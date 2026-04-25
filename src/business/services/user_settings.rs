@@ -17,6 +17,8 @@ pub struct UserSettingsUpdatePatch {
     pub thumbnail_disable_audio: Option<bool>,
     pub thumbnail_disable_office: Option<bool>,
     pub thumbnail_disable_tex: Option<bool>,
+    pub thumbnail_directory_mode: Option<Option<String>>,
+    pub show_thumbnail_directories: Option<bool>,
     pub sftp_enable_password: Option<bool>,
     pub s3_access_key: Option<Option<String>>,
     pub s3_secret_key: Option<Option<String>>,
@@ -49,6 +51,8 @@ pub struct UserSettingsSnapshot {
     pub thumbnail_disable_audio: bool,
     pub thumbnail_disable_office: bool,
     pub thumbnail_disable_tex: bool,
+    pub thumbnail_directory_mode: Option<String>,
+    pub show_thumbnail_directories: bool,
     pub sftp_enable_password: bool,
     pub s3_access_key: Option<String>,
     pub s3_secret_key: Option<String>,
@@ -76,6 +80,8 @@ impl From<&user_settings::Model> for UserSettingsSnapshot {
             thumbnail_disable_audio: model.thumbnail_disable_audio,
             thumbnail_disable_office: model.thumbnail_disable_office,
             thumbnail_disable_tex: model.thumbnail_disable_tex,
+            thumbnail_directory_mode: model.thumbnail_directory_mode.clone(),
+            show_thumbnail_directories: model.show_thumbnail_directories,
             sftp_enable_password: model.sftp_enable_password,
             s3_access_key: model.s3_access_key.clone(),
             s3_secret_key: model.s3_secret_key.clone(),
@@ -151,6 +157,8 @@ impl UserSettingsService {
             thumbnail_disable_audio: Set(false),
             thumbnail_disable_office: Set(false),
             thumbnail_disable_tex: Set(false),
+            thumbnail_directory_mode: Set(None),
+            show_thumbnail_directories: Set(false),
             sftp_enable_password: Set(true),
             s3_access_key: Set(None),
             s3_secret_key: Set(None),
@@ -257,6 +265,18 @@ impl UserSettingsService {
         if let Some(value) = patch.thumbnail_disable_tex {
             update = update.col_expr(
                 user_settings::Column::ThumbnailDisableTex,
+                Expr::value(value),
+            );
+        }
+        if let Some(value) = patch.thumbnail_directory_mode.as_ref() {
+            update = update.col_expr(
+                user_settings::Column::ThumbnailDirectoryMode,
+                Expr::value(value.as_deref()),
+            );
+        }
+        if let Some(value) = patch.show_thumbnail_directories {
+            update = update.col_expr(
+                user_settings::Column::ShowThumbnailDirectories,
                 Expr::value(value),
             );
         }
@@ -450,6 +470,8 @@ mod tests {
             thumbnail_disable_markdown: false,
             thumbnail_disable_office: false,
             thumbnail_disable_tex: false,
+            thumbnail_directory_mode: None,
+            show_thumbnail_directories: false,
             sftp_enable_password: true,
             s3_access_key: None,
             s3_secret_key: None,

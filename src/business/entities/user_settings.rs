@@ -18,6 +18,8 @@ pub struct Model {
     pub thumbnail_disable_audio: bool,
     pub thumbnail_disable_office: bool,
     pub thumbnail_disable_tex: bool,
+    pub thumbnail_directory_mode: Option<String>,
+    pub show_thumbnail_directories: bool,
     pub sftp_enable_password: bool, // Whether to allow SFTP password login
     pub s3_access_key: Option<String>, // S3 independent access key ID
     pub s3_secret_key: Option<String>, // S3 independent access key Secret

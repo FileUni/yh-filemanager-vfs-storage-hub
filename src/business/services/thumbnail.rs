@@ -35,10 +35,13 @@ struct ThumbnailPaths {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThumbnailCacheMode {
-    Dir,
-    Global,
+    PerDirectory,
+    UserRoot,
     None,
 }
+
+const THUMBNAIL_DIR_NAME: &str = ".fileuni-thumbnail";
+const LEGACY_THUMBNAIL_DIR_NAME: &str = ".thumbs";
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff", "tif", "svg", "psd", "ai",
 ];
@@ -418,24 +421,32 @@ fn hash_path(path: &str) -> String {
     hasher.update(path.as_bytes());
     hex::encode(hasher.finalize())
 }
-fn build_thumb_dir(dir_path: &str) -> String {
+fn build_named_thumbnail_dir(dir_path: &str, dir_name: &str) -> String {
     if dir_path == "/" {
-        "/.thumbs".to_string()
+        format!("/{}", dir_name)
     } else {
-        format!("{}/.thumbs", dir_path.trim_end_matches('/'))
+        format!("{}/{}", dir_path.trim_end_matches('/'), dir_name)
     }
 }
+fn build_thumb_dir(dir_path: &str) -> String {
+    build_named_thumbnail_dir(dir_path, THUMBNAIL_DIR_NAME)
+}
+fn build_legacy_thumb_dir(dir_path: &str) -> String {
+    build_named_thumbnail_dir(dir_path, LEGACY_THUMBNAIL_DIR_NAME)
+}
+fn build_user_root_thumb_dir() -> String {
+    format!("/{}", THUMBNAIL_DIR_NAME)
+}
 fn build_disable_marker(thumb_dir: &str) -> String {
-    if thumb_dir == "/" {
-        "/.thumbs/.disabled".to_string()
-    } else {
-        format!("{}/.disabled", thumb_dir.trim_end_matches('/'))
-    }
+    format!("{}/.disabled", thumb_dir.trim_end_matches('/'))
+}
+fn build_legacy_disable_markers(dir_path: &str) -> Vec<String> {
+    vec![build_disable_marker(&build_legacy_thumb_dir(dir_path))]
 }
 fn parse_thumbnail_cache_mode(cfg: &ThumbnailRuntimeConfig) -> Result<ThumbnailCacheMode> {
     match cfg.get_cache_mode().trim().to_ascii_lowercase().as_str() {
-        "dir" => Ok(ThumbnailCacheMode::Dir),
-        "global" | "db" => Ok(ThumbnailCacheMode::Global),
+        "dir" | "per_dir" | "per-directory" => Ok(ThumbnailCacheMode::PerDirectory),
+        "global" | "db" | "user_root" | "user-root" => Ok(ThumbnailCacheMode::UserRoot),
         "none" => Ok(ThumbnailCacheMode::None),
         other => Err(anyhow!("Unsupported thumbnail.cache_mode: {}", other)),
     }
@@ -445,28 +456,25 @@ fn build_thumbnail_paths(
     logical_path: &str,
 ) -> Result<Option<ThumbnailPaths>> {
     let cache_mode = parse_thumbnail_cache_mode(cfg)?;
-    let cache_dir = cfg.get_cache_dir();
     let format = normalize_format(cfg.get_thumb_format());
     let hash = hash_path(logical_path);
     let file_name = format!("{}.{}", hash, format);
-    if cache_mode == ThumbnailCacheMode::Global {
-        let (prefix1, rest) = hash.split_at(2);
-        let (prefix2, _) = rest.split_at(2);
-        let dir = format!(
-            "{}/{}/{}",
-            cache_dir.trim_end_matches('/'),
-            prefix1,
-            prefix2
-        );
-        let file = format!("{}/{}", dir, file_name);
-        Ok(Some(ThumbnailPaths { dir, file }))
-    } else if cache_mode == ThumbnailCacheMode::Dir {
-        let parent = parent_dir(logical_path);
-        let dir = build_thumb_dir(&parent);
-        let file = format!("{}/{}", dir.trim_end_matches('/'), file_name);
-        Ok(Some(ThumbnailPaths { dir, file }))
-    } else {
-        Ok(None)
+    match cache_mode {
+        ThumbnailCacheMode::UserRoot => {
+            let (prefix1, rest) = hash.split_at(2);
+            let (prefix2, _) = rest.split_at(2);
+            let root_dir = build_user_root_thumb_dir();
+            let dir = format!("{}/{}/{}", root_dir, prefix1, prefix2);
+            let file = format!("{}/{}", dir, file_name);
+            Ok(Some(ThumbnailPaths { dir, file }))
+        }
+        ThumbnailCacheMode::PerDirectory => {
+            let parent = parent_dir(logical_path);
+            let dir = build_thumb_dir(&parent);
+            let file = format!("{}/{}", dir.trim_end_matches('/'), file_name);
+            Ok(Some(ThumbnailPaths { dir, file }))
+        }
+        ThumbnailCacheMode::None => Ok(None),
     }
 }
 fn thumbnail_content_type(format: &str) -> String {
@@ -504,7 +512,15 @@ async fn is_directory_thumbnail_disabled(
 ) -> Result<bool> {
     let thumb_dir = build_thumb_dir(dir_path);
     let marker = build_disable_marker(&thumb_dir);
-    Ok(storage.exists(&marker).await?)
+    if storage.exists(&marker).await? {
+        return Ok(true);
+    }
+    for legacy_marker in build_legacy_disable_markers(dir_path) {
+        if storage.exists(&legacy_marker).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 async fn download_to_local(
     storage: &std::sync::Arc<dyn VfsStorage>,
@@ -825,21 +841,22 @@ async fn clear_directory_thumbnails(
     if cache_mode == ThumbnailCacheMode::None {
         return Ok(0);
     }
-    if cache_mode == ThumbnailCacheMode::Global {
+    if cache_mode == ThumbnailCacheMode::UserRoot {
         return clear_global_thumbnails(storage, cfg, Some(&dir_path)).await;
     }
-    let thumb_dir = build_thumb_dir(&dir_path);
-    if !storage.exists(&thumb_dir).await? {
-        return Ok(0);
-    }
-    let entries = storage.list(&thumb_dir).await?;
     let mut count = 0u64;
-    for entry in entries {
-        if entry.name.as_ref() == ".disabled" {
+    for thumb_dir in [build_thumb_dir(&dir_path), build_legacy_thumb_dir(&dir_path)] {
+        if !storage.exists(&thumb_dir).await? {
             continue;
         }
-        let _ = storage.delete(&entry.path).await;
-        count += 1;
+        let entries = storage.list(&thumb_dir).await?;
+        for entry in entries {
+            if entry.name.as_ref() == ".disabled" {
+                continue;
+            }
+            let _ = storage.delete(&entry.path).await;
+            count += 1;
+        }
     }
     Ok(count)
 }
@@ -851,7 +868,7 @@ async fn clear_all_thumbnails(
     if cache_mode == ThumbnailCacheMode::None {
         return Ok(0);
     }
-    if cache_mode == ThumbnailCacheMode::Global {
+    if cache_mode == ThumbnailCacheMode::UserRoot {
         return clear_global_thumbnails(storage, cfg, None).await;
     }
     let mut count = 0u64;
@@ -890,12 +907,12 @@ async fn clear_global_thumbnails(
         }
         return Ok(count);
     }
-    let cache_dir = cfg.get_cache_dir();
-    if !storage.exists(cache_dir).await? {
+    let cache_dir = build_user_root_thumb_dir();
+    if !storage.exists(&cache_dir).await? {
         return Ok(0);
     }
     let mut paths: Vec<String> = storage
-        .list_recursive(cache_dir)
+        .list_recursive(&cache_dir)
         .await?
         .into_iter()
         .map(|entry| entry.path.to_string())
@@ -908,8 +925,8 @@ async fn clear_global_thumbnails(
             count += 1;
         }
     }
-    if storage.exists(cache_dir).await? {
-        let _ = storage.delete(cache_dir).await;
+    if storage.exists(&cache_dir).await? {
+        let _ = storage.delete(&cache_dir).await;
         count += 1;
     }
     Ok(count)
@@ -935,9 +952,10 @@ mod tests {
 
     #[test]
     fn build_thumb_dir_and_disable_marker_paths_are_stable() {
-        assert_eq!(build_thumb_dir("/"), "/.thumbs");
-        assert_eq!(build_thumb_dir("/docs/sub/"), "/docs/sub/.thumbs");
-        assert_eq!(build_disable_marker("/.thumbs"), "/.thumbs/.disabled");
+        assert_eq!(build_thumb_dir("/"), "/.fileuni-thumbnail");
+        assert_eq!(build_thumb_dir("/docs/sub/"), "/docs/sub/.fileuni-thumbnail");
+        assert_eq!(build_legacy_thumb_dir("/docs/sub/"), "/docs/sub/.thumbs");
+        assert_eq!(build_disable_marker("/.fileuni-thumbnail"), "/.fileuni-thumbnail/.disabled");
     }
 
     #[test]

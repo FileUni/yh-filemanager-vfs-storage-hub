@@ -1573,14 +1573,32 @@ pub struct VfsThumbnailConfig {
     )]
     pub enabled: Option<bool>,
     #[config(
-        desc_zh = "缓存模式: dir(目录内 .thumbs)|global(集中缓存目录)|none(不缓存)",
-        desc_en = "Cache mode",
-        example = "dir"
+        desc_zh = "缩略图目录模式: dir/per_directory(每个目录下 .fileuni-thumbnail)|global/user_root(用户根目录 /.fileuni-thumbnail)|none(不缓存)",
+        desc_en = "Thumbnail directory mode",
+        example = "user_root"
     )]
     pub cache_mode: Option<String>,
     #[config(
-        desc_zh = "缩略图缓存目录路径",
-        desc_en = "Thumbnail cache directory path",
+        desc_zh = "是否允许用户覆盖缩略图目录模式",
+        desc_en = "Allow users to override thumbnail directory mode",
+        example = "true"
+    )]
+    pub allow_user_directory_mode_override: Option<bool>,
+    #[config(
+        desc_zh = "是否允许用户显示缩略图目录",
+        desc_en = "Allow users to show thumbnail directories",
+        example = "true"
+    )]
+    pub allow_user_show_hidden_thumbnail_dirs: Option<bool>,
+    #[config(
+        desc_zh = "是否默认显示缩略图目录",
+        desc_en = "Show thumbnail directories by default",
+        example = "false"
+    )]
+    pub default_show_thumbnail_directories: Option<bool>,
+    #[config(
+        desc_zh = "旧版集中缓存目录配置，仅兼容历史配置",
+        desc_en = "Legacy central cache directory setting for compatibility only",
         example = "{RUNTIMEDIR}/cache/thumbnails"
     )]
     pub cache_dir: Option<String>,
@@ -1676,6 +1694,27 @@ impl VfsThumbnailConfig {
             "thumbnail.cache_dir"
         )
     }
+    pub fn is_allow_user_directory_mode_override(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.allow_user_directory_mode_override,
+            "vfs_storage_hub",
+            "thumbnail.allow_user_directory_mode_override"
+        )
+    }
+    pub fn is_allow_user_show_hidden_thumbnail_dirs(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.allow_user_show_hidden_thumbnail_dirs,
+            "vfs_storage_hub",
+            "thumbnail.allow_user_show_hidden_thumbnail_dirs"
+        )
+    }
+    pub fn is_default_show_thumbnail_directories(&self) -> bool {
+        yh_config_infra::config_require_clone!(
+            self.default_show_thumbnail_directories,
+            "vfs_storage_hub",
+            "thumbnail.default_show_thumbnail_directories"
+        )
+    }
     pub fn get_cache_mode(&self) -> &str {
         yh_config_infra::config_require_str!(
             self.cache_mode,
@@ -1700,6 +1739,9 @@ impl VfsThumbnailConfig {
             enabled: self.is_enabled(),
             cache_mode: self.get_cache_mode().to_string(),
             cache_dir: self.get_cache_dir().to_string(),
+            allow_user_directory_mode_override: self.is_allow_user_directory_mode_override(),
+            allow_user_show_hidden_thumbnail_dirs: self.is_allow_user_show_hidden_thumbnail_dirs(),
+            default_show_thumbnail_directories: self.is_default_show_thumbnail_directories(),
             thumb_size_px: self.get_thumb_size_px(),
             thumb_format: self.get_thumb_format().to_string(),
             thumb_quality: self.get_thumb_quality(),
@@ -2723,13 +2765,34 @@ impl VfsStorageHubConfig {
             );
             if let Some(mode) = thumb.cache_mode.as_deref() {
                 let mode = mode.trim().to_ascii_lowercase();
-                if !matches!(mode.as_str(), "dir" | "global" | "none" | "db") {
+                if !matches!(
+                    mode.as_str(),
+                    "dir" | "per_dir" | "per-directory" | "global" | "user_root" | "user-root" | "none" | "db"
+                ) {
                     errors.push(format!(
-                        "[{}] thumbnail.cache_mode must be one of dir|global|none (legacy alias db is accepted)",
+                        "[{}] thumbnail.cache_mode must be one of dir|per_dir|global|user_root|none (legacy alias db is accepted)",
                         s
                     ));
                 }
             }
+            yh_config_infra::config_collect_bool!(
+                thumb.allow_user_directory_mode_override,
+                s,
+                "thumbnail.allow_user_directory_mode_override",
+                errors
+            );
+            yh_config_infra::config_collect_bool!(
+                thumb.allow_user_show_hidden_thumbnail_dirs,
+                s,
+                "thumbnail.allow_user_show_hidden_thumbnail_dirs",
+                errors
+            );
+            yh_config_infra::config_collect_bool!(
+                thumb.default_show_thumbnail_directories,
+                s,
+                "thumbnail.default_show_thumbnail_directories",
+                errors
+            );
             yh_config_infra::config_collect_not_empty!(
                 thumb.cache_dir,
                 s,
