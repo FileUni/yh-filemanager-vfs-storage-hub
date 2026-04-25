@@ -6,6 +6,32 @@ use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 impl ScopedVfsStorageEngine {
+    fn should_prune_stale_recycle_index(path: &str, err: &VfsError) -> bool {
+        if !path.starts_with("/.recycle_bin/") {
+            return false;
+        }
+        match err {
+            VfsError::NotFound(_) => true,
+            VfsError::OpenDal(inner) => matches!(
+                inner.kind(),
+                opendal::ErrorKind::NotFound | opendal::ErrorKind::Unexpected
+            ),
+            VfsError::Io(io_err) => matches!(
+                io_err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput
+            ),
+            VfsError::Internal(message) => {
+                let lower = message.to_ascii_lowercase();
+                lower.contains("not found")
+                    || lower.contains("no such file")
+                    || lower.contains("invalid argument")
+                    || lower.contains("unsupported file type")
+                    || lower.contains("unexpected")
+            }
+            _ => false,
+        }
+    }
+
     pub(super) async fn write_impl(&self, path: &str, data: Bytes) -> VfsResult<VfsFileInfo> {
         self.check_maintenance()?;
         let normalized = self.validate_file_operation(path).await?;
@@ -187,13 +213,96 @@ impl ScopedVfsStorageEngine {
                 Ok(info)
             }
             Err(e) => {
-                self.fail_wal(wal_id, &e.to_string()).await;
-                self.journal_log("DELETE", &normalized, None, false, Some(e.to_string()))
-                    .await;
+                if Self::should_prune_stale_recycle_index(&normalized, &e) {
+                    match self.index_service.delete_file(&self.user_id, &normalized).await {
+                        Ok(()) => {
+                            self.mark_wal_physical_done(wal_id).await;
+                            self.complete_wal(wal_id).await;
+                            self.cache.invalidate_parent_ls(&normalized).await;
+                            yh_console_log::yhlog(
+                                "warn",
+                                &format!(
+                                    "VFS delete pruned stale recycle entry for user_id={} path={} physical_path={} err={}",
+                                    self.user_id, normalized, physical_path, e
+                                ),
+                            );
+                            self.journal_log("DELETE", &normalized, None, true, None)
+                                .await;
+                            return Ok(info);
+                        }
+                        Err(index_err) => {
+                            self.fail_wal(
+                                wal_id,
+                                &format!(
+                                    "DELETE stale recycle entry cleanup failed for {} (physical_path={}): original_err={}, index_err={}",
+                                    normalized, physical_path, e, index_err
+                                ),
+                            )
+                            .await;
+                            self.journal_log(
+                                "DELETE",
+                                &normalized,
+                                None,
+                                false,
+                                Some(format!(
+                                    "physical_path={} original_err={} index_cleanup_err={}",
+                                    physical_path, e, index_err
+                                )),
+                            )
+                            .await;
+                            return Err(VfsError::Internal(format!(
+                                "Delete failed for {} and stale recycle entry cleanup also failed: {}",
+                                normalized, index_err
+                            )));
+                        }
+                    }
+                }
+                self.fail_wal(
+                    wal_id,
+                    &format!("DELETE failed for {} (physical_path={}): {}", normalized, physical_path, e),
+                )
+                .await;
+                self.journal_log(
+                    "DELETE",
+                    &normalized,
+                    None,
+                    false,
+                    Some(format!("physical_path={} err={}", physical_path, e)),
+                )
+                .await;
                 Err(e)
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScopedVfsStorageEngine;
+    use crate::vfs::error::VfsError;
+
+    #[test]
+    fn stale_recycle_index_prunes_not_found_errors() {
+        assert!(ScopedVfsStorageEngine::should_prune_stale_recycle_index(
+            "/.recycle_bin/test.sock",
+            &VfsError::NotFound("missing".to_string()),
+        ));
+        assert!(!ScopedVfsStorageEngine::should_prune_stale_recycle_index(
+            "/normal/test.sock",
+            &VfsError::NotFound("missing".to_string()),
+        ));
+    }
+
+    #[test]
+    fn stale_recycle_index_prunes_invalid_input_io_errors() {
+        assert!(ScopedVfsStorageEngine::should_prune_stale_recycle_index(
+            "/.recycle_bin/test.sock",
+            &VfsError::Io(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+        ));
+    }
+}
+
+impl ScopedVfsStorageEngine {
     pub(super) async fn write_stream_impl(
         &self,
         path: &str,
