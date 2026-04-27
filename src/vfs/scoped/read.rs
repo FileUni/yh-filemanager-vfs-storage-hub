@@ -251,6 +251,12 @@ impl ScopedVfsStorageEngine {
                 .await
                 .map_err(|e| VfsError::Internal(e.to_string()))?;
             if !db_entries.is_empty() {
+                let norm_path = if normalized == "/" {
+                    "/"
+                } else {
+                    normalized.trim_end_matches('/')
+                };
+                let norm_path_slash = format!("{}/", norm_path);
                 db_entries
                     .into_iter()
                     .map(|e| VfsFileInfo {
@@ -264,6 +270,22 @@ impl ScopedVfsStorageEngine {
                         has_active_direct: None,
                         trashed_at: e.file_trashed_at.map(|t| t.into()),
                         original_path: e.original_path.map(|p| p.into()),
+                    })
+                    .filter(|translated| {
+                        if self.is_hidden_storage_path(translated.path.as_ref()) {
+                            return false;
+                        }
+                        let trans_path = translated.path.as_ref();
+                        if trans_path == norm_path || (norm_path != "/" && trans_path == norm_path_slash)
+                        {
+                            return false;
+                        }
+                        let parent = if let Some((p, _)) = trans_path.rsplit_once('/') {
+                            if p.is_empty() { "/" } else { p }
+                        } else {
+                            return false;
+                        };
+                        parent == norm_path
                     })
                     .collect()
             } else {
