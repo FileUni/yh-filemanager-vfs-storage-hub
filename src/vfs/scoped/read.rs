@@ -498,17 +498,16 @@ impl ScopedVfsStorageEngine {
                 .join(rel)
                 .exists())
         } else {
+            let physical = self.get_physical_path(&normalized).await?;
             if self.get_index_metadata(&normalized).await?.is_some() {
-                return Ok(true);
+                return self.pool.exists(&physical).await;
             }
             if let Some(plan) = self.get_protected_plan(&normalized).await?
                 && normalized == plan.root
             {
                 return Ok(true);
             }
-            self.pool
-                .exists(&self.get_physical_path(&normalized).await?)
-                .await
+            self.pool.exists(&physical).await
         }
     }
     pub(super) async fn stat_impl(&self, path: &str) -> VfsResult<VfsFileInfo> {

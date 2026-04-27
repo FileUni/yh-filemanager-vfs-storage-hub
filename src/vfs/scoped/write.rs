@@ -595,6 +595,13 @@ impl ScopedVfsStorageEngine {
                 let physical_dst = self.get_physical_path(&norm_dst).await?;
                 match self.pool.move_file(&physical_src, &physical_dst).await {
                     Ok(_) => {
+                        yh_console_log::yhlog(
+                            "warn",
+                            &format!(
+                                "VFS move physical success user_id={} src={} dst={} physical_src={} physical_dst={}",
+                                self.user_id, norm_src, norm_dst, physical_src, physical_dst
+                            ),
+                        );
                         self.mark_wal_physical_done(wal_id).await;
                         let mut metadata_complete = true;
                         self.pool.invalidate_read_cache(&physical_src).await;
@@ -603,6 +610,13 @@ impl ScopedVfsStorageEngine {
                         self.cache.invalidate_parent_ls(&norm_dst).await;
                         self.cache.invalidate("stat", &norm_src).await;
                         self.cache.invalidate("stat", &norm_dst).await;
+                        yh_console_log::yhlog(
+                            "warn",
+                            &format!(
+                                "VFS move invalidated caches user_id={} src={} dst={}",
+                                self.user_id, norm_src, norm_dst
+                            ),
+                        );
                         if !self.is_thumbnail_cache_path(&norm_src)
                             && !self.is_thumbnail_cache_path(&norm_dst)
                             && let Err(err) = self
