@@ -1575,7 +1575,7 @@ pub struct VfsThumbnailConfig {
     #[config(
         desc_zh = "缩略图目录模式: dir/per_directory(每个目录下 .fileuni-thumbnail)|global/user_root(用户根目录 /.fileuni-thumbnail)|none(不缓存)",
         desc_en = "Thumbnail directory mode",
-        example = "user_root"
+        example = "统一目录模式"
     )]
     pub cache_mode: Option<String>,
     #[config(
