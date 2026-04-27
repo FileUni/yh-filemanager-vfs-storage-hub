@@ -190,6 +190,11 @@ impl ScopedVfsStorageEngine {
     }
     pub(super) async fn list_impl(&self, path: &str) -> VfsResult<Vec<VfsFileInfo>> {
         let normalized = self.validate_file_operation(path).await?;
+        let normalized = if normalized == "/" {
+            normalized
+        } else {
+            normalized.trim_end_matches('/').to_string()
+        };
         if self.is_temp_path(&normalized) {
             let rel = self.get_relative_path(&normalized, LOGICAL_TEMP_PREFIX);
             let mut entries =
@@ -374,6 +379,11 @@ impl ScopedVfsStorageEngine {
         Box::pin(
             futures::stream::once(async move {
                 let normalized = self_clone.validate_file_operation(&path_clone).await?;
+                let normalized = if normalized == "/" {
+                    normalized
+                } else {
+                    normalized.trim_end_matches('/').to_string()
+                };
                 if self_clone.is_temp_path(&normalized) {
                     let entries = self_clone.list_impl(&normalized).await?;
                     return Ok(ListStreamSource::Materialized(entries));
@@ -584,7 +594,7 @@ impl ScopedVfsStorageEngine {
         {
             let physical_exists = self.pool.exists(&physical).await?;
             yh_console_log::yhlog(
-                "warn",
+                "info",
                 &format!(
                     "VFS stat index probe user_id={} logical_path={} physical_path={} physical_exists={} is_dir={}",
                     self.user_id, normalized, physical, physical_exists, e.is_dir

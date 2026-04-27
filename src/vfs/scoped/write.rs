@@ -596,7 +596,7 @@ impl ScopedVfsStorageEngine {
                 match self.pool.move_file(&physical_src, &physical_dst).await {
                     Ok(_) => {
                         yh_console_log::yhlog(
-                            "warn",
+                            "info",
                             &format!(
                                 "VFS move physical success user_id={} src={} dst={} physical_src={} physical_dst={}",
                                 self.user_id, norm_src, norm_dst, physical_src, physical_dst
@@ -611,7 +611,7 @@ impl ScopedVfsStorageEngine {
                         self.cache.invalidate("stat", &norm_src).await;
                         self.cache.invalidate("stat", &norm_dst).await;
                         yh_console_log::yhlog(
-                            "warn",
+                            "info",
                             &format!(
                                 "VFS move invalidated caches user_id={} src={} dst={}",
                                 self.user_id, norm_src, norm_dst
