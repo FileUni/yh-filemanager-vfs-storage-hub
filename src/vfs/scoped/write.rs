@@ -591,19 +591,18 @@ impl ScopedVfsStorageEngine {
                 should_complete_wal = true;
                 self.stat_impl(dst).await
             } else {
-                match self
-                    .pool
-                    .move_file(
-                        &self.get_physical_path(&norm_src).await?,
-                        &self.get_physical_path(&norm_dst).await?,
-                    )
-                    .await
-                {
+                let physical_src = self.get_physical_path(&norm_src).await?;
+                let physical_dst = self.get_physical_path(&norm_dst).await?;
+                match self.pool.move_file(&physical_src, &physical_dst).await {
                     Ok(_) => {
                         self.mark_wal_physical_done(wal_id).await;
                         let mut metadata_complete = true;
+                        self.pool.invalidate_read_cache(&physical_src).await;
+                        self.pool.invalidate_read_cache(&physical_dst).await;
                         self.cache.invalidate_parent_ls(&norm_src).await;
                         self.cache.invalidate_parent_ls(&norm_dst).await;
+                        self.cache.invalidate("stat", &norm_src).await;
+                        self.cache.invalidate("stat", &norm_dst).await;
                         if !self.is_thumbnail_cache_path(&norm_src)
                             && !self.is_thumbnail_cache_path(&norm_dst)
                             && let Err(err) = self

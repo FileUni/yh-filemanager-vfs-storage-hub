@@ -561,18 +561,29 @@ impl ScopedVfsStorageEngine {
                 .get_file_metadata(&self.user_id, &normalized)
                 .await
         {
-            return Ok(VfsFileInfo {
-                name: e.name.into(),
-                path: e.path.into(),
-                is_dir: e.is_dir,
-                size: e.size as u64,
-                modified: e.file_updated_at.map(|t| t.into()),
-                favorite_color: e.favorite_color,
-                has_active_share: None,
-                has_active_direct: None,
-                trashed_at: e.file_trashed_at.map(|t| t.into()),
-                original_path: e.original_path.map(|p| p.into()),
-            });
+            let physical_exists = self.pool.exists(&physical).await?;
+            yh_console_log::yhlog(
+                "warn",
+                &format!(
+                    "VFS stat index probe user_id={} logical_path={} physical_path={} physical_exists={} is_dir={}",
+                    self.user_id, normalized, physical, physical_exists, e.is_dir
+                ),
+            );
+            if physical_exists {
+                return Ok(VfsFileInfo {
+                    name: e.name.into(),
+                    path: e.path.into(),
+                    is_dir: e.is_dir,
+                    size: e.size as u64,
+                    modified: e.file_updated_at.map(|t| t.into()),
+                    favorite_color: e.favorite_color,
+                    has_active_share: None,
+                    has_active_direct: None,
+                    trashed_at: e.file_trashed_at.map(|t| t.into()),
+                    original_path: e.original_path.map(|p| p.into()),
+                });
+            }
+            return Err(VfsError::NotFound(normalized));
         }
         let meta = self.pool.stat(&physical).await?;
         let info = VfsFileInfo {

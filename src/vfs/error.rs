@@ -22,6 +22,9 @@ pub enum VfsError {
 // Convert from opendal::Error
 impl From<opendal::Error> for VfsError {
     fn from(err: opendal::Error) -> Self {
+        if err.kind() == opendal::ErrorKind::NotFound {
+            return VfsError::NotFound(err.to_string());
+        }
         VfsError::OpenDal(Box::new(err))
     }
 }
