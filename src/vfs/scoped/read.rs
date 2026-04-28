@@ -281,7 +281,8 @@ impl ScopedVfsStorageEngine {
                             return false;
                         }
                         let trans_path = translated.path.as_ref();
-                        if trans_path == norm_path || (norm_path != "/" && trans_path == norm_path_slash)
+                        if trans_path == norm_path
+                            || (norm_path != "/" && trans_path == norm_path_slash)
                         {
                             return false;
                         }

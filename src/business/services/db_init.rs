@@ -164,8 +164,12 @@ pub async fn init_vfs_tables(db: &Arc<sea_orm::DatabaseConnection>) -> Result<()
 }
 
 async fn ensure_user_settings_columns(db: &Arc<sea_orm::DatabaseConnection>) -> Result<(), DbErr> {
-    add_user_settings_column_if_missing(db, "thumbnail_directory_mode", AddColumnKind::TextNullable)
-        .await?;
+    add_user_settings_column_if_missing(
+        db,
+        "thumbnail_directory_mode",
+        AddColumnKind::TextNullable,
+    )
+    .await?;
     add_user_settings_column_if_missing(
         db,
         "show_thumbnail_directories",

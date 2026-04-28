@@ -845,7 +845,10 @@ async fn clear_directory_thumbnails(
         return clear_global_thumbnails(storage, cfg, Some(&dir_path)).await;
     }
     let mut count = 0u64;
-    for thumb_dir in [build_thumb_dir(&dir_path), build_legacy_thumb_dir(&dir_path)] {
+    for thumb_dir in [
+        build_thumb_dir(&dir_path),
+        build_legacy_thumb_dir(&dir_path),
+    ] {
         if !storage.exists(&thumb_dir).await? {
             continue;
         }
@@ -953,9 +956,15 @@ mod tests {
     #[test]
     fn build_thumb_dir_and_disable_marker_paths_are_stable() {
         assert_eq!(build_thumb_dir("/"), "/.fileuni-thumbnail");
-        assert_eq!(build_thumb_dir("/docs/sub/"), "/docs/sub/.fileuni-thumbnail");
+        assert_eq!(
+            build_thumb_dir("/docs/sub/"),
+            "/docs/sub/.fileuni-thumbnail"
+        );
         assert_eq!(build_legacy_thumb_dir("/docs/sub/"), "/docs/sub/.thumbs");
-        assert_eq!(build_disable_marker("/.fileuni-thumbnail"), "/.fileuni-thumbnail/.disabled");
+        assert_eq!(
+            build_disable_marker("/.fileuni-thumbnail"),
+            "/.fileuni-thumbnail/.disabled"
+        );
     }
 
     #[test]

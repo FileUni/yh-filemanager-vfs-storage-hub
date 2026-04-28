@@ -531,6 +531,16 @@ impl ScopedVfsStorageEngine {
             .get_media_transcoding()
             .get_timeout_secs();
         Self::spawn_batch_task("batch_video_compress", async move {
+            let _ = handler.update_task(task_id, 0, Some("queued"), None).await;
+            let _video_permit =
+                match crate::vfs::video_compress_task::acquire_video_compress_task_permit().await {
+                    Ok(permit) => permit,
+                    Err(err) => {
+                        let _ = handler.fail_task(task_id, &err).await;
+                        handler.cleanup_task(task_id);
+                        return;
+                    }
+                };
             let _permit = match Self::acquire_batch_task_permit().await {
                 Ok(permit) => permit,
                 Err(err) => {

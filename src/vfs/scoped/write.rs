@@ -214,7 +214,11 @@ impl ScopedVfsStorageEngine {
             }
             Err(e) => {
                 if Self::should_prune_stale_recycle_index(&normalized, &e) {
-                    match self.index_service.delete_file(&self.user_id, &normalized).await {
+                    match self
+                        .index_service
+                        .delete_file(&self.user_id, &normalized)
+                        .await
+                    {
                         Ok(()) => {
                             self.mark_wal_physical_done(wal_id).await;
                             self.complete_wal(wal_id).await;
@@ -259,7 +263,10 @@ impl ScopedVfsStorageEngine {
                 }
                 self.fail_wal(
                     wal_id,
-                    &format!("DELETE failed for {} (physical_path={}): {}", normalized, physical_path, e),
+                    &format!(
+                        "DELETE failed for {} (physical_path={}): {}",
+                        normalized, physical_path, e
+                    ),
                 )
                 .await;
                 self.journal_log(

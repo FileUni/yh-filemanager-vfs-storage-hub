@@ -2767,7 +2767,14 @@ impl VfsStorageHubConfig {
                 let mode = mode.trim().to_ascii_lowercase();
                 if !matches!(
                     mode.as_str(),
-                    "dir" | "per_dir" | "per-directory" | "global" | "user_root" | "user-root" | "none" | "db"
+                    "dir"
+                        | "per_dir"
+                        | "per-directory"
+                        | "global"
+                        | "user_root"
+                        | "user-root"
+                        | "none"
+                        | "db"
                 ) {
                     errors.push(format!(
                         "[{}] thumbnail.cache_mode must be one of dir|per_dir|global|user_root|none (legacy alias db is accepted)",

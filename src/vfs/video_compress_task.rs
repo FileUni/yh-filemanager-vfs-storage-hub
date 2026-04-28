@@ -5,9 +5,32 @@ use crate::utils::video_compression::{
 use crate::vfs::VfsStorage;
 use crate::vfs::task::{BatchOperationLog, VfsTaskHandler};
 use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Duration, Instant, timeout};
 use uuid::Uuid;
 use yh_console_log::yhlog;
+
+static VIDEO_COMPRESS_TASK_SEMAPHORE: once_cell::sync::OnceCell<Arc<Semaphore>> =
+    once_cell::sync::OnceCell::new();
+
+pub(crate) async fn acquire_video_compress_task_permit() -> Result<OwnedSemaphorePermit, String> {
+    let semaphore = if let Some(existing) = VIDEO_COMPRESS_TASK_SEMAPHORE.get() {
+        Arc::clone(existing)
+    } else {
+        let cfg = crate::config::get_vfs_hub_config().await;
+        let permits = cfg
+            .get_media_transcoding()
+            .get_effective_max_concurrent_tasks()
+            .max(1);
+        let created = Arc::new(Semaphore::new(permits));
+        let _ = VIDEO_COMPRESS_TASK_SEMAPHORE.set(Arc::clone(&created));
+        created
+    };
+    semaphore
+        .acquire_owned()
+        .await
+        .map_err(|error| format!("Acquire video compression permit failed: {}", error))
+}
 
 pub(crate) async fn execute_batch_video_compress(
     storage: Arc<dyn VfsStorage>,
@@ -51,10 +74,9 @@ pub(crate) async fn execute_batch_video_compress(
                 return Err("Video compression task cancelled by user".to_string());
             }
 
-            let output_path =
-                resolve_output_path(storage.as_ref(), source_path, &options)
-                    .await
-                    .map_err(|error| error.to_string())?;
+            let output_path = resolve_output_path(storage.as_ref(), source_path, &options)
+                .await
+                .map_err(|error| error.to_string())?;
             let start_time = Instant::now();
 
             match compress_vfs_video_to_vfs(
@@ -81,9 +103,7 @@ pub(crate) async fn execute_batch_video_compress(
                             status: "success",
                             error_message: None,
                             file_size: None,
-                            execution_time_ms: Some(
-                                start_time.elapsed().as_millis() as i64,
-                            ),
+                            execution_time_ms: Some(start_time.elapsed().as_millis() as i64),
                         })
                         .await;
                 }
@@ -107,9 +127,7 @@ pub(crate) async fn execute_batch_video_compress(
                             status: "failed",
                             error_message: Some(&error_message),
                             file_size: None,
-                            execution_time_ms: Some(
-                                start_time.elapsed().as_millis() as i64,
-                            ),
+                            execution_time_ms: Some(start_time.elapsed().as_millis() as i64),
                         })
                         .await;
                 }

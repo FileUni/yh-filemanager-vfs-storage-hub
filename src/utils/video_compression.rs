@@ -193,7 +193,10 @@ pub async fn compress_vfs_video_to_vfs(
             .get_media_transcoding()
             .to_runtime_config(cfg.get_effective_ffmpeg_path());
         let job = EffectiveVideoCompressionJob::from_options(options, &runtime_cfg);
-        let temp_manager = config_require_manager!(crate::utils::get_global_temp_manager().await, "vfs_storage_hub");
+        let temp_manager = config_require_manager!(
+            crate::utils::get_global_temp_manager().await,
+            "vfs_storage_hub"
+        );
         let (temp_dir, _guard) = temp_manager
             .create_user_temp_dir(user_id, "video-compress")
             .await?;
@@ -317,7 +320,9 @@ impl EffectiveVideoCompressionJob {
             max_height: options
                 .max_height
                 .unwrap_or(runtime_cfg.get_video().get_max_height()),
-            max_fps: options.max_fps.unwrap_or(runtime_cfg.get_video().get_max_fps()),
+            max_fps: options
+                .max_fps
+                .unwrap_or(runtime_cfg.get_video().get_max_fps()),
             audio_bitrate_kbps: runtime_cfg.get_video().get_audio_bitrate_kbps(),
             output_pixel_format,
         }
@@ -402,7 +407,7 @@ async fn run_ffmpeg_command(
 
     let manager = config_require_manager!(get_global_manager(), "external_process_manager");
     manager
-        .run_with_permit(TaskPriority::High, || async move {
+        .run_with_permit(TaskPriority::Low, || async move {
             let mut cmd = Command::new(ffmpeg_path);
             cmd.stdout(Stdio::piped())
                 .stderr(Stdio::piped())
