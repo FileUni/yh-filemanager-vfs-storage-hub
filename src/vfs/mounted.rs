@@ -1492,6 +1492,64 @@ impl VfsStorage for MountedUserStorage {
         });
         Ok(task_id.to_string())
     }
+
+    async fn submit_batch_video_compress(
+        &self,
+        paths: Vec<String>,
+        options: crate::utils::VideoCompressionOptions,
+    ) -> VfsResult<String> {
+        if !paths.iter().any(|path| self.contains_mounted_path(path)) {
+            return self.base.submit_batch_video_compress(paths, options).await;
+        }
+        crate::utils::video_compression::ensure_video_compression_ready()
+            .await
+            .map_err(|error| VfsError::Internal(error.to_string()))?;
+        options
+            .validate()
+            .map_err(|error| VfsError::Internal(error.to_string()))?;
+        let task_handler = self
+            .task_handler
+            .as_ref()
+            .ok_or_else(|| VfsError::Internal("Task handler not configured".to_string()))?
+            .clone();
+        let payload = serde_json::json!({
+            "paths": paths,
+            "options": options,
+        });
+        let task_id = task_handler
+            .create_task(self.user_id.as_ref(), "batch_video_compress", payload)
+            .await
+            .map_err(VfsError::Internal)?;
+        let storage: Arc<dyn VfsStorage> = Arc::new(self.clone());
+        let handler = Arc::clone(&task_handler);
+        let user_id = self.user_id.to_string();
+        let timeout = crate::config::get_vfs_hub_config()
+            .await
+            .get_media_transcoding()
+            .get_timeout_secs();
+        Self::spawn_batch_task("mounted_batch_video_compress", async move {
+            let _permit = match Self::acquire_batch_task_permit().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    let _ = handler.fail_task(task_id, &err.to_string()).await;
+                    handler.cleanup_task(task_id);
+                    return;
+                }
+            };
+            crate::vfs::video_compress_task::execute_batch_video_compress(
+                storage,
+                Arc::clone(&handler),
+                task_id,
+                paths,
+                options,
+                timeout,
+                &user_id,
+            )
+            .await;
+            handler.cleanup_task(task_id);
+        });
+        Ok(task_id.to_string())
+    }
 }
 
 pub async fn build_remote_storage(

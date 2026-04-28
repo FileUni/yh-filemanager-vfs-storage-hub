@@ -499,4 +499,59 @@ impl ScopedVfsStorageEngine {
         });
         Ok(task_id.to_string())
     }
+
+    pub(super) async fn submit_batch_video_compress_impl(
+        &self,
+        paths: Vec<String>,
+        options: crate::utils::VideoCompressionOptions,
+    ) -> VfsResult<String> {
+        self.check_maintenance()?;
+        crate::utils::video_compression::ensure_video_compression_ready()
+            .await
+            .map_err(|error| VfsError::Internal(error.to_string()))?;
+        options
+            .validate()
+            .map_err(|error| VfsError::Internal(error.to_string()))?;
+        let task_handler = self
+            .task_handler
+            .as_ref()
+            .ok_or_else(|| VfsError::Internal("Task handler not configured".to_string()))?;
+        let payload = serde_json::json!({
+            "paths": paths,
+            "options": options,
+        });
+        let task_id = task_handler
+            .create_task(&self.user_id, "batch_video_compress", payload)
+            .await
+            .map_err(VfsError::Internal)?;
+        let engine = Arc::new(self.clone_for_async());
+        let handler = Arc::clone(task_handler);
+        let timeout = crate::config::get_vfs_hub_config()
+            .await
+            .get_media_transcoding()
+            .get_timeout_secs();
+        Self::spawn_batch_task("batch_video_compress", async move {
+            let _permit = match Self::acquire_batch_task_permit().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    let _ = handler.fail_task(task_id, &err.to_string()).await;
+                    handler.cleanup_task(task_id);
+                    return;
+                }
+            };
+            let user_id = engine.user_id.to_string();
+            crate::vfs::video_compress_task::execute_batch_video_compress(
+                engine,
+                Arc::clone(&handler),
+                task_id,
+                paths,
+                options,
+                timeout,
+                &user_id,
+            )
+            .await;
+            handler.cleanup_task(task_id);
+        });
+        Ok(task_id.to_string())
+    }
 }

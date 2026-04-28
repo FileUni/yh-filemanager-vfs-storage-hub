@@ -3,6 +3,7 @@ pub mod cache;
 pub mod compression;
 pub mod share_access;
 pub mod temp_file;
+pub mod video_compression;
 pub use cache::VfsCache;
 pub use compression::{
     CompressionFormat, CompressionOptions, DecompressionOptions, compress_task, decompress_task,
@@ -16,3 +17,4 @@ pub use temp_file::{
     VfsTempDirGuard, VfsTempError, VfsTempFileGuard, VfsTempFileManager, get_global_temp_manager,
     init_global_temp_manager,
 };
+pub use video_compression::VideoCompressionOptions;

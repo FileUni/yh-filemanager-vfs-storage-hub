@@ -24,6 +24,7 @@ pub mod pool;
 pub mod protected;
 pub mod scoped;
 pub mod task;
+mod video_compress_task;
 pub mod wal;
 
 #[cfg(target_os = "android")]

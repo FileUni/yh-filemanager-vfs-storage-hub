@@ -268,4 +268,11 @@ impl VfsStorage for ScopedVfsStorageEngine {
         self.submit_batch_decompress_impl(paths, output_dir, options, delete_archive)
             .await
     }
+    async fn submit_batch_video_compress(
+        &self,
+        paths: Vec<String>,
+        options: crate::utils::VideoCompressionOptions,
+    ) -> VfsResult<String> {
+        self.submit_batch_video_compress_impl(paths, options).await
+    }
 }

@@ -424,4 +424,13 @@ pub trait VfsStorage: Send + Sync {
             "Persistent tasks not supported by this storage backend".to_string(),
         ))
     }
+    async fn submit_batch_video_compress(
+        &self,
+        _paths: Vec<String>,
+        _options: crate::utils::VideoCompressionOptions,
+    ) -> VfsResult<String> {
+        Err(crate::vfs::error::VfsError::Internal(
+            "Persistent tasks not supported by this storage backend".to_string(),
+        ))
+    }
 }
