@@ -2942,29 +2942,23 @@ impl VfsStorageHubConfig {
                     let secs_ok = video.seek_seconds.map(|v| v > 0).unwrap_or(false);
 
                     match seek_mode {
-                        "ratio" => {
-                            if !ratio_ok {
-                                errors.push(format!(
-                                    "[{}] thumbnail.video.seek_ratio is required when seek_mode is 'ratio'",
-                                    s
-                                ));
-                            }
+                        "ratio" if !ratio_ok => {
+                            errors.push(format!(
+                                "[{}] thumbnail.video.seek_ratio is required when seek_mode is 'ratio'",
+                                s
+                            ));
                         }
-                        "seconds" => {
-                            if !secs_ok {
-                                errors.push(format!(
-                                    "[{}] thumbnail.video.seek_seconds is required when seek_mode is 'seconds'",
-                                    s
-                                ));
-                            }
+                        "seconds" if !secs_ok => {
+                            errors.push(format!(
+                                "[{}] thumbnail.video.seek_seconds is required when seek_mode is 'seconds'",
+                                s
+                            ));
                         }
-                        "auto" => {
-                            if !ratio_ok && !secs_ok {
-                                errors.push(format!(
-                                    "[{}] thumbnail.video.seek_ratio or seek_seconds is required when seek_mode is 'auto'",
-                                    s
-                                ));
-                            }
+                        "auto" if !ratio_ok && !secs_ok => {
+                            errors.push(format!(
+                                "[{}] thumbnail.video.seek_ratio or seek_seconds is required when seek_mode is 'auto'",
+                                s
+                            ));
                         }
                         _ => {}
                     }
