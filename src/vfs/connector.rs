@@ -73,7 +73,7 @@ pub async fn build_operator(config: &VfsConnectorConfig) -> VfsResult<Operator> 
                 opts.insert("root".to_string(), root.as_ref().to_string());
             }
 
-            Operator::via_iter(driver, opts.into_iter())?
+            Operator::via_iter(driver, opts)?
         }
     };
 
