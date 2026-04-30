@@ -269,7 +269,11 @@ impl ScopedVfsStorageEngine {
             validate_segments(decoded.as_ref())?;
         }
 
-        Ok(normalized)
+        if normalized == "/" {
+            Ok(normalized)
+        } else {
+            Ok(normalized.trim_end_matches('/').to_string())
+        }
     }
 
     pub(super) async fn validate_file_operation(&self, path: &str) -> VfsResult<String> {

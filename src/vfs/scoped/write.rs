@@ -5,6 +5,16 @@ use crate::vfs::{LOGICAL_TEMP_PREFIX, VfsFileInfo, VfsStorage};
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use futures::stream::BoxStream;
+
+fn parent_path(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if let Some((parent, _)) = trimmed.rsplit_once('/') {
+        if parent.is_empty() { "/" } else { parent }.to_string()
+    } else {
+        "/".to_string()
+    }
+}
+
 impl ScopedVfsStorageEngine {
     fn should_prune_stale_recycle_index(path: &str, err: &VfsError) -> bool {
         if !path.starts_with("/.recycle_bin/") {
@@ -573,6 +583,19 @@ impl ScopedVfsStorageEngine {
         }
         self.flush_pending_write_cache_for_path(&norm_src).await?;
         self.flush_pending_write_cache_for_path(&norm_dst).await?;
+        let src_parent = parent_path(&norm_src);
+        let dst_parent = parent_path(&norm_dst);
+        let guard_src_arc = self.pool.sync_guards.get_guard(&self.user_id, &src_parent);
+        let guard_dst_arc = if dst_parent != src_parent {
+            Some(self.pool.sync_guards.get_guard(&self.user_id, &dst_parent))
+        } else {
+            None
+        };
+        let _lock_src = guard_src_arc.lock().await;
+        let _lock_dst = match &guard_dst_arc {
+            Some(arc) => Some(arc.lock().await),
+            None => None,
+        };
         let wal_id = self
             .begin_wal(
                 WalOperation::Move {
@@ -617,6 +640,12 @@ impl ScopedVfsStorageEngine {
                         self.cache.invalidate_parent_ls(&norm_dst).await;
                         self.cache.invalidate("stat", &norm_src).await;
                         self.cache.invalidate("stat", &norm_dst).await;
+                        let src_parent = parent_path(&norm_src);
+                        let dst_parent = parent_path(&norm_dst);
+                        Self::clear_index_sync_debounce(&self.user_id, &src_parent);
+                        if dst_parent != src_parent {
+                            Self::clear_index_sync_debounce(&self.user_id, &dst_parent);
+                        }
                         yh_console_log::yhlog(
                             "info",
                             &format!(

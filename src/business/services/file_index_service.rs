@@ -115,10 +115,20 @@ impl FileIndexService {
         physical_size: Option<i64>,
         protected_meta: Option<&str>,
     ) -> Result<file_index::Model, DbErr> {
-        let parent = std::path::Path::new(logical_path)
+        let normalized_path = if logical_path == "/" {
+            "/".to_string()
+        } else {
+            logical_path.trim_end_matches('/').to_string()
+        };
+        let parent = std::path::Path::new(&normalized_path)
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "/".to_string());
+        let parent = if parent.is_empty() {
+            "/".to_string()
+        } else {
+            parent.trim_end_matches('/').to_string()
+        };
         let parent = if parent.is_empty() {
             "/".to_string()
         } else {
@@ -130,7 +140,7 @@ impl FileIndexService {
             user_id: Set(user_id.to_string()),
             parent_path: Set(parent),
             name: Set(info.name.to_string()),
-            path: Set(logical_path.to_string()),
+            path: Set(normalized_path),
             is_dir: Set(info.is_dir),
             storage_id: Set(storage_id.map(std::borrow::ToOwned::to_owned)),
             backend_type: Set(backend_type.map(std::borrow::ToOwned::to_owned)),
@@ -773,7 +783,6 @@ impl FileIndexService {
     ) -> Result<(), DbErr> {
         let now = chrono::Utc::now();
         let src_prefix = format!("{}/", src_path);
-        let txn = self.db.begin().await?;
         // Resolve new metadata
         let new_name = if let Some(name) = dst_path.split('/').next_back() {
             name.to_string()
@@ -790,59 +799,55 @@ impl FileIndexService {
         } else {
             new_parent
         };
-        // Update top-level node
-        let mut update = file_index::Entity::update_many()
+        // Load all affected rows in Rust so we can compute correct parent_path
+        // instead of relying on SQL REPLACE which can produce NULL on edge cases.
+        let children: Vec<crate::business::entities::file_index::Model> =
+            file_index::Entity::find()
+                .filter(file_index::Column::UserId.eq(user_id))
+                .filter(file_index::Column::Path.like(format!("{}%", src_prefix)))
+                .all(&*self.db)
+                .await?;
+        // Also load the top-level node
+        let top_node = file_index::Entity::find()
             .filter(file_index::Column::UserId.eq(user_id))
             .filter(file_index::Column::Path.eq(src_path))
-            .col_expr(file_index::Column::Path, Expr::value(dst_path))
-            .col_expr(file_index::Column::Name, Expr::value(new_name))
-            .col_expr(file_index::Column::ParentPath, Expr::value(new_parent))
-            .col_expr(file_index::Column::RowUpdatedAt, Expr::value(now));
-        if !dst_path.starts_with("/.recycle_bin") {
-            update = update
-                .col_expr(
-                    file_index::Column::FileTrashedAt,
-                    Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
-                )
-                .col_expr(
-                    file_index::Column::OriginalPath,
-                    Expr::value(Option::<String>::None),
-                );
+            .one(&*self.db)
+            .await?;
+        let txn = self.db.begin().await?;
+        // Update top-level node
+        if let Some(top) = top_node {
+            let mut active: file_index::ActiveModel = top.into();
+            active.path = Set(dst_path.to_string());
+            active.name = Set(new_name);
+            active.parent_path = Set(new_parent.clone());
+            active.row_updated_at = Set(now.into());
+            if !dst_path.starts_with("/.recycle_bin") {
+                active.file_trashed_at = Set(None);
+                active.original_path = Set(None);
+            }
+            active.update(&txn).await?;
         }
-        update.exec(&txn).await?;
-        // Recursive batch update
-        let condition = file_index::Column::UserId
-            .eq(user_id)
-            .and(file_index::Column::Path.like(format!("{}%", src_prefix)));
-        let mut update_many = file_index::Entity::update_many()
-            .filter(condition)
-            .col_expr(
-                file_index::Column::Path,
-                Expr::cust_with_exprs(
-                    "REPLACE(path, $1, $2)",
-                    vec![src_path.into(), dst_path.into()],
-                ),
-            )
-            .col_expr(
-                file_index::Column::ParentPath,
-                Expr::cust_with_exprs(
-                    "REPLACE(parent_path, $1, $2)",
-                    vec![src_path.into(), dst_path.into()],
-                ),
-            )
-            .col_expr(file_index::Column::RowUpdatedAt, Expr::value(now));
-        if !dst_path.starts_with("/.recycle_bin") {
-            update_many = update_many
-                .col_expr(
-                    file_index::Column::FileTrashedAt,
-                    Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
-                )
-                .col_expr(
-                    file_index::Column::OriginalPath,
-                    Expr::value(Option::<String>::None),
-                );
+        // Update children: compute new path and parent_path in Rust
+        for child in children {
+            let old_path = child.path.clone();
+            let rest = &old_path[src_path.len()..]; // starts with "/"
+            let new_path = format!("{}{}", dst_path, rest);
+            let new_child_parent = if let Some((p, _)) = new_path.rsplit_once('/') {
+                let p = p.to_string();
+                if p.is_empty() { "/".to_string() } else { p }
+            } else {
+                "/".to_string()
+            };
+            let mut active: file_index::ActiveModel = child.into();
+            active.path = Set(new_path);
+            active.parent_path = Set(new_child_parent);
+            active.row_updated_at = Set(now.into());
+            if !dst_path.starts_with("/.recycle_bin") {
+                active.file_trashed_at = Set(None);
+                active.original_path = Set(None);
+            }
+            active.update(&txn).await?;
         }
-        update_many.exec(&txn).await?;
         txn.commit().await?;
         Ok(())
     }

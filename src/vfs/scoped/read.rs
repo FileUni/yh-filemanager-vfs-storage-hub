@@ -51,10 +51,18 @@ fn file_name_from_path(path: &str) -> &str {
 
 impl ScopedVfsStorageEngine {
     #[inline]
-    fn clear_index_sync_inflight(sync_key: &str) {
+    pub(super) fn clear_index_sync_inflight(sync_key: &str) {
         if let Some(inflight) = INDEX_SYNC_INFLIGHT.get() {
             inflight.remove(sync_key);
         }
+    }
+
+    pub(super) fn clear_index_sync_debounce(user_id: &str, path: &str) {
+        let sync_key = format!("{}\n{}", user_id, path);
+        if let Some(last_done) = INDEX_SYNC_LAST_DONE.get() {
+            last_done.remove(&sync_key);
+        }
+        Self::clear_index_sync_inflight(&sync_key);
     }
 
     async fn acquire_index_sync_permit() -> VfsResult<OwnedSemaphorePermit> {
@@ -255,6 +263,26 @@ impl ScopedVfsStorageEngine {
                 .list_files(&self.user_id, &normalized)
                 .await
                 .map_err(|e| VfsError::Internal(e.to_string()))?;
+            {
+                let names: Vec<&str> = db_entries.iter().map(|e| e.name.as_str()).collect();
+                yh_console_log::yhlog(
+                    "info",
+                    &format!(
+                        "list_impl INDEX user_id={} path={} db_entries={:?}",
+                        self.user_id, normalized, names
+                    ),
+                );
+            }
+            {
+                let names: Vec<&str> = db_entries.iter().map(|e| e.name.as_str()).collect();
+                yh_console_log::yhlog(
+                    "info",
+                    &format!(
+                        "DEBUG list_impl index user_id={} path={} entries={:?}",
+                        self.user_id, normalized, names
+                    ),
+                );
+            }
             if !db_entries.is_empty() {
                 let norm_path = if normalized == "/" {
                     "/"
